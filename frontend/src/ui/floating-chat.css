@@ -1,0 +1,59 @@
+@layer ui {
+  :root { --floating-chat-width: clamp(20rem, 40vw, 26rem); }
+  .ui-floating-chat-trigger {
+    position: fixed;
+    right: var(--floating-chat-right, max(var(--space-5), env(safe-area-inset-right)));
+    bottom: var(--floating-chat-launcher-bottom, max(var(--space-5), env(safe-area-inset-bottom)));
+    z-index: 180;
+    border-radius: 50%;
+    box-shadow: 0 2px 8px rgb(0 0 0 / 10%);
+  }
+  .ui-floating-chat-trigger[data-popup-open] { visibility: hidden; }
+  .ui-floating-chat {
+    position: fixed;
+    right: var(--space-5);
+    bottom: calc(var(--space-5) + var(--control-height) + var(--space-3));
+    z-index: 180;
+    width: min(var(--floating-chat-width), calc(100vw - 2 * var(--space-5)));
+    height: min(40rem, calc(100dvh - var(--appbar-height, 56px) - 7rem));
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-card);
+    box-shadow: 0 8px 32px rgb(0 0 0 / 12%);
+  }
+  .ui-chat-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    padding: var(--space-3);
+    border-bottom: 1px solid var(--border);
+    flex: none;
+  }
+  .ui-chat-header__title {
+    margin: 0;
+    font-size: var(--text-body);
+    font-weight: var(--weight-medium);
+    line-height: var(--leading-ui);
+  }
+  .ui-chat-header__actions { display: flex; align-items: center; gap: var(--space-2); min-height: var(--control-height-sm); }
+  .ui-floating-chat__body { display: flex; flex: 1; min-height: 0; }
+  .ui-floating-chat--aligned {
+      top: var(--floating-chat-top);
+      bottom: var(--floating-chat-bottom);
+      right: var(--floating-chat-right, var(--space-5));
+      height: auto;
+      /* Draw the frame without shifting shared header/footer baselines. */
+      border: 0;
+      outline: 1px solid var(--border);
+      outline-offset: -1px;
+  }
+  @media (max-width: 600px) {
+    .ui-floating-chat { right: var(--space-3); width: calc(100vw - 2 * var(--space-3)); }
+    .ui-floating-chat__body { padding-inline: var(--space-3); }
+    .ui-floating-chat-trigger { right: var(--floating-chat-right, max(var(--space-3), env(safe-area-inset-right))); }
+  }
+}

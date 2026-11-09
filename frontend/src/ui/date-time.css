@@ -1,0 +1,47 @@
+@layer base, ui; /* layer order, whichever stylesheet loads first */
+/* DateTimeField (DateTimeField.tsx); part of the ui layer. The group looks like a TextInput; each date and time part
+   is a segment that takes the keyboard; the calendar opens in a popover over dialogs and sheets. */
+@layer ui {
+.ui-date-field { min-width: 0; }
+.ui-date-field__group { display: flex; align-items: center; gap: 4px; width: 100%; min-width: 0; height: var(--control-height); padding: 0 4px 0 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); font-size: var(--text-control); line-height: var(--leading-ui); transition: border-color 120ms; }
+@media (hover: hover) and (pointer: fine) { .ui-date-field__group[data-hovered]:not([data-disabled]) { border-color: var(--strong-border); } }
+.ui-date-field__group[data-focus-within] { border-color: var(--focus-color); }
+.ui-date-field__group[data-invalid] { border-color: var(--red); }
+.ui-date-field__group[data-disabled] { background: var(--muted-surface); color: var(--muted); cursor: not-allowed; }
+.ui-date-field__input { display: flex; flex: 1 1 auto; align-items: center; min-width: 0; overflow: hidden; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ui-date-field__segment { padding: 0 1px; border-radius: 3px; outline: none; caret-color: transparent; }
+.ui-date-field__segment[data-type="literal"] { color: var(--muted); }
+.ui-date-field__segment[data-placeholder] { color: color-mix(in srgb, var(--muted) 70%, transparent); }
+.ui-date-field__segment[data-focused] { background: var(--accent); color: var(--accent-foreground); }
+.ui-date-field__button { display: flex; flex: none; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; outline: none; }
+@media (hover: hover) and (pointer: fine) { .ui-date-field__button[data-hovered] { background: var(--muted-surface); color: var(--text); } }
+.ui-date-field__button[data-focus-visible] { outline: 2px solid var(--focus-color); outline-offset: -2px; }
+.ui-date-field__button[data-pressed] { transform: scale(0.97); }
+
+.ui-date-popover { z-index: 250; padding: 12px; border: 1px solid var(--strong-border); border-radius: var(--radius-card); background: var(--surface); color: var(--text); box-shadow: 0 8px 24px rgb(0 0 0 / 12%); outline: none; }
+.ui-date-popover[data-entering] { animation: ui-date-pop 150ms var(--ease-out); }
+.ui-date-popover[data-exiting] { animation: ui-date-pop 100ms var(--ease-out) reverse; }
+@keyframes ui-date-pop { from { opacity: 0; transform: scale(0.97); } }
+@media (prefers-reduced-motion: reduce) { .ui-date-popover[data-entering], .ui-date-popover[data-exiting] { animation-name: ui-date-fade; } @keyframes ui-date-fade { from { opacity: 0; } } }
+.ui-date-dialog { outline: none; }
+.ui-calendar { display: flex; flex-direction: column; gap: 8px; }
+.ui-calendar__header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ui-calendar__heading { margin: 0; font-size: var(--text-control); font-weight: var(--weight-medium); line-height: var(--leading-ui); }
+.ui-calendar__nav { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: var(--radius); background: transparent; color: var(--text); cursor: pointer; outline: none; }
+@media (hover: hover) and (pointer: fine) { .ui-calendar__nav[data-hovered] { background: var(--muted-surface); } }
+.ui-calendar__nav[data-focus-visible] { outline: 2px solid var(--focus-color); outline-offset: -2px; }
+.ui-calendar__nav[data-disabled] { color: var(--muted); opacity: .5; cursor: not-allowed; }
+.ui-calendar__grid { border-collapse: collapse; }
+/* The calendar is a table: none of the data tables' header fill or row rules. */
+.ui-calendar__grid :is(th, td) { border: 0; background: none; }
+.ui-calendar__grid th { width: 36px; height: 28px; padding: 0; color: var(--muted); font-size: var(--text-meta); font-weight: var(--weight-body); text-align: center; }
+.ui-calendar__grid td { padding: 1px; }
+.ui-calendar__cell { display: flex; align-items: center; justify-content: center; width: 34px; height: 34px; border-radius: var(--radius); font-size: var(--text-control); font-variant-numeric: tabular-nums; cursor: pointer; outline: none; }
+.ui-calendar__cell[data-outside-month] { visibility: hidden; }
+@media (hover: hover) and (pointer: fine) { .ui-calendar__cell[data-hovered]:not([data-selected], [data-disabled], [data-unavailable]) { background: var(--muted-surface); } }
+.ui-calendar__cell[data-today]:not([data-selected]) { font-weight: var(--weight-strong); text-decoration: underline; text-underline-offset: 4px; }
+.ui-calendar__cell[data-selected] { background: var(--accent); color: var(--accent-foreground); }
+.ui-calendar__cell:is([data-disabled], [data-unavailable]) { color: var(--muted); opacity: .45; cursor: not-allowed; }
+.ui-calendar__cell[data-focus-visible] { outline: 2px solid var(--focus-color); outline-offset: 1px; }
+@media (max-width: 600px) { .ui-date-field__group { font-size: max(16px, var(--text-control)); } .ui-calendar__cell { width: 40px; height: 40px; } }
+}

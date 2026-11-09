@@ -1,0 +1,24 @@
+@layer base, ui; /* layer order, whichever stylesheet loads first */
+/* Multi-select chips field; part of the ui layer (see ui.css). The menu uses
+   the select-* classes from select-field.css. Chips and the search input sit
+   inside a box the height of a TextInput (--control-height), growing a row at
+   a time when chips wrap. */
+@layer ui {
+.ui-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; width: 100%; min-width: 0; min-height: var(--control-height); padding: 4px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); cursor: text; transition: border-color .15s; }
+@media (hover: hover) and (pointer: fine) { .ui-chips:where(:not([data-disabled])):hover { border-color: var(--strong-border); } }
+.ui-chips:focus-within { border-color: var(--focus-color); }
+.ui-chips[data-disabled] { background: var(--muted-surface); color: var(--muted); cursor: not-allowed; }
+.ui-chip { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; min-height: calc(var(--control-height) - 10px); padding: 0 2px 0 8px; border-radius: 4px; background: var(--muted-surface); color: var(--text); font-size: var(--text-label); line-height: var(--leading-ui); }
+.ui-chip__text { min-width: 0; overflow-wrap: anywhere; }
+.ui-chip__remove { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 22px; height: 22px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; }
+@media (hover: hover) and (pointer: fine) { .ui-chip__remove:where(:not(:disabled, [data-disabled])):hover { background: var(--border); color: var(--text); } }
+.ui-chip__remove:focus-visible { outline: 2px solid var(--focus-color); outline-offset: -1px; }
+.ui-chips__input { flex: 1 1 10rem; min-width: 8rem; height: calc(var(--control-height) - 10px); min-height: 0; margin: 0; padding: 0 4px; border: 0; border-radius: 0; background: transparent; color: inherit; font: inherit; font-size: var(--text-control); line-height: var(--leading-ui); outline: none; }
+.ui-chips__input::placeholder { color: var(--muted); opacity: 1; }
+.ui-chips__input:disabled { cursor: not-allowed; }
+.ui-multi-select__detail { display: block; color: var(--muted); font-size: var(--text-meta); }
+@media (max-width: 600px) {
+  .ui-chips__input { font-size: max(16px, var(--text-control)); }
+  .ui-chip__remove { width: 28px; height: 28px; }
+}
+}

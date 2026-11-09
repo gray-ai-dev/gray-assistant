@@ -1,0 +1,19 @@
+@layer base, ui; /* layer order, whichever stylesheet loads first */
+/* Tape (Tape.tsx): one cell per event, its mark bottom-aligned, so taller problem marks stand out of the row. Part of
+   the ui layer. A selectable cell is a button of the cell's full height with a focus ring. */
+@layer ui {
+.ui-tape { --tape-height: 16px; --tape-width: 8px; --tape-gap: 3px; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px var(--tape-gap); min-width: 0; }
+.ui-tape--sm { --tape-height: 14px; --tape-width: 4px; --tape-gap: 1px; flex-wrap: nowrap; }
+/* Every cell is the same box (a selectable one has one hit area); its mark is drawn inside it, bottom-aligned. */
+.ui-tape__cell { position: relative; flex: none; box-sizing: border-box; width: var(--tape-width); height: var(--tape-height); margin: 0; padding: 0; border: 0; border-radius: 2px; background: transparent; }
+.ui-tape__cell::after { content: ""; position: absolute; inset: auto 0 0; height: 60%; border-radius: 2px; background: var(--chart-2); }
+.ui-tape--sm .ui-tape__cell, .ui-tape--sm .ui-tape__cell::after { border-radius: 1px; }
+.ui-tape__cell[data-tone="muted"]::after { background: var(--chart-3); }
+.ui-tape__cell[data-tone="warning"]::after { height: 80%; background: var(--amber); }
+.ui-tape__cell[data-tone="danger"]::after { height: 100%; background: var(--red); }
+.ui-tape__cell[data-dim]::after { opacity: .35; }
+button.ui-tape__cell { cursor: pointer; }
+button.ui-tape__cell:focus-visible { outline: 2px solid var(--focus-color); outline-offset: 2px; }
+@media (hover: hover) and (pointer: fine) { button.ui-tape__cell:hover::after { height: 100%; box-shadow: 0 0 0 1px var(--text); } }
+.ui-tape__earlier { flex: none; align-self: center; margin-right: 4px; color: var(--muted); font-size: var(--text-meta); line-height: 1; font-variant-numeric: tabular-nums; }
+}

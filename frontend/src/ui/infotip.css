@@ -1,0 +1,13 @@
+@layer base, ui; /* layer order, whichever stylesheet loads first */
+/* InfoTip (InfoTip.tsx); part of the ui layer. The term keeps the text around it and gains a dotted underline; the
+   definition is a small card that grows from it. */
+@layer ui {
+.ui-infotip { display: inline; margin: 0; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: inherit; text-decoration: underline dotted var(--strong-border); text-underline-offset: 3px; cursor: help; }
+.ui-infotip[data-popup-open] { text-decoration-color: currentColor; }
+.ui-infotip:focus-visible { outline: 2px solid var(--focus-color); outline-offset: 2px; border-radius: 2px; }
+.ui-infotip-positioner { z-index: 250; }
+.ui-infotip__popup { max-width: min(18rem, calc(100vw - 16px)); padding: 8px 10px; border: 1px solid var(--strong-border); border-radius: var(--radius); background: var(--surface); color: var(--text); font-size: var(--text-meta); font-weight: var(--weight-body); line-height: var(--leading-body); text-align: start; white-space: normal; box-shadow: 0 6px 18px rgb(0 0 0 / 10%); outline: none; }
+.ui-infotip__popup { transform-origin: var(--transform-origin); transition: opacity 120ms var(--ease-out), transform 120ms var(--ease-out); }
+.ui-infotip__popup:is([data-starting-style], [data-ending-style]) { opacity: 0; transform: scale(0.97); }
+@media (prefers-reduced-motion: reduce) { .ui-infotip__popup:is([data-starting-style], [data-ending-style]) { transform: none; } }
+}

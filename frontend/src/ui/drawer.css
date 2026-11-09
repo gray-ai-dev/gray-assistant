@@ -1,0 +1,38 @@
+@layer base, ui; /* layer order, whichever stylesheet loads first */
+/* The bottom sheet (Drawer.tsx); part of the ui layer, laid out as Base UI's drawer example: the popup follows the
+   swipe through --drawer-swipe-movement-y and the backdrop fades with --drawer-swipe-progress. The sheet bleeds 3rem
+   below the edge, so a pull upward shows sheet, not page. Above the app bar, under the popups that open from it. */
+@layer ui {
+.ui-drawer-backdrop { position: fixed; inset: 0; z-index: 200; min-height: 100dvh; background: #000; opacity: calc(.35 * (1 - var(--drawer-swipe-progress))); transition: opacity 400ms var(--ease-drawer); }
+.ui-drawer-backdrop:is([data-starting-style], [data-ending-style]) { opacity: 0; }
+.ui-drawer-backdrop[data-swiping] { transition-duration: 0ms; }
+.ui-drawer-viewport { position: fixed; inset: 0; z-index: 201; display: flex; align-items: flex-end; justify-content: center; }
+.ui-drawer { --bleed: 3rem; box-sizing: border-box; width: 100%; max-height: calc(88dvh + var(--bleed)); margin-bottom: calc(-1 * var(--bleed)); padding: var(--space-2) var(--space-4) calc(var(--space-5) + env(safe-area-inset-bottom, 0px) + var(--bleed)); border-top: 1px solid var(--strong-border); border-radius: var(--radius-card) var(--radius-card) 0 0; background: var(--surface); color: var(--text); outline: 0; box-shadow: 0 -8px 28px rgb(0 0 0 / 14%); overflow-y: auto; overscroll-behavior: contain; transform: translateY(var(--drawer-swipe-movement-y)); transition: transform 400ms var(--ease-drawer); will-change: transform; }
+.ui-drawer:is([data-starting-style], [data-ending-style]) { transform: translateY(calc(100% - var(--bleed) + 2px)); }
+.ui-drawer[data-ending-style], .ui-drawer-backdrop[data-ending-style] { transition-duration: calc(var(--drawer-swipe-strength) * 320ms); }
+.ui-drawer__handle { width: 36px; height: 4px; margin: 0 auto var(--space-2); border-radius: 999px; background: var(--strong-border); }
+.ui-drawer__content { display: flex; flex-direction: column; gap: var(--space-4); width: 100%; max-width: 34rem; margin: 0 auto; }
+.ui-drawer__header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); min-height: var(--control-height-sm); }
+.ui-drawer__title { margin: 0; font-size: var(--text-subsection); font-weight: var(--weight-heading); line-height: var(--leading-snug); }
+.ui-drawer__heading { display: flex; flex: 1 1 auto; flex-direction: column; gap: 2px; min-width: 0; }
+.ui-drawer__header-content { display: flex; flex: 1 1 auto; min-width: 0; }
+.ui-drawer__description { margin: 0; color: var(--muted); font-size: var(--text-support); line-height: var(--leading-ui); }
+.ui-drawer__actions { display: flex; align-items: center; gap: var(--space-1); margin-left: auto; }
+
+/* The side sheet (`side="end"`), as Base UI's side drawer example: it follows the swipe through
+   --drawer-swipe-movement-x and bleeds 3rem past the right edge (none on iOS, whose viewport pads it instead). Its
+   frame stays still: the header and footer keep their place and the body between them scrolls. */
+.ui-drawer-viewport--end { --viewport-padding: 0px; align-items: stretch; justify-content: flex-end; padding: var(--viewport-padding); }
+.ui-drawer--end { --drawer-width: 40rem; display: flex; width: calc(var(--drawer-width) + var(--bleed)); max-width: calc(100vw - 3rem + var(--bleed)); height: 100%; max-height: none; margin: 0 calc(-1 * var(--bleed)) 0 0; padding: 0 var(--bleed) 0 0; border-top: 0; border-left: 1px solid var(--strong-border); border-radius: 0; box-shadow: -8px 0 28px rgb(0 0 0 / 14%); overflow: hidden; transform: translateX(var(--drawer-swipe-movement-x)); }
+.ui-drawer--end:is([data-starting-style], [data-ending-style]) { transform: translateX(calc(100% - var(--bleed) + var(--viewport-padding) + 2px)); }
+.ui-drawer--end .ui-drawer__content { flex: 1 1 auto; gap: 0; max-width: none; height: 100%; min-height: 0; margin: 0; }
+.ui-drawer--end .ui-drawer__header { flex: none; align-items: flex-start; padding: var(--space-4) var(--space-5); border-bottom: 1px solid var(--border); }
+.ui-drawer__body { flex: 1 1 auto; min-height: 0; padding: var(--space-5); overflow-y: auto; overscroll-behavior: contain; }
+.ui-drawer__footer { flex: none; padding: var(--space-3) var(--space-5) calc(var(--space-3) + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--border); background: var(--surface); }
+@supports (-webkit-touch-callout: none) {
+  .ui-drawer-viewport--end { --viewport-padding: 0.625rem; }
+  .ui-drawer--end { --bleed: 0px; border: 1px solid var(--strong-border); border-radius: var(--radius-card); }
+}
+@media (max-width: 600px) { .ui-drawer--end { max-width: calc(100vw + var(--bleed)); } }
+@media (prefers-reduced-motion: reduce) { .ui-drawer, .ui-drawer-backdrop { transition-duration: 0ms; } }
+}

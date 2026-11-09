@@ -1,0 +1,17 @@
+@layer base, ui; /* layer order, whichever stylesheet loads first */
+/* Slider (Slider.tsx); part of the ui layer. The control is as tall as the other controls of its row, the track a
+   4px line through its middle, the value in tabular figures after it. */
+@layer ui {
+.ui-slider { display: flex; align-items: center; gap: var(--space-3); width: 100%; min-width: 0; height: var(--control-height); }
+.ui-slider__control { display: flex; flex: 1 1 auto; align-items: center; min-width: 0; height: 100%; touch-action: none; user-select: none; cursor: pointer; }
+.ui-slider__track { position: relative; width: 100%; height: 4px; border-radius: 999px; background: var(--strong-border); user-select: none; }
+.ui-slider__fill { border-radius: inherit; background: var(--accent); user-select: none; }
+.ui-slider__thumb { box-sizing: border-box; width: 16px; height: 16px; border: 1px solid var(--accent); border-radius: 50%; background: var(--surface); box-shadow: 0 1px 2px rgb(0 0 0 / 14%); user-select: none; transition: scale 120ms var(--ease-out); }
+.ui-slider__thumb:has(:focus-visible) { outline: 2px solid var(--focus-color); outline-offset: 2px; }
+.ui-slider__thumb[data-dragging] { scale: 1.12; }
+.ui-slider__value { flex: none; min-width: 2.5ch; color: var(--text); font-size: var(--text-control); font-variant-numeric: tabular-nums; line-height: var(--leading-ui); text-align: end; }
+.ui-slider[data-disabled] .ui-slider__control { cursor: not-allowed; }
+.ui-slider[data-disabled] :is(.ui-slider__fill, .ui-slider__thumb) { opacity: .5; }
+.ui-slider[data-disabled] .ui-slider__value { color: var(--muted); }
+@media (prefers-reduced-motion: reduce) { .ui-slider__thumb { transition: none; } }
+}

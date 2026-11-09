@@ -1,0 +1,12 @@
+{
+  "schema": "gray-public-source/1",
+  "image": "gray-assistant",
+  "image_repository": "ghcr.io/gray-ai-dev/gray-assistant",
+  "image_ref": "ghcr.io/gray-ai-dev/gray-assistant:ea43546d9b18@sha256:466de3fdb5fc189bfcdafcac30767fcb2a331c321e4a694a80c87904c0b9a75e",
+  "tag": "v1.2.0-ea43546d9b18",
+  "version": "v1.2.0",
+  "commit": "ea43546d9b186dbbc214b750426b6916bcfd68ba",
+  "commit_time": 1794223520,
+  "files": 458,
+  "npm_packages_bundled": 282
+}

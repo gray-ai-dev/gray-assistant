@@ -1,0 +1,11 @@
+@layer base, ui; /* layer order, whichever stylesheet loads first */
+/* Picker options (Picker.tsx): a label over a muted detail line, with a note at the end of the row. The trigger,
+   popup and search row are SelectField's (select-field.css). Part of the ui layer (see ui.css). */
+@layer ui {
+.ui-picker__option-text { display: grid; flex: 1 1 auto; min-width: 0; }
+.ui-picker__option-label { font-weight: var(--weight-medium); overflow-wrap: anywhere; }
+.ui-picker__option-detail { color: var(--muted); font-size: var(--text-meta); overflow-wrap: anywhere; }
+.ui-picker__option-meta { flex-shrink: 0; color: var(--muted); font-size: var(--text-meta); }
+.ui-picker__option[data-selected] :is(.ui-picker__option-detail, .ui-picker__option-meta) { color: var(--muted); }
+.ui-picker__note { flex-shrink: 0; margin: 8px 10px; color: var(--muted); font-size: var(--text-support); line-height: var(--leading-body); overflow-wrap: anywhere; }
+}

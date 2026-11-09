@@ -1,0 +1,10 @@
+@layer base, ui; /* layer order, whichever stylesheet loads first */
+/* The file field (File.tsx); part of the ui layer. A dashed frame says it takes a drop. */
+@layer ui {
+.ui-file { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3); min-width: 0; padding: var(--space-2); border: 1px dashed var(--strong-border); border-radius: var(--radius); background: var(--surface); transition: border-color 120ms, background-color 120ms; }
+.ui-file[data-drag="accept"] { border-color: var(--focus-color); border-style: solid; background: var(--muted-surface); }
+.ui-file[data-drag="reject"] { border-color: var(--red); }
+.ui-file[data-disabled] { background: var(--muted-surface); cursor: not-allowed; }
+.ui-file__text { flex: 1 1 8rem; min-width: 0; color: var(--muted); font-size: var(--text-support); line-height: var(--leading-ui); overflow-wrap: anywhere; }
+.ui-file__refused { flex: 1 0 100%; margin: 0; color: var(--red); font-size: var(--text-support); line-height: var(--leading-body); }
+}

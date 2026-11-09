@@ -1,0 +1,53 @@
+@layer base, ui; /* layer order, whichever stylesheet loads first */
+/* Charts (Chart.tsx, Stat trends, Breakdown); part of the ui layer. Monochrome series with one status tone; the plot
+   has a fixed height, so the page does not move when the chart code arrives. */
+@layer ui {
+.ui-chart { display: flex; flex-direction: column; gap: 12px; min-width: 0; margin: 0; }
+.ui-chart__head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 16px; color: var(--text); font-size: var(--text-label); font-weight: var(--weight-medium); line-height: var(--leading-ui); }
+.ui-chart__legend { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; color: var(--muted); font-size: var(--text-meta); font-weight: var(--weight-body); }
+.ui-chart__key { display: inline-flex; align-items: center; gap: 6px; }
+.ui-chart__swatch { width: 10px; height: 10px; border-radius: 2px; background: var(--chart-1); }
+.ui-chart__swatch[data-kind="line"] { height: 2px; border-radius: 1px; }
+.ui-chart__swatch[data-tone="secondary"] { background: var(--chart-2); }
+.ui-chart__swatch[data-tone="tertiary"] { background: var(--chart-3); }
+.ui-chart__swatch[data-tone="danger"] { background: var(--red); }
+.ui-chart__plot { min-width: 0; font-variant-numeric: tabular-nums; }
+.ui-chart__plot :focus { outline: none; }
+.ui-chart__readout { display: flex; flex-direction: column; gap: 2px; min-width: 10rem; padding: 8px 10px; border: 1px solid var(--strong-border); border-radius: var(--radius); background: var(--surface); color: var(--text); font-size: var(--text-meta); line-height: var(--leading-ui); box-shadow: 0 6px 18px rgb(0 0 0 / 10%); }
+.ui-chart__readout-title { font-weight: var(--weight-medium); }
+.ui-chart__readout-value { margin-left: auto; padding-left: 16px; font-variant-numeric: tabular-nums; }
+
+/* A report card: a chart or a breakdown on its own bordered surface. */
+.ui-chart-card { min-width: 0; padding: var(--space-5); border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--surface); }
+
+/* Stat trend: the change against the previous period and a sparkline. */
+.ui-stat__delta { display: inline-flex; align-items: center; gap: 4px; width: fit-content; color: var(--muted); font-size: var(--text-meta); font-variant-numeric: tabular-nums; line-height: var(--leading-ui); }
+.ui-stat__delta[data-tone="good"] { color: var(--green); }
+.ui-stat__delta[data-tone="bad"] { color: var(--red); }
+.ui-stat__delta > svg { flex: none; }
+/* At the foot of the card, so the trends in one row line up whatever sits above them. */
+.ui-stat__trend { height: 32px; margin-top: auto; }
+/* Cards sit closer, and two to a row on a phone, so the key figures fit one screen. */
+.ui-stat-group.ui-stat-group--cards { --stat-gap: var(--space-4); --stat-min: 9rem; }
+.ui-stat-group--cards > .ui-stat { padding: var(--space-4) var(--space-5); border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--surface); }
+/* Two to a row leaves an odd card alone at the end; the first, the headline figure, takes the whole row instead. */
+@media (max-width: 30rem) { .ui-stat-group--cards > .ui-stat:first-child:nth-last-child(odd) { grid-column: 1 / -1; } }
+
+/* Breakdown: a ranked list, each row a label, its value and a meter of its share. */
+.ui-breakdown { display: flex; flex-direction: column; gap: 12px; min-width: 0; margin: 0; padding: 0; list-style: none; }
+.ui-breakdown__head { color: var(--text); font-size: var(--text-label); font-weight: var(--weight-medium); line-height: var(--leading-ui); }
+.ui-breakdown__row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 12px; align-items: baseline; }
+.ui-breakdown__label { min-width: 0; overflow: hidden; color: var(--text); font-size: var(--text-control); line-height: var(--leading-ui); text-overflow: ellipsis; white-space: nowrap; }
+.ui-breakdown__label a { color: inherit; }
+.ui-breakdown__value { color: var(--text); font-size: var(--text-control); font-variant-numeric: tabular-nums; line-height: var(--leading-ui); text-align: end; }
+.ui-breakdown__share { margin-left: 6px; color: var(--muted); font-size: var(--text-meta); }
+.ui-breakdown__meter { grid-column: 1 / -1; }
+.ui-breakdown__track { height: 6px; overflow: hidden; border-radius: 999px; background: var(--muted-surface); }
+.ui-breakdown__bar { height: 100%; border-radius: inherit; background: var(--chart-1); transition: width 300ms var(--ease-drawer); }
+.ui-breakdown__row[data-rest] .ui-breakdown__bar { background: var(--chart-3); }
+.ui-breakdown__row[data-muted] .ui-breakdown__label, .ui-breakdown__row[data-muted] .ui-breakdown__value { color: var(--muted); }
+.ui-breakdown__row[data-muted] .ui-breakdown__bar { background: var(--chart-3); }
+[data-tone="danger"] .ui-breakdown__bar { background: var(--red); }
+.ui-breakdown__detail { grid-column: 1 / -1; color: var(--muted); font-size: var(--text-meta); line-height: var(--leading-ui); }
+@media (prefers-reduced-motion: reduce) { .ui-breakdown__bar { transition: none; } }
+}

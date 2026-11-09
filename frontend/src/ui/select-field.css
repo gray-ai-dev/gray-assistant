@@ -1,0 +1,42 @@
+@layer base, ui; /* layer order, whichever stylesheet loads first */
+/* Select and combobox controls; part of the ui layer (see ui.css). */
+@layer ui {
+.select-field { display: inline-flex; min-width: 0; max-width: 100%; vertical-align: middle; }
+.select-trigger { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: 100%; min-width: 0; height: var(--control-height); padding: 0 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); font-size: var(--text-control); line-height: var(--leading-ui); text-align: left; cursor: pointer; }
+.select-trigger > svg { flex-shrink: 0; }
+@media (hover: hover) and (pointer: fine) { .select-trigger:where(:not(:disabled)):hover { border-color: var(--strong-border); } }
+.select-trigger[data-popup-open], .select-trigger:focus-visible { border-color: var(--focus-color); outline: none; }
+.select-trigger:disabled { background: var(--muted-surface); color: var(--muted); cursor: not-allowed; opacity: 1; }
+.select-trigger[aria-invalid="true"] { border-color: var(--red); }
+.select-value { min-width: 0; overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
+.select-positioner { z-index: 250; max-width: calc(100vw - 16px); }
+.select-popup { display: flex; flex-direction: column; width: max(var(--anchor-width), 12rem); max-width: min(var(--available-width), calc(100vw - 16px)); max-height: min(var(--available-height), 25rem); padding: 4px; border: 1px solid var(--strong-border); border-radius: var(--radius); background: var(--surface); color: var(--text); font-size: var(--text-control); line-height: var(--leading-ui); box-shadow: 0 6px 18px rgb(0 0 0 / 10%); }
+/* The popup grows from its trigger (Base UI sets --transform-origin and the starting and ending
+   states): quick in, quicker out. With reduced motion it only fades. */
+.select-popup { transform-origin: var(--transform-origin); transition: opacity 150ms var(--ease-out), transform 150ms var(--ease-out); }
+.select-popup:is([data-starting-style], [data-ending-style]) { opacity: 0; transform: scale(0.97); }
+.select-popup[data-ending-style] { transition-duration: 100ms; }
+@media (prefers-reduced-motion: reduce) { .select-popup:is([data-starting-style], [data-ending-style]) { transform: none; } }
+.select-list { min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: var(--strong-border) transparent; }
+.select-option { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 36px; padding: 8px 10px; border-radius: 4px; cursor: default; outline: none; user-select: none; }
+.select-option[data-highlighted] { background: var(--muted-surface); }
+.select-option[data-selected] { color: var(--accent); }
+.select-option[data-disabled] { color: var(--muted); opacity: .6; cursor: not-allowed; }
+.select-option-label { min-width: 0; overflow-wrap: anywhere; }
+.select-check { display: flex; flex-shrink: 0; }
+/* AutocompleteInput suggestions: the value, then a muted label (e.g. a model's display name). */
+.ui-suggestion { justify-content: flex-start; }
+.ui-suggestion__mono { font-family: var(--font-mono); word-spacing: normal; }
+.ui-suggestion__label { min-width: 0; margin-left: auto; overflow: hidden; color: var(--muted); font-size: var(--text-meta); text-overflow: ellipsis; white-space: nowrap; }
+.select-group-label { padding: 10px 10px 5px; color: var(--muted); font-size: var(--text-meta); line-height: var(--leading-ui); }
+.select-search { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-bottom: 4px; padding: 4px 10px; border-bottom: 1px solid var(--border); color: var(--muted); }
+.select-search:focus-within { color: var(--text); border-bottom-color: var(--focus-color); }
+.select-search > svg { flex-shrink: 0; }
+:root .select-search-input { width: 100%; min-width: 0; min-height: 36px; border: 0; border-radius: 0; padding: 6px 0; background: transparent; font-size: var(--text-control); line-height: var(--leading-ui); outline: none; }
+.select-empty { margin: 0; padding: 16px 10px; color: var(--muted); font-size: var(--text-support); line-height: var(--leading-body); }
+.select-empty:empty { padding: 0; }
+@media (max-width: 600px) {
+  :root .select-option { min-height: 44px; }
+  :root .select-search-input { min-height: 44px; font-size: max(16px, var(--text-control)); }
+}
+}

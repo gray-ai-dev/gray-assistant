@@ -1,0 +1,17 @@
+@layer base, ui; /* layer order, whichever stylesheet loads first */
+/* Sortable column headers and row headers; part of the ui layer (see ui.css). */
+@layer ui {
+.ui-sort-button { display: inline-flex; align-items: center; vertical-align: middle; gap: 5px; min-height: 28px; margin-block: -4px; padding: 0; border: 0; border-radius: 4px; background: transparent; color: inherit; font: inherit; line-height: inherit; white-space: normal; text-align: inherit; cursor: pointer; }
+.ui-sort-button > svg { flex-shrink: 0; }
+/* A header asked to keep one line (`nowrap`) keeps it in its button too. */
+.ui-cell--nowrap .ui-sort-button { white-space: nowrap; }
+[aria-sort="ascending"] > .ui-sort-button, [aria-sort="descending"] > .ui-sort-button { color: var(--text); }
+@media (hover: hover) and (pointer: fine) { .ui-sort-button:hover { color: var(--text); } }
+.ui-sort-button:focus-visible { outline: 2px solid var(--focus-color); outline-offset: 2px; }
+
+.ui-table th.ui-row-header { padding: 11px var(--space-3); background: transparent; color: var(--text); font-size: var(--text-data); font-weight: var(--weight-medium); text-align: left; white-space: normal; vertical-align: middle; }
+.ui-table tbody tr:last-child > th.ui-row-header { border-bottom: 0; }
+/* At the row's edges a row header keeps the table's edge padding, so it lines up with its column header. */
+.ui-table th.ui-row-header:first-child { padding-left: var(--space-4); }
+.ui-table th.ui-row-header:last-child { padding-right: var(--space-4); }
+}

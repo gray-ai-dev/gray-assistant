@@ -1,0 +1,15 @@
+# The build context is the repository root; the image's stages read workers/ (the bundle stage installs and bundles
+# it, the final stage copies relay-kit's built page) and bundle.mjs, nothing else.
+*
+!workers
+!deploy/relay/image/bundle.mjs
+**/node_modules
+**/.wrangler
+**/dist
+**/target
+**/.turbo
+**/.cache
+**/.env
+**/.dev.vars
+**/secrets
+**/credentials.json*

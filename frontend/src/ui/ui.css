@@ -1,0 +1,467 @@
+@layer base, ui; /* layer order, whichever stylesheet loads first */
+/* Gray design system. Every page composes these components; pages pass data and
+   arrange layout, they do not restyle controls. Tokens live on :root in
+   styles.css. The whole file sits in the `ui` layer, above element defaults. */
+@layer ui {
+
+/* ---------- Layout ---------- */
+.ui-page { width: min(100%, 1184px); margin: 0 auto; padding: 40px 32px 64px; }
+.ui-page--narrow { width: min(100%, 880px); }
+.ui-page--wide { width: min(100%, 1440px); }
+
+.ui-page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-6); margin-bottom: var(--space-7); }
+.ui-page-header__text { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.ui-page-header__back { display: inline-flex; align-items: center; gap: 6px; width: fit-content; margin-bottom: var(--space-2); color: var(--muted); font-size: var(--text-control); font-weight: var(--weight-medium); }
+.ui-page-header__title { margin: 0; font-size: var(--text-page); font-weight: var(--weight-title); line-height: var(--leading-heading); letter-spacing: normal; overflow-wrap: anywhere; text-wrap: balance; }
+.ui-page-header__description { margin: 0; max-width: 72ch; color: var(--muted); font-size: var(--text-body); line-height: var(--leading-body); }
+.ui-page-header__actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); flex-shrink: 0; }
+
+.ui-section { min-width: 0; }
+.ui-section-header { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: var(--space-3) var(--space-6); margin-bottom: var(--space-4); }
+.ui-section-header__text { display: flex; flex: 1 1 16rem; flex-direction: column; gap: 6px; min-width: 0; }
+.ui-section-header__title { display: flex; align-items: center; gap: var(--space-2); margin: 0; font-size: var(--text-section); font-weight: var(--weight-heading); line-height: var(--leading-snug); letter-spacing: normal; }
+.ui-section-header__title > svg { flex-shrink: 0; color: var(--muted); }
+.ui-section-header--sm .ui-section-header__title { font-size: var(--text-subsection); letter-spacing: normal; }
+.ui-section-header__description { margin: 0; max-width: 75ch; color: var(--muted); font-size: var(--text-support); line-height: var(--leading-body); }
+.ui-section-header__actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--space-2); flex-shrink: 0; max-width: 100%; }
+
+.ui-panel { min-width: 0; border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--surface); }
+.ui-panel > .ui-section-header { margin: 0; padding: var(--space-4) var(--space-5); border-bottom: 1px solid var(--border); align-items: center; }
+.ui-panel > .ui-section-header:last-child { border-bottom: 0; }
+.ui-panel__body { padding: var(--space-5); }
+.ui-panel__body--flush { padding: 0; }
+.ui-panel--muted { background: var(--muted-surface); }
+
+.ui-stack { display: flex; flex-direction: column; min-width: 0; }
+.ui-inline { display: flex; flex-wrap: wrap; align-items: center; min-width: 0; }
+.ui-inline--nowrap { flex-wrap: nowrap; }
+.ui-inline--align-start { align-items: flex-start; }
+.ui-inline--align-end { align-items: flex-end; }
+.ui-inline--align-baseline { align-items: baseline; }
+.ui-inline--align-stretch { align-items: stretch; }
+.ui-inline--justify-end { justify-content: flex-end; }
+.ui-inline--justify-between { justify-content: space-between; }
+.ui-inline--justify-center { justify-content: center; }
+.ui-grow { flex: 1 1 0; min-width: 0; }
+.ui-gap-0 { gap: 0; }
+.ui-gap-1 { gap: var(--space-1); }
+.ui-gap-2 { gap: var(--space-2); }
+.ui-gap-3 { gap: var(--space-3); }
+.ui-gap-4 { gap: var(--space-4); }
+.ui-gap-5 { gap: var(--space-5); }
+.ui-gap-6 { gap: var(--space-6); }
+.ui-gap-7 { gap: var(--space-7); }
+.ui-gap-8 { gap: var(--space-8); }
+
+.ui-form-grid { display: grid; grid-template-columns: repeat(var(--ui-columns, 2), minmax(0, 1fr)); gap: var(--space-4) var(--space-5); align-items: start; }
+.ui-form-grid--auto { grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr)); }
+.ui-form-grid > .ui-span-all { grid-column: 1 / -1; }
+
+.ui-split { display: grid; grid-template-columns: minmax(0, 1fr) var(--ui-aside, 280px); gap: var(--space-7); align-items: start; }
+
+/* ---------- Text ---------- */
+.ui-text { margin: 0; color: var(--text); font-size: var(--text-body); line-height: var(--leading-body); }
+.ui-text--support { font-size: var(--text-support); }
+.ui-text--meta { font-size: var(--text-meta); line-height: var(--leading-snug); }
+.ui-text--micro { font-size: var(--text-micro); line-height: var(--leading-ui); }
+.ui-text--muted { color: var(--muted); }
+.ui-text--success { color: var(--green); }
+.ui-text--warning { color: var(--amber); }
+.ui-text--danger { color: var(--red); }
+.ui-text--strong { font-weight: var(--weight-strong); }
+.ui-text--medium { font-weight: var(--weight-medium); }
+.ui-text--mono { font-family: var(--font-mono); word-spacing: normal; font-size: var(--text-code); overflow-wrap: anywhere; }
+.ui-text--numeric { }
+.ui-text--measure { max-width: 75ch; }
+.ui-text--pre-wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+.ui-text--truncate { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-link { width: fit-content; color: var(--accent); line-height: var(--leading-ui); text-decoration: underline; text-decoration-color: var(--strong-border); text-underline-offset: 3px; }
+@media (hover: hover) and (pointer: fine) { .ui-link:hover { text-decoration-color: currentColor; } }
+.ui-link--muted { color: var(--muted); }
+.ui-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+
+/* ---------- Buttons ---------- */
+.ui-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; flex-shrink: 0; height: var(--control-height); min-width: 0; padding: 0 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); font: inherit; font-size: var(--text-control); font-weight: var(--weight-medium); line-height: var(--leading-snug); letter-spacing: normal; text-decoration: none; white-space: nowrap; cursor: pointer; -webkit-tap-highlight-color: transparent; transition: background-color .15s, border-color .15s, color .15s, transform 160ms var(--ease-out); }
+.ui-button > svg { flex-shrink: 0; }
+/* Press feedback: a slight give the moment it is pressed, on every enabled button except text-styled ones in running text. */
+.ui-button:where(:not(:disabled, [data-disabled], [aria-disabled="true"], .ui-button--inline)):active { transform: scale(0.97); }
+@media (prefers-reduced-motion: reduce) { .ui-button:active { transform: none; } }
+.ui-button--sm { height: var(--control-height-sm); padding: 0 12px; }
+/* A word in display type: the sentence's size, weight and tracking, one line tall. */
+.ui-button--display { height: auto; padding: .03em .22em; border: 0; font-size: inherit; font-weight: inherit; line-height: inherit; letter-spacing: inherit; vertical-align: baseline; }
+.ui-button--block { width: 100%; }
+.ui-button--icon { width: var(--control-height); padding: 0; }
+.ui-button--icon.ui-button--sm { width: var(--control-height-sm); }
+@media (hover: hover) and (pointer: fine) { .ui-button:where(:not(:disabled, [data-disabled], [aria-disabled="true"])):hover { background: var(--muted-surface); border-color: var(--strong-border); text-decoration: none; } }
+.ui-button--primary { background: var(--accent); border-color: var(--accent); color: var(--accent-foreground); }
+@media (hover: hover) and (pointer: fine) { .ui-button--primary:where(:not(:disabled, [data-disabled], [aria-disabled="true"])):hover { background: var(--accent-hover); border-color: var(--accent-hover); } }
+.ui-button--ghost { border-color: transparent; background: transparent; }
+.ui-button--danger { color: var(--red); }
+@media (hover: hover) and (pointer: fine) { .ui-button--danger:where(:not(:disabled, [data-disabled], [aria-disabled="true"])):hover { border-color: color-mix(in srgb, var(--red) 45%, var(--border)); background: color-mix(in srgb, var(--red) 6%, var(--surface)); } }
+/* A text-styled action. It keeps the control height so it lines up with
+   neighbouring controls; inside running text use Button `inline`. */
+.ui-button--link { border-color: transparent; background: transparent; padding: 0 2px; color: var(--accent); text-decoration: underline; text-decoration-color: var(--strong-border); text-underline-offset: 3px; }
+@media (hover: hover) and (pointer: fine) { .ui-button--link:where(:not(:disabled, [data-disabled], [aria-disabled="true"])):hover { background: transparent; border-color: transparent; text-decoration-color: currentColor; } }
+.ui-button--inline { height: auto; padding: 0; border: 0; font-size: inherit; line-height: inherit; vertical-align: baseline; }
+.ui-button--wrap { height: auto; min-height: var(--control-height); padding-block: 7px; justify-content: flex-start; text-align: start; white-space: normal; }
+.ui-button--wrap.ui-button--sm { min-height: var(--control-height-sm); padding-block: 5px; }
+.ui-button:disabled, .ui-button[data-disabled], .ui-button[aria-disabled="true"] { cursor: not-allowed; opacity: .55; }
+.ui-button[aria-busy="true"] { cursor: progress; }
+.ui-button:focus-visible { outline: 2px solid var(--focus-color); outline-offset: 2px; }
+/* A full ring with a quarter arc on it: still (a screenshot, reduced motion) it reads as progress, not as a letter C. */
+.ui-spinner { flex: none; width: 14px; height: 14px; border: 2px solid color-mix(in srgb, currentColor 25%, transparent); border-top-color: currentColor; border-radius: 50%; animation: ui-spin .8s linear infinite; }
+@keyframes ui-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .ui-spinner { animation-duration: 2.4s; } }
+.ui-skeleton { display: block; min-width: 0; animation: ui-skeleton-reveal 0s linear .4s both; }
+.ui-skeleton__shape { display: grid; gap: var(--space-2); }
+.ui-skeleton__bar { display: block; height: .875rem; border-radius: 4px; background: var(--muted-surface); }
+.ui-skeleton--text .ui-skeleton__bar:last-child:not(:only-child) { width: 72%; }
+.ui-skeleton--rows .ui-skeleton__shape { gap: 1px; }
+.ui-skeleton--rows .ui-skeleton__bar { height: var(--skeleton-row, 44px); border-radius: 0; }
+.ui-skeleton--rows .ui-skeleton__bar:first-child { border-top-left-radius: var(--radius); border-top-right-radius: var(--radius); }
+.ui-skeleton--rows .ui-skeleton__bar:last-child { border-bottom-left-radius: var(--radius); border-bottom-right-radius: var(--radius); }
+.ui-skeleton--block .ui-skeleton__bar { height: var(--skeleton-height); border-radius: var(--radius-card); }
+@keyframes ui-skeleton-reveal { from { visibility: hidden; } to { visibility: visible; } }
+
+/* ---------- Fields and inputs ---------- */
+.ui-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ui-field__label-row { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-2); }
+.ui-field__label { color: var(--text); font-size: var(--text-label); font-weight: var(--weight-medium); line-height: var(--leading-ui); }
+.ui-field__optional { color: var(--muted); font-weight: var(--weight-body); }
+.ui-field__aside { color: var(--muted); font-size: var(--text-meta); line-height: var(--leading-ui); }
+.ui-field__hint { margin: 0; color: var(--muted); font-size: var(--text-support); line-height: var(--leading-body); }
+.ui-field__error { margin: 0; color: var(--red); font-size: var(--text-support); line-height: var(--leading-body); }
+.ui-field .select-field, .ui-grow > .select-field, .ui-field .ui-input, .ui-field .ui-textarea { display: flex; width: 100%; }
+/* A flex date/time input keeps its picker icon beside the value; block puts it at the end. */
+.ui-field .ui-input:is([type="date"], [type="datetime-local"], [type="time"], [type="month"], [type="week"]) { display: block; }
+
+.ui-input, .ui-textarea { display: block; width: 100%; min-width: 0; margin: 0; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); font: inherit; font-size: var(--text-control); line-height: var(--leading-ui); letter-spacing: normal; caret-color: var(--accent); transition: border-color .15s; }
+.ui-input { height: var(--control-height); padding: 0 12px; }
+.ui-input--sm { height: var(--control-height-sm); }
+/* Display: the surrounding type with no box; the caret and the selection say it is a field. */
+.ui-input--display { height: auto; padding: 0; border: 0; background: none; font-size: inherit; font-weight: inherit; line-height: inherit; letter-spacing: inherit; text-overflow: ellipsis; }
+.ui-input--display::-webkit-search-cancel-button { display: none; }
+/* Blank: a filled gap one line tall inside display type. */
+.ui-input--blank { display: inline-block; width: auto; height: auto; padding: 0 .22em; border: 0; background: var(--muted-surface); font-size: inherit; font-weight: inherit; line-height: inherit; letter-spacing: inherit; vertical-align: baseline; }
+.ui-input--mono, .ui-textarea--mono { font-family: var(--font-mono); word-spacing: normal; font-size: var(--text-code); }
+.ui-input--number { font-variant-numeric: tabular-nums; }
+.ui-textarea { min-height: 84px; padding: 8px 12px; resize: vertical; }
+.ui-textarea--lg { min-height: 190px; padding: 14px 16px; font-size: var(--text-body); line-height: 1.7; }
+.ui-input::placeholder, .ui-textarea::placeholder { color: var(--placeholder); opacity: 1; }
+@media (hover: hover) and (pointer: fine) { .ui-input:where(:not(:disabled)):hover, .ui-textarea:where(:not(:disabled)):hover { border-color: var(--strong-border); } }
+.ui-input:focus, .ui-textarea:focus, .ui-input-group:focus-within { border-color: var(--focus-color); outline: none; }
+.ui-input:is([aria-invalid="true"], [data-invalid]), .ui-textarea:is([aria-invalid="true"], [data-invalid]) { border-color: var(--red); }
+.ui-input:disabled, .ui-textarea:disabled, .ui-input[readonly], .ui-textarea[readonly] { background: var(--muted-surface); color: var(--muted); cursor: not-allowed; }
+.ui-input[readonly], .ui-textarea[readonly] { cursor: text; }
+
+.ui-input-group { position: relative; display: flex; align-items: center; min-width: 0; width: 100%; }
+.ui-input-group > svg { position: absolute; left: 11px; color: var(--muted); pointer-events: none; }
+.ui-input-group > .ui-input { padding-left: 36px; }
+.ui-input-group.ui-input-group--display > svg { position: static; flex: none; width: .62em; height: .62em; margin-right: .22em; color: var(--muted); }
+.ui-input-group--display > .ui-input { padding-left: 0; }
+.ui-input-group--display:focus-within { outline: none; }
+.ui-input--display:focus-visible, .ui-input--blank:focus-visible { outline: 2px solid var(--focus-color); outline-offset: 6px; }
+
+/* ---------- Checkbox, switch, radio ---------- */
+/* A checkbox or switch with its label and description: a Base UI field on a two-column grid. The label encloses the
+   control and its text and takes both columns (subgrid); the description sits under the text. */
+.ui-choice { display: inline-grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; align-items: center; min-width: 0; color: var(--text); font-size: var(--text-label); line-height: var(--leading-ui); }
+.ui-choice__label { display: grid; grid-template-columns: subgrid; grid-column: 1 / -1; align-items: center; min-height: var(--control-height-sm); cursor: pointer; }
+.ui-choice__text { min-width: 0; }
+.ui-choice__description { grid-column: 2; margin: -4px 0 4px; color: var(--muted); font-size: var(--text-support); line-height: var(--leading-body); }
+.ui-choice--between { display: grid; grid-template-columns: minmax(0, 1fr) auto; width: 100%; }
+.ui-choice--between > .ui-choice__label > .ui-choice__text { order: -1; }
+.ui-choice--between > .ui-choice__description { grid-column: 1; }
+.ui-choice[data-disabled] { color: var(--muted); }
+.ui-choice[data-disabled] > .ui-choice__label { cursor: not-allowed; }
+
+/* The box and its mark follow Base UI's own layout: a flex box, a flex indicator and a block icon, so the mark
+   never sits on a text baseline. */
+.ui-checkbox { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 16px; height: 16px; padding: 0; border: 1px solid var(--strong-border); border-radius: 4px; background: var(--surface); color: var(--accent-foreground); cursor: inherit; transition: background-color 120ms, border-color 120ms; }
+.ui-checkbox__mark { display: flex; transition: opacity 120ms var(--ease-out), scale 120ms var(--ease-out); }
+.ui-checkbox__mark > svg { display: block; }
+.ui-checkbox__mark:is([data-starting-style], [data-ending-style]) { opacity: 0; scale: .6; }
+.ui-checkbox[data-checked], .ui-checkbox[data-indeterminate] { border-color: var(--accent); background: var(--accent); }
+@media (hover: hover) and (pointer: fine) { .ui-choice__label:hover .ui-checkbox:not([data-checked], [data-indeterminate], [data-disabled]) { border-color: var(--focus-color); } }
+@media (prefers-reduced-motion: reduce) { .ui-checkbox__mark:is([data-starting-style], [data-ending-style]) { scale: 1; } }
+.ui-checkbox[data-disabled] { opacity: .5; }
+.ui-checkbox:focus-visible, .ui-switch:focus-visible { outline: 2px solid var(--focus-color); outline-offset: 2px; }
+
+.ui-switch { position: relative; display: inline-flex; align-items: center; flex-shrink: 0; width: 36px; height: 20px; padding: 2px; border: 0; border-radius: 999px; background: var(--strong-border); cursor: inherit; transition: background-color .15s; }
+.ui-switch[data-checked] { background: var(--accent); }
+.ui-switch__thumb { width: 16px; height: 16px; border-radius: 50%; background: var(--surface); box-shadow: 0 1px 2px rgb(0 0 0 / 20%); transition: translate 150ms var(--ease-in-out); }
+.ui-switch[data-checked] .ui-switch__thumb { translate: 16px 0; background: var(--accent-foreground); }
+.ui-switch[data-disabled] { opacity: .5; }
+@media (prefers-reduced-motion: reduce) { .ui-switch__thumb { transition: none; } }
+
+
+/* ---------- Segmented control and tabs ---------- */
+.ui-segmented { display: inline-flex; align-items: center; gap: 2px; width: fit-content; height: var(--control-height); padding: 2px; border-radius: var(--radius); background: var(--muted-surface); max-width: 100%; overflow-x: auto; }
+.ui-segmented--sm { height: var(--control-height-sm); }
+.ui-segmented__item { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 100%; padding: 0 10px; border: 0; border-radius: 4px; background: transparent; color: var(--muted); font: inherit; font-size: var(--text-control); font-weight: var(--weight-medium); line-height: var(--leading-ui); white-space: nowrap; cursor: pointer; }
+@media (hover: hover) and (pointer: fine) { .ui-segmented__item:where(:not(:disabled)):hover { color: var(--text); } }
+.ui-segmented__item[aria-pressed="true"] { background: var(--surface); color: var(--text); box-shadow: 0 1px 3px rgb(0 0 0 / 8%); }
+.ui-segmented__item:is(:disabled, [data-disabled]) { cursor: not-allowed; opacity: .55; }
+.ui-segmented__item:focus-visible { outline: 2px solid var(--focus-color); outline-offset: -2px; }
+
+/* Tabs: a Base UI ScrollArea viewport. An edge with more tabs past it fades over --ui-tabs-fade (Base UI sets the
+   distance left to scroll as --scroll-area-overflow-x-start/end), so a cut-off strip says it goes on. */
+.ui-tabs-area { min-width: 0; }
+.ui-tabs { --ui-tabs-fade: 40px; display: flex; align-items: stretch; gap: var(--space-1); border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: none;
+  mask-image: linear-gradient(to right, transparent 0, #000 min(var(--ui-tabs-fade), var(--scroll-area-overflow-x-start, 0px)), #000 calc(100% - min(var(--ui-tabs-fade), var(--scroll-area-overflow-x-end, 0px))), transparent 100%); }
+.ui-tabs__item { display: inline-flex; align-items: center; gap: var(--space-2); flex: 0 0 auto; min-height: 43px; margin-bottom: -1px; padding: 0 var(--space-4); border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font: inherit; font-size: var(--text-control); font-weight: var(--weight-medium); line-height: var(--leading-ui); text-decoration: none; white-space: nowrap; cursor: pointer; }
+@media (hover: hover) and (pointer: fine) { .ui-tabs__item:hover { color: var(--text); text-decoration: none; } }
+.ui-tabs__item:is([aria-current="page"], [data-pressed]) { border-bottom-color: var(--accent); color: var(--text); }
+.ui-tabs__item:is(:disabled, [data-disabled]) { cursor: not-allowed; opacity: .55; }
+.ui-tabs__item:focus-visible { outline: 2px solid var(--focus-color); outline-offset: -3px; }
+.ui-tabs__count { padding: 0 6px; border-radius: 4px; background: var(--muted-surface); color: var(--muted); font-size: var(--text-micro); }
+
+/* SectionNav: a band under the app bar, on its surface and its edges (24px, 16px on phones), with the section's name
+   before its tabs, set apart by a short rule like the app bar's before its account controls, so it never reads as a
+   tab. The band's rule is the strip's: the current tab's underline stands on it. On a phone the name takes its own
+   line above the strip, which then runs edge to edge, its first label on the name's edge. */
+.ui-section-nav { display: flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-6); border-bottom: 1px solid var(--border); background: var(--surface); }
+.ui-section-nav__title { display: flex; flex: none; align-items: center; min-height: 24px; padding-right: var(--space-4); border-right: 1px solid var(--border); color: var(--text); font-size: var(--text-control); font-weight: var(--weight-medium); line-height: var(--leading-ui); white-space: nowrap; }
+.ui-section-nav .ui-tabs-area { flex: 1 1 auto; }
+.ui-section-nav .ui-tabs { border-bottom: 0; }
+.ui-section-nav .ui-tabs__item { margin-bottom: 0; }
+@media (max-width: 600px) {
+  .ui-section-nav { flex-direction: column; align-items: stretch; gap: 0; padding: 0 var(--space-4); }
+  .ui-section-nav__title { min-height: 0; padding-top: var(--space-3); padding-right: 0; border-right: 0; color: var(--muted); font-size: var(--text-meta); }
+  .ui-section-nav .ui-tabs-area { margin-inline: calc(-1 * var(--space-4)); }
+}
+
+/* ---------- Badges, notices, empty states ---------- */
+.ui-badge { display: inline-flex; align-items: center; gap: 5px; width: fit-content; padding: 0 6px; border: 1px solid transparent; border-radius: 9999px; background: var(--muted-surface); color: var(--muted); font-size: var(--text-micro); font-weight: var(--weight-medium); line-height: var(--leading-body); white-space: nowrap; vertical-align: middle; }
+.ui-badge--outline { border-color: var(--border); background: transparent; }
+.ui-badge--success { color: var(--green); background: color-mix(in srgb, var(--green) 9%, var(--surface)); }
+.ui-badge--warning { color: var(--amber); background: color-mix(in srgb, var(--amber) 10%, var(--surface)); }
+.ui-badge--danger { color: var(--red); background: color-mix(in srgb, var(--red) 8%, var(--surface)); }
+.ui-badge--info { color: var(--text); background: var(--accent-soft); }
+.ui-badge__dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+.ui-notice { display: flex; align-items: flex-start; gap: var(--space-3); padding: var(--space-3) var(--space-4); border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--muted-surface); color: var(--text); font-size: var(--text-support); line-height: var(--leading-body); }
+.ui-notice__icon { display: flex; flex-shrink: 0; height: calc(var(--text-support) * 1.625); align-items: center; color: var(--muted); }
+.ui-notice__body { display: flex; flex-direction: column; gap: 2px; flex: 1 1 0; min-width: 0; overflow-wrap: anywhere; }
+.ui-notice__title { font-weight: var(--weight-strong); }
+.ui-notice__body > p { margin: 0; color: inherit; }
+.ui-notice__actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); flex-shrink: 0; margin-block: calc((var(--text-support) * 1.625 - var(--control-height-sm)) / 2); }
+.ui-notice--warning { border-color: color-mix(in srgb, var(--amber) 35%, var(--border)); background: color-mix(in srgb, var(--amber) 7%, var(--surface)); }
+.ui-notice--warning .ui-notice__icon { color: var(--amber); }
+.ui-notice--danger { border-color: color-mix(in srgb, var(--red) 35%, var(--border)); background: color-mix(in srgb, var(--red) 6%, var(--surface)); }
+.ui-notice--danger .ui-notice__icon { color: var(--red); }
+.ui-notice--success { border-color: color-mix(in srgb, var(--green) 30%, var(--border)); background: color-mix(in srgb, var(--green) 6%, var(--surface)); }
+.ui-notice--success .ui-notice__icon { color: var(--green); }
+
+.ui-empty { display: flex; flex-direction: column; align-items: center; gap: var(--space-2); padding: var(--space-8) var(--space-4); text-align: center; }
+.ui-empty--compact { padding: var(--space-7) var(--space-4); }
+.ui-empty__icon { display: flex; margin-bottom: var(--space-2); color: var(--muted); }
+.ui-empty__title { margin: 0; color: var(--text); font-size: var(--text-section); font-weight: var(--weight-heading); line-height: var(--leading-snug); letter-spacing: normal; }
+.ui-empty__description { margin: 0; max-width: 60ch; color: var(--muted); font-size: var(--text-support); line-height: var(--leading-body); }
+.ui-empty__actions { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--space-3); margin-top: var(--space-3); }
+
+/* ---------- Data display ---------- */
+.ui-description-list { display: flex; flex-direction: column; margin: 0; }
+.ui-description-list__item { display: grid; grid-template-columns: minmax(8rem, 12rem) minmax(0, 1fr); gap: var(--space-6); padding: 12px 0; border-bottom: 1px solid var(--border); }
+.ui-description-list__item:last-child { border-bottom: 0; }
+.ui-description-list dt { color: var(--muted); font-size: var(--text-label); line-height: var(--leading-ui); }
+.ui-description-list dd { margin: 0; min-width: 0; color: var(--text); font-size: var(--text-data); line-height: var(--leading-ui); overflow-wrap: anywhere; }
+.ui-description-list--compact .ui-description-list__item { grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-3); padding: 8px 0; }
+.ui-description-list--compact :is(dt, dd) { font-size: var(--text-meta); }
+.ui-description-list--compact dd { text-align: right; }
+
+/* Each column is at least --stat-min and at least 1/--stat-columns of the row, so a wide row holds that many and a
+   narrow one wraps to fewer. */
+.ui-stat-group { --stat-gap: var(--space-6); --stat-min: 12rem; display: grid; gap: var(--stat-gap);
+  grid-template-columns: repeat(auto-fit, minmax(max(min(100%, var(--stat-min)), calc((100% - (var(--stat-columns, 4) - 1) * var(--stat-gap)) / var(--stat-columns, 4))), 1fr)); }
+.ui-stat { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ui-stat__label { color: var(--muted); font-size: var(--text-label); line-height: var(--leading-ui); }
+.ui-stat__value { color: var(--text); font-size: var(--text-stat); font-weight: var(--weight-medium); line-height: var(--leading-heading); overflow-wrap: anywhere; }
+.ui-stat--sm .ui-stat__value { font-size: var(--text-section); }
+/* A value still read: one bar of the value's own line height, so the card keeps its size when the figure arrives. */
+.ui-stat__skeleton .ui-skeleton__bar { width: min(7rem, 100%); height: calc(var(--text-stat) * var(--leading-heading)); }
+.ui-stat--sm .ui-stat__skeleton .ui-skeleton__bar { height: calc(var(--text-section) * var(--leading-heading)); }
+.ui-stat__hint { margin: 0; color: var(--muted); font-size: var(--text-support); line-height: var(--leading-body); }
+
+.ui-table-wrap { position: relative; width: 100%; min-width: 0; overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius);
+  /* Tables fit their frame on desktop (headers may wrap). When a narrow screen
+     still needs sideways scrolling, edge shadows show there is more: the
+     surface-coloured covers scroll with the content and hide the shadows at
+     either end. */
+  background:
+    linear-gradient(to right, var(--surface) 30%, transparent) left center / 32px 100% no-repeat local,
+    linear-gradient(to left, var(--surface) 30%, transparent) right center / 32px 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%, rgb(0 0 0 / 14%), transparent) left center / 12px 100% no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%, rgb(0 0 0 / 14%), transparent) right center / 12px 100% no-repeat scroll,
+    var(--surface); }
+.ui-table-wrap:focus-visible { outline: 2px solid var(--focus-color); outline-offset: -2px; }
+.ui-table { width: 100%; border-collapse: collapse; color: var(--text); font-size: var(--text-data); line-height: var(--leading-ui); text-align: left; }
+.ui-table caption { padding: var(--space-3); color: var(--muted); font-size: var(--text-meta); text-align: left; caption-side: bottom; border-top: 1px solid var(--border); }
+.ui-table th { padding: 10px var(--space-3); border-bottom: 1px solid var(--border); background: transparent; color: var(--muted); font-size: var(--text-data); font-weight: var(--weight-medium); line-height: var(--leading-snug); white-space: normal; text-wrap: balance; vertical-align: bottom; }
+.ui-table td { padding: 10px var(--space-3); border-bottom: 1px solid var(--border); color: var(--muted); vertical-align: middle; }
+.ui-table :is(th, td):first-child { padding-left: var(--space-4); }
+.ui-table :is(th, td):last-child { padding-right: var(--space-4); }
+/* Emphasis in a cell reads in ink, unless its text carries a tone of its own (a red count, an amber figure). */
+.ui-table td :is(strong, a, .ui-text--strong, .ui-text--medium):not(.ui-text--muted, .ui-text--success, .ui-text--warning, .ui-text--danger) { color: var(--text); }
+/* Row headers (th scope="row") read as the row's first data cell. */
+.ui-table tbody th { padding: 11px var(--space-3); background: transparent; color: var(--text); font-size: var(--text-data); font-weight: var(--weight-body); white-space: normal; vertical-align: middle; }
+.ui-table tbody tr:last-child :is(td, th) { border-bottom: 0; }
+@media (hover: hover) and (pointer: fine) { .ui-table tbody tr:hover { background: color-mix(in srgb, var(--muted-surface) 60%, transparent); } }
+.ui-table tbody tr.ui-row--inactive { background: var(--muted-surface); }
+.ui-table tbody tr.ui-row--link { cursor: pointer; }
+.ui-table :is(th, td).ui-cell--numeric { text-align: right; white-space: nowrap; }
+.ui-table th.ui-cell--wrap { white-space: normal; width: 7.5rem; }
+.ui-table :is(th, td):is(.ui-cell--actions, .ui-cell--menu) { text-align: right; white-space: nowrap; width: 1%; }
+.ui-table :is(th, td).ui-cell--nowrap { white-space: nowrap; }
+.ui-table td.ui-cell--top { vertical-align: top; }
+.ui-table td small { display: block; margin-top: 2px; color: var(--muted); font-size: var(--text-meta); }
+.ui-table td a { overflow-wrap: anywhere; }
+
+.ui-disclosure { min-width: 0; border-top: 1px solid var(--border); }
+.ui-disclosure--plain { border-top: 0; }
+.ui-disclosure__summary { display: flex; align-items: center; gap: var(--space-2); width: 100%; min-height: 44px; margin: 0; padding: var(--space-2) 0; border: 0; background: transparent; color: var(--text); font: inherit; font-size: var(--text-control); font-weight: var(--weight-medium); line-height: var(--leading-ui); text-align: start; cursor: pointer; }
+.ui-disclosure__summary > .ui-disclosure__chevron { flex: none; margin-left: auto; color: var(--muted); transform: none; transition: rotate 150ms var(--ease-in-out); }
+.ui-disclosure__summary:not([data-panel-open]) > .ui-disclosure__chevron { rotate: -90deg; }
+.ui-disclosure__summary:focus-visible { outline: 2px solid var(--focus-color); outline-offset: 2px; }
+/* The panel follows Base UI's measured height while it opens and closes; it clips its content then, with room for a
+   focus ring at its edge. With reduced motion it opens at once. */
+.ui-disclosure__panel { height: var(--collapsible-panel-height); min-width: 0; overflow: clip; overflow-clip-margin: 4px; transition: height 200ms var(--ease-out); }
+.ui-disclosure__panel[hidden]:not([hidden="until-found"]) { display: none; }
+.ui-disclosure__panel:is([data-starting-style], [data-ending-style]) { height: 0; }
+@media (prefers-reduced-motion: reduce) { .ui-disclosure__panel { transition: none; } }
+.ui-disclosure__body { padding-bottom: var(--space-4); }
+
+.ui-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.ui-list > li { display: flex; align-items: center; gap: var(--space-3); padding: 10px 0; border-bottom: 1px solid var(--border); font-size: var(--text-data); line-height: var(--leading-ui); }
+.ui-list > li:last-child { border-bottom: 0; }
+.ui-list--plain > li { border-bottom: 0; padding: 4px 0; }
+
+.ui-steps { display: flex; flex-direction: column; gap: var(--space-5); margin: 0; padding: 0; list-style: none; counter-reset: ui-step; }
+.ui-step { position: relative; display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: start; gap: var(--space-2) var(--space-3); counter-increment: ui-step; }
+/* A line from each marker to the next, so steps read as one path; done steps draw it in their colour. */
+.ui-step:not(:last-child)::before { content: ""; position: absolute; top: 30px; bottom: calc(6px - var(--space-5)); left: 11.5px; width: 1px; background: var(--border); }
+.ui-step--done:not(:last-child)::before { background: color-mix(in srgb, var(--green) 45%, var(--border)); }
+.ui-step__marker:empty::before { content: counter(ui-step); }
+.ui-step__body { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; padding-top: 2px; }
+.ui-step:not(:has(.ui-step__actions, .ui-step__aside)) .ui-step__body { grid-column: 2 / -1; }
+.ui-step__title { color: var(--text); font-size: var(--text-body); font-weight: var(--weight-medium); line-height: var(--leading-snug); }
+.ui-step--done .ui-step__title { font-weight: var(--weight-body); }
+.ui-step--failed .ui-step__title { color: var(--red); }
+.ui-step--pending .ui-step__title { color: var(--muted); font-weight: var(--weight-body); }
+.ui-step__actions { display: flex; flex-wrap: wrap; align-items: center; align-self: center; gap: var(--space-2); }
+/* A short fact at the end of the row, e.g. the moment a step was reached; it stays there on phones. */
+.ui-step__aside { padding-top: 3px; color: var(--muted); font-size: var(--text-support); font-variant-numeric: tabular-nums; line-height: var(--leading-snug); white-space: nowrap; }
+
+/* One marker for every kind of step (Steps and Checklist): a filled circle with a check once done, an accent ring with
+   its number for the one under way, a quiet ring for later ones, a filled red circle with a cross when it failed, a
+   dashed ring when nothing reported it yet. */
+.ui-step__marker, .ui-checklist__icon { position: relative; z-index: 1; display: grid; place-items: center; box-sizing: border-box; width: 24px; height: 24px; border: 1px solid var(--strong-border); border-radius: 999px; background: var(--surface); color: var(--muted); font-size: var(--text-meta); font-weight: var(--weight-medium); font-variant-numeric: tabular-nums; line-height: 1; }
+.ui-step__marker > svg, .ui-checklist__icon > svg { width: 13px; height: 13px; }
+.ui-step--done .ui-step__marker, .ui-checklist__item--done .ui-checklist__icon { border-color: var(--green); background: var(--green); color: var(--surface); }
+.ui-step--current .ui-step__marker, .ui-checklist__item--current .ui-checklist__icon { border: 2px solid var(--accent); background: var(--surface); color: var(--accent); font-weight: var(--weight-strong); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent); }
+.ui-step--failed .ui-step__marker, .ui-checklist__item--failed .ui-checklist__icon { border-color: var(--red); background: var(--red); color: var(--surface); }
+.ui-checklist__item--unknown .ui-checklist__icon { border-style: dashed; }
+
+.ui-checklist { display: flex; flex-direction: column; gap: var(--space-5); }
+.ui-checklist__head { display: flex; align-items: center; gap: var(--space-3); }
+.ui-checklist__count { color: var(--muted); font-size: var(--text-support); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ui-checklist__list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.ui-checklist__item { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; align-items: start; gap: var(--space-1) var(--space-3); padding: var(--space-3) 0; border-top: 1px solid var(--border); }
+.ui-checklist__item:first-child { border-top: 0; padding-top: 0; }
+.ui-checklist__body { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; padding-top: 2px; }
+.ui-checklist__item:not(:has(.ui-checklist__action)) .ui-checklist__body { grid-column: 2 / -1; }
+.ui-checklist__title { color: var(--text); font-size: var(--text-body); font-weight: var(--weight-medium); line-height: var(--leading-snug); }
+.ui-checklist__detail { color: var(--muted); font-size: var(--text-support); line-height: var(--leading-body); }
+/* Who moves the step on, after its title. */
+.ui-checklist__tag { display: inline-flex; margin-left: var(--space-2); vertical-align: 1px; }
+/* A done step folds to one line: its title and what turned it green, quieter than the steps still to do. */
+.ui-checklist__item--done .ui-checklist__body { flex-direction: row; align-items: baseline; gap: var(--space-3); }
+.ui-checklist__item--done .ui-checklist__title { flex-shrink: 0; font-weight: var(--weight-body); }
+.ui-checklist__item--done .ui-checklist__detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ui-checklist__item--upcoming .ui-checklist__title, .ui-checklist__item--unknown .ui-checklist__title { color: var(--muted); }
+.ui-checklist__item--failed .ui-checklist__detail { color: var(--red); }
+.ui-checklist__action { display: flex; flex-wrap: wrap; align-items: center; align-self: center; gap: var(--space-2); }
+/* What a current step needs beyond one line: under its title, across the text and action columns. */
+.ui-checklist__content { grid-column: 2 / -1; min-width: 0; padding-top: var(--space-2); }
+@media (max-width: 600px) {
+  .ui-checklist__action { grid-column: 2 / -1; align-self: start; }
+  .ui-checklist__item--done .ui-checklist__body { flex-direction: column; gap: 0; }
+  .ui-checklist__item--done .ui-checklist__detail { white-space: normal; }
+}
+.ui-progress { width: 100%; }
+.ui-progress__track { position: relative; height: 6px; overflow: hidden; border-radius: 999px; background: var(--muted-surface); }
+.ui-progress__bar { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width 300ms var(--ease-drawer); }
+.ui-progress[data-indeterminate] .ui-progress__bar { width: 35%; animation: ui-progress-slide 1.4s ease-in-out infinite; }
+@keyframes ui-progress-slide { from { translate: -100% 0; } to { translate: 300% 0; } }
+/* Reduced motion: the segment stays in the middle and pulses, so a still frame reads as working rather than as full or as a share. */
+@keyframes ui-progress-pulse { 50% { opacity: .4; } }
+@media (prefers-reduced-motion: reduce) { .ui-progress__bar { transition: none; } .ui-progress[data-indeterminate] .ui-progress__bar { translate: calc(65% / .35 / 2) 0; animation: ui-progress-pulse 2s ease-in-out infinite; } }
+
+/* ---------- Code ---------- */
+.ui-code { position: relative; min-width: 0; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--surface); }
+.ui-code__header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border); }
+.ui-code__title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ui-code__title-text { display: flex; align-items: center; gap: var(--space-2); margin: 0; color: var(--text); font-size: var(--text-subsection); font-weight: var(--weight-heading); line-height: var(--leading-snug); letter-spacing: normal; }
+.ui-code__title-text > svg { color: var(--muted); }
+.ui-code__description { margin: 0; color: var(--muted); font-size: var(--text-support); line-height: var(--leading-body); }
+.ui-code__corner { position: absolute; top: var(--space-2); right: var(--space-2); z-index: 1; }
+.ui-code__corner + .ui-code__pre { padding-top: calc(var(--control-height-sm) + var(--space-3)); }
+.ui-code--line { display: flex; flex-wrap: wrap; align-items: center; }
+.ui-code--line > .ui-code__pre { flex: 1 1 auto; min-width: 0; }
+.ui-code__end { flex: none; margin-left: auto; padding: var(--space-2) var(--space-3) var(--space-2) 0; }
+.ui-code--line > .ui-code__footer { flex: 1 0 100%; }
+/* A one-line command with its copy icon: the icon pinned at the block's top right whatever the line's length, level
+   with the line. The block keeps the icon's column (the icon, its inset and a gap) out of the scrolling line, so a long
+   command is cut before the icon, never under it, and scrolled to its end shows its last character clear of it. The
+   block never grows a row for the icon. */
+.ui-code--line-icon { display: block; padding-right: calc(var(--control-height-sm) + 2 * var(--space-2)); }
+.ui-code--line-icon > .ui-code__pre { padding-right: var(--space-3); }
+.ui-code--line-icon > .ui-code__end { position: absolute; top: calc((1.7 * var(--text-code) + 2 * var(--space-4) - var(--control-height-sm)) / 2); right: var(--space-2); z-index: 1; margin: 0; padding: 0; }
+.ui-code__tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-left: auto; }
+.ui-code__pre { margin: 0; padding: var(--space-4) var(--space-5); overflow: auto; max-height: var(--ui-code-max-height, 520px); color: var(--text); background: transparent; font-family: var(--font-mono); word-spacing: normal; font-size: var(--text-code); line-height: 1.7; tab-size: 2; white-space: pre; }
+.ui-code__pre--wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+.ui-code__pre:focus-visible { outline: 2px solid var(--focus-color); outline-offset: -2px; }
+.ui-code__pre code { font: inherit; overflow-wrap: normal; }
+.ui-code__pre--wrap code { overflow-wrap: anywhere; }
+.ui-code__footer { margin: 0; padding: var(--space-3) var(--space-4); border-top: 1px solid var(--border); background: var(--muted-surface); color: var(--muted); font-size: var(--text-support); line-height: var(--leading-body); }
+.ui-code--bare { border: 0; border-radius: 0; background: transparent; }
+.ui-code--bare .ui-code__pre { padding: 0; }
+/* Shiki token colours; dark mode switches to the paired theme. */
+.ui-code__pre .ui-token { color: var(--shiki-light); font-style: var(--shiki-light-font-style, normal); font-weight: var(--shiki-light-font-weight, inherit); }
+:root[data-theme="dark"] .ui-code__pre .ui-token { color: var(--shiki-dark); font-style: var(--shiki-dark-font-style, normal); font-weight: var(--shiki-dark-font-weight, inherit); }
+.ui-inline-code { padding: 1px 5px; border-radius: 4px; background: var(--muted-surface); font-family: var(--font-mono); word-spacing: normal; font-size: .9em; overflow-wrap: anywhere; }
+
+/* ---------- Icons (Lucide) ---------- */
+:is(.ui-button, .ui-segmented__item, .ui-tabs__item, .ui-page-header__back, .ui-input-group, .ui-disclosure__summary, .ui-notice__icon, .ui-code__title-text) > svg,
+.select-trigger > svg { width: 16px; height: 16px; }
+/* Icons in tables and badges are 14px; a status glyph (StatusStrip.tsx) keeps its own size beside the words it stands for. */
+:is(.ui-table, .ui-badge, .ui-sort-button) svg:not(.ui-glyph) { width: 14px; height: 14px; }
+.ui-empty__icon > svg { width: 32px; height: 32px; }
+
+/* ---------- Responsive ---------- */
+@media (max-width: 900px) {
+  .ui-split { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 600px) {
+  .ui-page { padding: 28px 16px 48px; }
+  .ui-page-header { flex-direction: column; gap: var(--space-4); margin-bottom: var(--space-6); }
+  .ui-page-header__title { font-size: var(--text-page-compact); }
+  .ui-section-header__text { flex-basis: 12rem; }
+  /* A header with a description puts its actions on their own line. */
+  .ui-section-header:has(.ui-section-header__description) > .ui-section-header__text { flex-basis: 100%; }
+  .ui-panel > .ui-section-header, .ui-panel__body:not(.ui-panel__body--flush) { padding-inline: var(--space-4); }
+  .ui-form-grid { grid-template-columns: minmax(0, 1fr); }
+  .ui-step__actions { grid-column: 2 / -1; align-self: start; }
+  .ui-input:not(.ui-input--display, .ui-input--blank), .ui-textarea { font-size: max(16px, var(--text-control)); }
+  .ui-choice__label { min-height: 44px; }
+  .ui-description-list__item { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+  .ui-description-list--compact .ui-description-list__item { grid-template-columns: minmax(0, 1fr) auto; }
+  .ui-code__pre { padding: var(--space-3) var(--space-4); }
+  /* The 44px icon is taller than the line: the line's padding holds it, 4px above and below. */
+  .ui-code--line-icon > .ui-code__pre { padding-block: calc((var(--control-height-sm) + 2 * var(--space-1) - 1.7 * var(--text-code)) / 2); }
+  .ui-code--line-icon > .ui-code__end { top: var(--space-1); }
+  .ui-notice { flex-wrap: wrap; }
+  .ui-notice__actions { width: 100%; margin: 0; padding-left: calc(18px + var(--space-3)); }
+  .ui-notice:not(:has(.ui-notice__icon)) .ui-notice__actions { padding-left: 0; }
+}
+}

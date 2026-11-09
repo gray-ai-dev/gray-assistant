@@ -1,0 +1,8 @@
+@layer base, ui;
+@layer ui {
+/* A native fieldset without the browser frame; children stack with the gap
+   class. The floated legend becomes an ordinary flex item, so the gap also
+   separates it from the first control. */
+.ui-fieldset { display: flex; flex-direction: column; min-width: 0; margin: 0; padding: 0; border: 0; }
+.ui-fieldset__legend { padding: 0; color: var(--text); font-size: var(--text-label); font-weight: var(--weight-medium); line-height: var(--leading-ui); }
+}

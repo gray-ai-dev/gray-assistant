@@ -1,0 +1,13 @@
+@layer base, ui; /* layer order, whichever stylesheet loads first */
+/* Meter (Meter.tsx): a thin bar beside the figure it pictures. Part of the ui layer. */
+@layer ui {
+.ui-meter { display: inline-flex; flex: none; align-items: center; width: 5rem; min-width: 0; }
+.ui-meter__track { width: 100%; height: 4px; overflow: hidden; border-radius: 999px; background: var(--muted-surface); }
+.ui-meter__bar { height: 100%; border-radius: inherit; background: var(--chart-2); }
+.ui-meter[data-tone="danger"] .ui-meter__bar { background: var(--red); }
+.ui-meter[data-tone="strong"] .ui-meter__bar { background: var(--text); }
+.ui-meter[data-size="md"] .ui-meter__track { height: 8px; }
+/* A value that changes while the page is open moves to its new width. */
+.ui-meter__bar { transition: width 600ms var(--ease-out); }
+@media (prefers-reduced-motion: reduce) { .ui-meter__bar { transition: none; } }
+}

@@ -1,0 +1,19 @@
+@layer base, ui; /* layer order, whichever stylesheet loads first */
+/* StackedTable: below 600px each row is a card of label/value pairs. Column
+   headers stay in the accessibility tree, visually hidden. Part of the ui layer. */
+@layer ui {
+@media (max-width: 600px) {
+  .ui-table-wrap.ui-table--stack .ui-table, .ui-table-wrap.ui-table--stack tbody { display: block; width: 100%; }
+  .ui-table-wrap.ui-table--stack thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .ui-table-wrap.ui-table--stack tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-3) var(--space-4); padding: var(--space-4); border-bottom: 1px solid var(--border); }
+  .ui-table-wrap.ui-table--stack tbody tr:last-child { border-bottom: 0; }
+  .ui-table-wrap.ui-table--stack .ui-table td { display: block; min-width: 0; width: auto; padding: 0; border: 0; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+  .ui-table-wrap.ui-table--stack .ui-table td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 2px; color: var(--muted); font-size: var(--text-meta); font-weight: var(--weight-medium); line-height: var(--leading-ui); }
+  .ui-table-wrap.ui-table--stack .ui-table td:first-child, .ui-table-wrap.ui-table--stack .ui-table td.ui-cell--actions, .ui-table-wrap.ui-table--stack .ui-table td.ui-cell--wide { grid-column: 1 / -1; }
+  .ui-table-wrap.ui-table--stack .ui-table td:empty { display: none; }
+  .ui-table-wrap.ui-table--stack .ui-cell--actions > .ui-inline { justify-content: flex-start; }
+  /* A row menu sits in the card's top corner, beside the first cell. */
+  .ui-table-wrap.ui-table--stack .ui-table td.ui-cell--menu { grid-column: 2; grid-row: 1; justify-self: end; align-self: start; margin: -6px -8px 0 0; }
+  .ui-table-wrap.ui-table--stack .ui-table tr:has(> td.ui-cell--menu) > td:first-child { grid-column: 1; grid-row: 1; }
+}
+}

@@ -1,0 +1,22 @@
+@layer base, ui; /* layer order, whichever stylesheet loads first */
+/* The confirmation dialog (Confirm.tsx); part of the ui layer. Layers: dialogs and sheets 200, the popups that
+   open from them (selects, menus, infotips) 250, tooltips 300. */
+@layer ui {
+.ui-dialog-backdrop { position: fixed; inset: 0; z-index: 200; min-height: 100dvh; background: rgb(0 0 0 / 35%); transition: opacity 200ms var(--ease-out); }
+.ui-dialog-backdrop:is([data-starting-style], [data-ending-style]) { opacity: 0; }
+.ui-dialog-viewport { position: fixed; inset: 0; z-index: 201; display: grid; place-items: center; padding: var(--space-4); overflow-y: auto; }
+.ui-dialog { display: flex; flex-direction: column; gap: var(--space-2); width: min(100%, 26rem); padding: var(--space-5); border: 1px solid var(--strong-border); border-radius: var(--radius-card); background: var(--surface); color: var(--text); box-shadow: 0 12px 32px rgb(0 0 0 / 16%); outline: none; }
+/* A dialog belongs to the page, not to the control that opened it: it grows from its own centre. Quick in, quicker
+   out; with reduced motion it only fades. */
+.ui-dialog { transition: opacity 200ms var(--ease-out), transform 200ms var(--ease-out); }
+.ui-dialog:is([data-starting-style], [data-ending-style]) { opacity: 0; transform: scale(0.96); }
+.ui-dialog[data-ending-style], .ui-dialog-backdrop[data-ending-style] { transition-duration: 120ms; }
+@media (prefers-reduced-motion: reduce) { .ui-dialog:is([data-starting-style], [data-ending-style]) { transform: none; } }
+.ui-dialog__title { margin: 0; font-size: var(--text-subsection); font-weight: var(--weight-heading); line-height: var(--leading-snug); text-wrap: balance; }
+.ui-dialog__description { margin: 0; color: var(--muted); font-size: var(--text-support); line-height: var(--leading-body); }
+.ui-dialog__actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--space-3); margin-top: var(--space-4); }
+@media (max-width: 600px) {
+  .ui-dialog__actions { flex-direction: column-reverse; }
+  .ui-dialog__actions > .ui-button { width: 100%; }
+}
+}

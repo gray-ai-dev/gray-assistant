@@ -1,0 +1,812 @@
+/* Cascade layers: element defaults sit in `base`, shared components in `ui`
+   (src/ui/ui.css). Unlayered page styles may still adjust layout on top. */
+@layer base, ui;
+@font-face {
+  font-family: "Instrument Sans";
+  src: url("/fonts/instrumentsans/regular.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+}
+:root {
+  /* Typography follows openrouter.ai as measured on 2026-10-11: Plus Jakarta
+     Sans (variable, weight 450 for text), 14px / 1.625 for body, tables and
+     controls, 12px captions, 16px section titles, 20px / 1.2 page titles,
+     Geist Mono for code, proportional figures (what OpenRouter's subset font
+     renders), contextual alternates on, grayscale antialiasing, normal
+     tracking, and hairline #ebebeb rules. Every role reads these tokens. */
+  --font-sans: "Plus Jakarta Sans Variable", "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  --font-display: "Instrument Sans", var(--font-sans);
+  --font-mono: "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --text-page: 1.25rem;
+  --text-page-compact: 1.25rem;
+  --text-section: 1rem;
+  --text-subsection: 1rem;
+  --text-body: .875rem;
+  --text-identity: 1rem;
+  --text-stat: 1.5rem;
+  --text-control: .875rem;
+  --text-data: .875rem;
+  --text-label: .875rem;
+  --text-support: .875rem;
+  --text-meta: .75rem;
+  --text-micro: .75rem;
+  --text-code: .875rem;
+  --leading-body: 1.625;
+  --leading-ui: 1.625;
+  --leading-snug: 1.35;
+  --leading-heading: 1.2;
+  --weight-body: 450;
+  --weight-medium: 500;
+  --weight-heading: 500;
+  --weight-strong: 600;
+  /* OpenRouter sets titles in its brand face at 700; Plus Jakarta Sans 700 matches its weight. */
+  --weight-title: 700;
+  /* Plus Jakarta Sans's word space is .143em, 2px at 14px: about half of a
+     text face's usual .25–.28em (Arial's is .278em) beside letters wider than
+     Arial's, so at text sizes the words ran together (measured in Chromium,
+     2026-11-02). This adds a fixed .1rem to every space, which makes it
+     .26em at 14px and .27em at 12px. Form controls take it too; code
+     (Geist Mono) keeps its own spaces, so its columns stay aligned. */
+  --word-space: .1rem;
+  font-family: var(--font-sans);
+  font-size: 100%;
+  line-height: var(--leading-body);
+  font-weight: var(--weight-body);
+  word-spacing: var(--word-space);
+  font-synthesis: none;
+  font-feature-settings: "calt" 1, "rlig" 1;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  --bg: #fff;
+  --surface: #fff;
+  --muted-surface: #f3f3f3;
+  --text: #171717;
+  --muted: #4d4d4d;
+  --placeholder: color-mix(in srgb, var(--muted) 55%, transparent);
+  --border: #ebebeb;
+  --strong-border: #cfcfcf;
+  --focus-color: #808080;
+  --accent: #171717;
+  --accent-hover: #333;
+  --accent-soft: #e6e6e6;
+  --accent-foreground: #fff;
+  --green: #187342;
+  --amber: #895700;
+  --red: #b62525;
+  /* Chart series: ink, then two grays, so a stack reads in order; status tones for outcomes. */
+  --chart-1: #171717;
+  --chart-2: #8a8a8a;
+  --chart-3: #c9c9c9;
+  --chart-grid: #ebebeb;
+  /* Status fills for graphics (the model check strip, its glyphs and marks): the three status hues lightened so a run
+     of cells reads as a band, each at least 3:1 against the surface, and a neutral cell for nothing checked. */
+  --status-ok: #3d9b67;
+  --status-warn: #bf8a25;
+  --status-bad: #d24a4a;
+  --status-none: #e3e3e3;
+  --radius: 6px;
+  --radius-card: 8px;
+  /* Every control on one row shares a height: 40px default, 32px compact
+     (OpenRouter's h-10 / h-8),
+     44px touch targets at narrow widths (media query below). */
+  --control-height: 40px;
+  --control-height-sm: 32px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 48px;
+  color-scheme: light;
+  /* Motion. The built-in curves are too weak: ease-out for what enters, leaves or answers a press,
+     ease-in-out for what moves on screen, drawer for panels and progress. Hover and colour changes
+     keep plain ease. */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+}
+:root[data-theme="dark"] {
+  --bg: #141414;
+  --surface: #1b1b1b;
+  --muted-surface: #252525;
+  --text: #f3f3f3;
+  --muted: #b7b7b7;
+  --placeholder: #a0a0a0;
+  --border: #373737;
+  --strong-border: #6d6d6d;
+  --focus-color: #adadad;
+  --accent: #f3f3f3;
+  --accent-hover: #dcdcdc;
+  --accent-soft: #343434;
+  --accent-foreground: #171717;
+  --green: #77d59d;
+  --amber: #e6b968;
+  --red: #ffa4a4;
+  --chart-1: #f3f3f3;
+  --chart-2: #9a9a9a;
+  --chart-3: #5a5a5a;
+  --chart-grid: #2e2e2e;
+  --status-ok: #4cb57a;
+  --status-warn: #d9a744;
+  --status-bad: #e56565;
+  --status-none: #2f2f2f;
+  color-scheme: dark;
+}
+@media (max-width: 600px) {
+  :root { --control-height: 44px; --control-height-sm: 44px; }
+}
+@layer base {
+* {
+  box-sizing: border-box;
+  scrollbar-color: var(--strong-border) transparent;
+  scrollbar-width: thin;
+}
+body {
+  margin: 0;
+  min-width: 320px;
+  background: var(--bg);
+  color: var(--text);
+}
+button,
+input,
+textarea,
+select {
+  font: inherit;
+  letter-spacing: normal;
+  word-spacing: inherit;
+}
+button,
+a,
+input,
+select,
+textarea {
+  -webkit-tap-highlight-color: transparent;
+}
+button,
+summary {
+  cursor: pointer;
+}
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+a {
+  color: var(--accent);
+  text-decoration: none;
+  text-underline-offset: 3px;
+}
+@media (hover: hover) and (pointer: fine) {
+  a:hover {
+    text-decoration: underline;
+  }
+}
+button {
+  color: inherit;
+}
+button,
+a,
+input,
+textarea,
+select,
+summary {
+  outline-offset: 3px;
+}
+:where(a[href], button, input, textarea, select, summary, [tabindex]:not([tabindex="-1"])):focus-visible {
+  outline: 2px solid var(--focus-color);
+  outline-offset: 3px;
+}
+:where(a[href], button, summary, [tabindex]):focus:not(:focus-visible) {
+  outline: none;
+}
+:where([tabindex="-1"]):not(a, button, input, textarea, select):focus {
+  outline: none;
+}
+::selection {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+input,
+textarea {
+  caret-color: var(--accent);
+}
+h1,
+h2,
+h3,
+p {
+  margin-top: 0;
+}
+h1 {
+  font-size: var(--text-page);
+  font-weight: 600;
+  line-height: var(--leading-heading);
+  letter-spacing: normal;
+  margin-bottom: 0;
+  text-wrap: balance;
+}
+h3 {
+  font-size: var(--text-subsection);
+  font-weight: var(--weight-strong);
+  line-height: var(--leading-heading);
+  margin: 0 0 12px;
+}
+h4 {
+  font-size: var(--text-body);
+  font-weight: var(--weight-strong);
+  line-height: var(--leading-ui);
+  margin: 0 0 8px;
+}
+h2 {
+  font-size: var(--text-section);
+  font-weight: 600;
+  line-height: var(--leading-heading);
+  letter-spacing: normal;
+  margin: 0 0 12px;
+}
+p {
+  color: var(--muted);
+  margin-bottom: 16px;
+  text-wrap: pretty;
+}
+code,
+pre {
+  line-height: var(--leading-ui);
+  font-family: var(--font-mono);
+  font-size: var(--text-code);
+  word-spacing: normal;
+}
+code {
+  overflow-wrap: anywhere;
+}
+input,
+select,
+textarea {
+  font-size: var(--text-control);
+  line-height: var(--leading-ui);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 7px 10px;
+  max-width: 100%;
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+select,
+input:not([type="checkbox"]):not([type="radio"]):not([type="range"]) {
+  min-height: 36px;
+}
+select {
+  cursor: pointer;
+}
+:root :is(input, textarea, select):not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus {
+  border-color: var(--focus-color);
+  outline: none;
+}
+:root :is(input, textarea, select):is([aria-invalid="true"], :user-invalid) {
+  border-color: var(--red);
+}
+:root :is(input, textarea, select):disabled {
+  color: var(--muted);
+  background: var(--muted-surface);
+  border-color: var(--border);
+  cursor: not-allowed;
+  opacity: 1;
+}
+:root input:is([type="checkbox"], [type="radio"]) {
+  accent-color: var(--accent);
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  padding: 0;
+  cursor: pointer;
+}
+:root input:is([type="checkbox"], [type="radio"]):disabled {
+  cursor: not-allowed;
+}
+}
+.skip-link {
+  position: fixed;
+  top: -8px;
+  transform: translateY(-100%);
+  left: 12px;
+  z-index: 100;
+  padding: 10px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.skip-link:focus {
+  top: 10px;
+  transform: none;
+}
+.appbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+  row-gap: 4px;
+  min-height: 56px;
+  padding: 8px 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: var(--text);
+  min-height: 40px;
+  font-size: 1.625rem;
+  line-height: 1.2;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.brand:hover {
+  text-decoration: none;
+}
+.brand-mark {
+  display: block;
+  flex-shrink: 0;
+  width: 30px;
+  height: 24px;
+}
+.brand-wordmark {
+  font-family: var(--font-display);
+  font-weight: 600;
+  font-kerning: normal;
+  letter-spacing: -.025em;
+  line-height: 1.15;
+}
+/* The product pages (OverflowNav): the row takes the room the brand and the account controls leave, and links that
+   do not fit move into its More menu, so the bar keeps one row at desktop widths. */
+.desktop-nav {
+  flex: 1 1 0;
+  margin-left: 24px;
+}
+.utility-nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  font-size: var(--text-control);
+  padding: 5px 10px;
+  border-radius: 6px;
+  color: var(--muted);
+  font-weight: var(--weight-body);
+  line-height: var(--leading-ui);
+}
+.utility-nav a[aria-current="page"] {
+  color: var(--text);
+  background: var(--muted-surface);
+  text-decoration: none;
+}
+@media (hover: hover) and (pointer: fine) {
+  .utility-nav a:hover {
+    color: var(--text);
+    background: var(--muted-surface);
+    text-decoration: none;
+  }
+}
+.account-nav {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+  margin-left: auto;
+}
+.utility-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.utility-nav a {
+  white-space: nowrap;
+}
+.account-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding-left: 16px;
+  border-left: 1px solid var(--border);
+}
+/* When the header runs out of room, only the workspace name gives way. */
+.utility-nav,
+.account-controls > :not(.workspace-switcher),
+.mobile-menu {
+  flex-shrink: 0;
+}
+.avatar {
+  --avatar-size: max(30px, 2em);
+  display: grid;
+  place-items: center;
+  width: var(--avatar-size);
+  height: var(--avatar-size);
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--text);
+  background: var(--muted-surface);
+  font-size: var(--text-micro);
+  font-weight: 600;
+}
+@media (hover: hover) and (pointer: fine) {
+  .avatar:hover {
+    text-decoration: none;
+    border-color: var(--strong-border);
+  }
+}
+.avatar[aria-current="page"] { border-color: var(--strong-border); }
+.workspace-switcher {
+  display: flex;
+  min-width: 0;
+}
+.workspace-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 12rem;
+  min-height: 32px;
+  padding: 4px 8px 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--text-control);
+  font-weight: 500;
+  line-height: var(--leading-ui);
+  cursor: pointer;
+}
+.workspace-trigger[data-popup-open] {
+  background: var(--muted-surface);
+  border-color: var(--strong-border);
+}
+@media (hover: hover) and (pointer: fine) {
+  .workspace-trigger:where(:not(:disabled)):hover {
+    background: var(--muted-surface);
+    border-color: var(--strong-border);
+  }
+}
+.workspace-trigger[aria-busy="true"] {
+  cursor: progress;
+}
+.workspace-trigger[aria-busy="true"] .workspace-trigger-name {
+  color: var(--muted);
+}
+.workspace-trigger > svg {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+.workspace-trigger-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Shown only when another workspace has the same name. It goes under the
+   name, so the role and ID tag never cut a short name such as "Personal"
+   short; a long name still truncates first. */
+.workspace-trigger-role {
+  flex-shrink: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  font-size: var(--text-meta);
+  font-weight: 400;
+  line-height: inherit;
+  white-space: nowrap;
+}
+.workspace-trigger:has(.workspace-trigger-role) {
+  display: inline-grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-content: center;
+  align-items: center;
+  column-gap: 6px;
+  row-gap: 0;
+  padding-block: 2px;
+  line-height: 1.2;
+  text-align: left;
+}
+.workspace-trigger:has(.workspace-trigger-role) > svg {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+.workspace-menu {
+  width: max(var(--anchor-width), 15rem);
+  max-width: min(var(--available-width), 20rem, calc(100vw - 16px));
+}
+.workspace-option-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.workspace-option-text small {
+  color: var(--muted);
+  font-size: var(--text-meta);
+  font-weight: 400;
+}
+.workspace-menu a.select-option {
+  color: var(--text);
+  text-decoration: none;
+}
+.workspace-menu-separator {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border);
+}
+.mobile-menu {
+  display: none;
+}
+/* The navigation sheet of narrow screens (a ui Drawer): the workspace, then one link per row. */
+/* The navigation sheet of narrow screens (a ui Drawer). Every row shares one left edge with the switcher above it:
+   the row's fill starts at the sheet's padding and its text 12px in. The product pages read top to bottom; the
+   utility links follow in two quieter columns under a rule, so the whole menu stays in view on a short phone. */
+.mobile-navigation {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.mobile-navigation-primary {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.mobile-navigation-utility {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 2px 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.mobile-navigation a {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 12px;
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: var(--text-body);
+  font-weight: 500;
+}
+.mobile-navigation-utility a {
+  min-height: 40px;
+  color: var(--muted);
+  font-size: var(--text-control);
+  font-weight: 450;
+}
+.mobile-navigation a[aria-current] {
+  background: var(--muted-surface);
+  color: var(--text);
+}
+/* In the sheet the switcher is the first row: as wide as the rows below, its text on their text's edge. */
+.workspace-switcher--sheet {
+  flex: 1 1 auto;
+}
+.workspace-switcher--sheet .workspace-trigger {
+  width: 100%;
+  max-width: none;
+  min-height: 44px;
+  padding-left: 12px;
+}
+.workspace-switcher--sheet .workspace-trigger > svg {
+  margin-left: auto;
+}
+#main {
+  min-height: calc(100vh - 121px);
+}
+@layer base {
+fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0 0 20px;
+  min-width: 0;
+}
+legend {
+  font-size: var(--text-label);
+  padding: 10px 0 12px;
+  font-weight: 500;
+}
+}
+@layer base {
+fieldset p {
+  font-size: var(--text-support);
+  margin: 8px 0 0;
+}
+}
+.availability {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  color: var(--green);
+  font-size: var(--text-meta);
+}
+.availability > span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.availability.unavailable {
+  color: var(--amber);
+}
+@layer base {
+table {
+  line-height: var(--leading-ui);
+  width: 100%;
+  border-collapse: collapse;
+  text-align: left;
+  font-size: var(--text-data);
+}
+th {
+  background: var(--muted-surface);
+  color: var(--muted);
+  font-size: var(--text-meta);
+  font-weight: 500;
+  white-space: nowrap;
+}
+th,
+td {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+tr:last-child td {
+  border-bottom: 0;
+}
+td small {
+  display: block;
+  color: var(--muted);
+  margin-top: 4px;
+  font-size: var(--text-meta);
+}
+td a {
+  overflow-wrap: anywhere;
+}
+@media (hover: hover) and (pointer: fine) {
+  tbody tr:hover {
+    background: var(--muted-surface);
+  }
+}
+}
+@layer base {
+input[type="range"] {
+  accent-color: var(--accent);
+  padding: 0;
+}
+}
+/* A form opened from a page action: one bordered card with its own title. */
+.mapping-card {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  padding: 16px;
+  border-radius: 6px;
+  background: var(--muted-surface);
+}
+/* One record in a list: a bordered card with a title row. */
+.lifecycle {
+  display: grid;
+  gap: 12px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.lifecycle > * {
+  margin: 0;
+}
+@media (max-width: 1100px) {
+  .desktop-nav {
+    margin-left: 0;
+  }
+  .account-nav { gap: 8px; }
+  .account-controls { gap: 8px; padding-left: 12px; }
+  .workspace-trigger { max-width: 10rem; }
+  .appbar {
+    gap: 10px;
+  }
+}
+@media (max-width: 900px) {
+  .desktop-nav {
+    display: none;
+  }
+  .mobile-menu {
+    display: inline-flex;
+  }
+}
+@media (max-width: 600px) {
+  .appbar {
+    padding: 4px 16px;
+    gap: 8px;
+    row-gap: 0;
+    flex-wrap: wrap;
+    height: auto;
+    min-height: 56px;
+  }
+  .brand {
+    font-size: 1.625rem;
+    min-height: 44px;
+  }
+  .utility-nav {
+    display: none;
+  }
+  .account-nav {
+    gap: 4px;
+  }
+  /* Take the room the brand leaves, so the workspace name gets all of it;
+     the basis still wraps the controls under the brand at enlarged text. */
+  .account-nav:has(.workspace-switcher) {
+    flex: 1 1 10rem;
+    justify-content: flex-end;
+  }
+  .account-controls {
+    gap: 4px;
+    padding-left: 0;
+    border-left: 0;
+  }
+  /* The bordered button still reads as a control without the caret, which
+     leaves more of the narrow header for the workspace name. */
+  .appbar .workspace-trigger {
+    min-height: 44px;
+    padding-inline: 8px;
+  }
+  .appbar .workspace-trigger > svg {
+    display: none;
+  }
+  /* No caret here, so the name and role take the whole control. */
+  .appbar .workspace-trigger:has(.workspace-trigger-role) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .appbar .avatar {
+    position: relative;
+    margin-inline: max(0px, calc(22px - var(--avatar-size) / 2));
+  }
+  .appbar .avatar::after {
+    content: "";
+    position: absolute;
+    inset: min(-1px, calc(var(--avatar-size) / 2 - 23px));
+  }
+}
+/* Too narrow for a readable name: the navigation menu carries the workspace. */
+@media (max-width: 359px) {
+  .appbar .workspace-switcher {
+    display: none;
+  }
+  .appbar .account-nav {
+    flex: 0 1 auto;
+  }
+}
+/* Reduced motion means gentler, not none: fades and colour changes stay because they explain a change
+   of state, movement goes. Components that keep a gentler movement (the spinner turns slower, the
+   indeterminate progress bar holds still) set that themselves. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-property: opacity, color, background-color, border-color, text-decoration-color, fill, stroke !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Text may grow with browser settings; constrain overflow at data/code regions. */
+@layer base {
+small { font-size: var(--text-meta); line-height: var(--leading-ui); }
+}
+@layer base {
+  /* Touch targets and no zoom-on-focus for any input outside the components. */
+  @media (max-width: 600px) {
+    :root :is(input, select):not([type="checkbox"]):not([type="radio"]):not([type="range"]) {
+      min-height: 44px;
+    }
+    :root :is(input, select, textarea):not([type="checkbox"]):not([type="radio"]):not([type="range"]) {
+      font-size: max(1rem, 16px);
+    }
+  }
+}

@@ -1,0 +1,19 @@
+@layer base, ui; /* layer order, whichever stylesheet loads first */
+/* OverflowNav: a navigation row that keeps to one line, its links, the "More" trigger and the copy it is fitted from.
+   Part of the ui layer; the menu is the Menu component's (menu.css). */
+@layer ui {
+.ui-overflow-nav { position: relative; display: flex; flex-wrap: nowrap; align-items: center; gap: 4px; min-width: 0; }
+.ui-nav-link { display: inline-flex; flex: none; align-items: center; gap: 4px; min-height: 32px; padding: 5px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font: inherit; font-size: var(--text-control); font-weight: var(--weight-body); line-height: var(--leading-ui); white-space: nowrap; text-decoration: none; cursor: pointer; }
+.ui-nav-link:is([aria-current="page"], [data-current], [data-popup-open]) { color: var(--text); background: var(--muted-surface); text-decoration: none; }
+@media (hover: hover) and (pointer: fine) { .ui-nav-link:hover { color: var(--text); background: var(--muted-surface); text-decoration: none; } }
+.ui-overflow-nav__more > svg { flex: none; }
+/* Laid out like the row so each part measures as it would show, but out of the flow and never seen. */
+.ui-overflow-nav__copy { position: absolute; top: 0; left: 0; display: flex; flex-wrap: nowrap; gap: inherit; visibility: hidden; pointer-events: none; }
+.ui-overflow-nav__item { justify-content: space-between; color: var(--text); text-decoration: none; }
+.ui-overflow-nav__item[aria-current="page"] { font-weight: var(--weight-medium); }
+/* Narrower desktops: the links close up before any of them moves into the menu. */
+@media (max-width: 1100px) {
+  .ui-overflow-nav, .ui-overflow-nav__copy { gap: 0; }
+  .ui-nav-link { padding: 5px 7px; }
+}
+}

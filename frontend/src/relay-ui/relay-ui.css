@@ -1,0 +1,66 @@
+/* The relay's local page: layout on its own class names only (src/ui/README.md, Rules). Colours, type and controls
+   come from the design system. */
+
+/* The brand's display face, as a file of this bundle (the console serves it from its public folder). */
+@font-face {
+  font-family: "Instrument Sans";
+  src: url("../../public/fonts/instrumentsans/regular.ttf") format("truetype");
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+}
+
+/* Where the page runs, beside the brand: never mistaken for Gray's website. */
+.relay-ui-where {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+/* The relay and its agent, at the end of the bar. */
+.relay-ui-relay {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.relay-ui-relay__id {
+  max-width: 12rem;
+}
+.relay-ui-mobile-footer {
+  display: flex;
+  padding-top: 12px;
+}
+
+/* The CT monitor's alert above every page: the page below keeps its own top space. */
+.relay-ui-banner { padding-bottom: 0; }
+
+/* Identifiers in table cells: one line, cut with an ellipsis (the whole value is the tooltip). */
+.relay-ui-name { max-width: 16rem; }
+.relay-ui-proxy { max-width: 14rem; }
+.relay-ui-models { max-width: 14rem; }
+
+/* One check of the Health page: a title row (status and name), then its message and next step. */
+.relay-ui-check__title {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.relay-ui-check--quiet {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+@media (max-width: 900px) {
+  .relay-ui-sign-out { display: none; }
+}
+@media (max-width: 600px) {
+  .relay-ui-relay__id { max-width: 7rem; }
+}
+@media (max-width: 420px) {
+  /* A narrow phone keeps the brand, where the page runs and the menu; the menu's sheet names the relay and its agent. */
+  .relay-ui-relay { display: none; }
+}

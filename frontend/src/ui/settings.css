@@ -1,0 +1,27 @@
+@layer base, ui; /* layer order, whichever stylesheet loads first */
+/* Settings list and rows; part of the ui layer (see ui.css). */
+@layer ui {
+.ui-settings { min-width: 0; border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--surface); }
+.ui-settings--danger { border-color: color-mix(in srgb, var(--red) 40%, var(--border)); }
+.ui-settings > * { margin: 0; padding: var(--space-4) var(--space-5); }
+.ui-settings > * + * { border-top: 1px solid var(--border); }
+/* A switch in a settings list names a setting like a row title. */
+.ui-settings > .ui-choice .ui-choice__text { font-weight: var(--weight-medium); }
+
+.ui-settings-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3) var(--space-6); }
+.ui-settings-row__text { display: flex; flex: 1 1 16rem; flex-direction: column; gap: 2px; min-width: 0; }
+.ui-settings-row__title { margin: 0; color: var(--text); font-size: var(--text-label); font-weight: var(--weight-medium); line-height: var(--leading-ui); letter-spacing: normal; }
+.ui-settings-row__description { margin: 0; max-width: 60ch; color: var(--muted); font-size: var(--text-support); line-height: var(--leading-body); overflow-wrap: anywhere; }
+.ui-settings-row__control { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--space-2); min-width: 0; }
+.ui-settings-row__control :is(.select-field, .ui-input) { width: 15rem; }
+.ui-settings-row__details { flex: 1 1 100%; min-width: 0; }
+
+@media (max-width: 600px) {
+  .ui-settings > * { padding: var(--space-4); }
+  .ui-settings-row { flex-direction: column; flex-wrap: nowrap; align-items: stretch; }
+  .ui-settings-row__text, .ui-settings-row__details { flex: none; }
+  .ui-settings-row__control { justify-content: flex-start; }
+  .ui-settings-row__control > * { flex: 1 1 auto; }
+  .ui-settings-row__control :is(.select-field, .ui-input) { width: 100%; }
+}
+}

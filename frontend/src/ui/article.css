@@ -1,0 +1,144 @@
+/* Article: a long text for reading (src/ui/Article.tsx). Running text sits at a reading measure, about 70 Latin
+   characters or 40 Chinese characters a line; tables, code and figures take the column's whole width and scroll
+   sideways inside their own frames when they need more. Chinese is set in its own faces, a taller line and without
+   italics, letter-spacing tricks or justification. */
+@layer ui {
+  .ui-article-frame {
+    /* English at 16px in Plus Jakarta Sans is about 8px a character: 37rem sets about 70 characters a line, counted
+       over the trust model's paragraphs (2026-11-04). */
+    --ui-article-measure: 37rem;
+    min-width: 0;
+  }
+  .ui-article__bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3) var(--space-6);
+    margin-bottom: var(--space-7);
+  }
+  .ui-article__back {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: var(--control-height-sm);
+    color: var(--muted);
+    font-size: var(--text-control);
+    font-weight: var(--weight-medium);
+  }
+  .ui-article__tools { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); margin-left: auto; }
+
+  .ui-article {
+    min-width: 0;
+    color: var(--text);
+    font-size: 1rem;
+    line-height: 1.7;
+    font-feature-settings: "calt" 1, "rlig" 1;
+    overflow-wrap: break-word;
+    hyphens: manual;
+  }
+  .ui-article--loading { max-width: var(--ui-article-measure); }
+  .ui-article > :first-child { margin-top: 0; }
+  .ui-article > :last-child { margin-bottom: 0; }
+
+  /* Running text at the measure; the blocks below take the whole column. */
+  .ui-article :is(p, ul, ol, blockquote, figcaption),
+  .ui-article > :is(h1, h2, h3, h4) { max-width: var(--ui-article-measure); }
+  .ui-article :is(ul, ol):has(> li > :is(.ui-table-wrap, .ui-code)) { max-width: none; }
+
+  .ui-article p { margin: 0 0 1.25rem; color: inherit; text-wrap: pretty; }
+  .ui-article strong { font-weight: var(--weight-strong); }
+  .ui-article a { color: var(--text); text-decoration: underline; text-decoration-thickness: 1px; text-decoration-color: var(--strong-border); text-underline-offset: .2em; }
+  @media (hover: hover) and (pointer: fine) { .ui-article a:hover { text-decoration-color: currentColor; } }
+
+  /* Headings: the title, then sections set well apart from the text above them and close to their own. */
+  .ui-article :is(h1, h2, h3, h4) { position: relative; color: var(--text); letter-spacing: normal; text-wrap: balance; scroll-margin-top: calc(var(--appbar-height, 56px) + var(--space-6)); }
+  .ui-article h1 { margin: 0 0 var(--space-7); font-size: 2.25rem; font-weight: var(--weight-title); line-height: 1.2; }
+  .ui-article h2 { margin: 3.25rem 0 .875rem; font-size: 1.5rem; font-weight: var(--weight-strong); line-height: 1.3; }
+  .ui-article h3 { margin: 2.25rem 0 .625rem; font-size: 1.1875rem; font-weight: var(--weight-strong); line-height: 1.4; }
+  .ui-article h4 { margin: 1.75rem 0 .5rem; font-size: 1rem; font-weight: var(--weight-strong); line-height: 1.5; }
+  .ui-article :is(h2, h3, h4) + :is(h2, h3, h4) { margin-top: var(--space-4); }
+  .ui-article__anchor { margin-left: .35em; color: var(--muted); font-weight: var(--weight-medium); text-decoration: none !important; opacity: 0; }
+  .ui-article__anchor:focus-visible { opacity: 1; }
+  @media (hover: hover) and (pointer: fine) {
+    .ui-article :is(h2, h3, h4):hover .ui-article__anchor { opacity: 1; }
+  }
+
+  /* Lists: markers outside the text, items a little apart; a loose item's paragraphs closer than the text's. */
+  .ui-article :is(ul, ol) { margin: 0 0 1.25rem; padding-left: 1.5rem; }
+  .ui-article ol { font-variant-numeric: tabular-nums; }
+  .ui-article li { padding-left: .25rem; }
+  .ui-article li + li { margin-top: .5rem; }
+  .ui-article li::marker { color: var(--muted); }
+  .ui-article li > p { margin-bottom: .75rem; }
+  .ui-article li > :last-child { margin-bottom: 0; }
+  .ui-article li :is(ul, ol) { margin: .5rem 0 0; }
+
+  .ui-article blockquote { margin: 0 0 1.25rem; padding-left: var(--space-4); border-left: 2px solid var(--strong-border); color: var(--muted); }
+  .ui-article hr { margin: 2.5rem 0; border: 0; border-top: 1px solid var(--border); }
+
+  /* Code and tables: the design system's blocks, set apart from the text around them. */
+  .ui-article .ui-inline-code { font-size: .875em; -webkit-box-decoration-break: clone; box-decoration-break: clone; }
+  .ui-article > .ui-code, .ui-article li > .ui-code { margin: 1.5rem 0 1.75rem; }
+  .ui-article > .ui-table-wrap, .ui-article li > .ui-table-wrap { margin: 1.5rem 0 1.75rem; }
+  .ui-article li > .ui-table-wrap { margin-block: 1rem 1.25rem; }
+  .ui-article .ui-table { font-variant-numeric: tabular-nums; }
+  .ui-article .ui-table :is(th, td) { line-height: 1.55; }
+  .ui-article .ui-table td { color: var(--text); }
+  /* A table whose first header is empty is read across: its first column names each row. */
+  .ui-article__table--rows .ui-table td:first-child { font-weight: var(--weight-medium); }
+  .ui-article :is(h2, h3, h4) + :is(.ui-table-wrap, .ui-code) { margin-top: var(--space-4); }
+
+  /* Figures: the image at its natural width, scaled down to the column but never below a readable size (at most
+     50rem): past that the frame scrolls sideways. */
+  .ui-article__figure { margin: 2rem 0 2.25rem; }
+  .ui-article__figure-frame { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-card); background: #fff; }
+  /* A figure with a dark version: the site's theme (not the system's) picks it, on the surface its colours were set on. */
+  .ui-article__figure-frame--themed { background: var(--surface); }
+  .ui-article__figure img.ui-article__figure-dark,
+  :root[data-theme="dark"] .ui-article__figure img.ui-article__figure-light { display: none; }
+  :root[data-theme="dark"] .ui-article__figure img.ui-article__figure-dark { display: block; }
+  .ui-article__figure-frame:focus-visible { outline: 2px solid var(--focus-color); outline-offset: 2px; }
+  .ui-article__figure img {
+    display: block;
+    width: 100%;
+    max-width: var(--ui-article-figure-width, 100%);
+    min-width: min(var(--ui-article-figure-width, 0px), 50rem);
+    height: auto;
+    margin-inline: auto;
+  }
+  .ui-article figcaption { margin-top: var(--space-3); color: var(--muted); font-size: var(--text-support); line-height: 1.55; text-wrap: pretty; }
+
+  /* Chinese: its own faces (Latin in them too, so a sentence keeps one face), a taller line, 40 characters a line,
+     no word-space addition, no italics, strict line breaking, punctuation inside the measure. */
+  .ui-article--zh,
+  .ui-article--zh .ui-table {
+    font-family: "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", var(--font-sans);
+    word-spacing: normal;
+    letter-spacing: normal;
+  }
+  .ui-article--zh {
+    --ui-article-measure: 40em;
+    line-height: 1.8;
+    text-align: start;
+    line-break: strict;
+    word-break: normal;
+    hanging-punctuation: none;
+    text-autospace: normal;
+  }
+  .ui-article--zh :is(em, i) { font-style: normal; font-weight: var(--weight-strong); }
+  .ui-article--zh h1 { line-height: 1.35; }
+  .ui-article--zh h2 { line-height: 1.45; }
+  .ui-article--zh h3 { line-height: 1.5; }
+  .ui-article--zh :is(h1, h2, h3, h4, strong) { font-weight: 600; }
+  .ui-article--zh .ui-table :is(th, td) { line-height: 1.65; }
+
+  @media (max-width: 600px) {
+    .ui-article__bar { margin-bottom: var(--space-6); }
+    .ui-article h1 { font-size: 1.75rem; margin-bottom: var(--space-6); }
+    .ui-article h2 { margin-top: 2.5rem; font-size: 1.3125rem; }
+    .ui-article h3 { margin-top: 2rem; font-size: 1.125rem; }
+    /* A table or code block in a list item takes the column's whole width, not the item's. */
+    .ui-article li > :is(.ui-table-wrap, .ui-code) { width: calc(100% + 1.75rem); margin-left: -1.75rem; }
+  }
+}

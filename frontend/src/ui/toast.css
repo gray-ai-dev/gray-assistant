@@ -1,0 +1,21 @@
+@layer base, ui; /* layer order, whichever stylesheet loads first */
+/* Toasts (Toast.tsx): the skin of Sonner's unstyled toasts; part of the ui layer. Sonner positions, stacks and
+   animates them; --width is its own variable for the stack. */
+@layer ui {
+[data-sonner-toaster] { --width: 360px; }
+.ui-toast { display: flex; align-items: flex-start; gap: var(--space-3); width: var(--width); max-width: 100%; padding: var(--space-3) var(--space-4); border: 1px solid var(--strong-border); border-radius: var(--radius-card); background: var(--surface); color: var(--text); font-family: var(--font-sans); font-size: var(--text-control); line-height: var(--leading-ui); box-shadow: 0 8px 24px rgb(0 0 0 / 12%); }
+.ui-toast__icon { display: flex; flex: none; align-items: center; height: calc(var(--text-control) * var(--leading-ui)); margin: 0; color: var(--muted); }
+.ui-toast[data-type="success"] .ui-toast__icon { color: var(--green); }
+.ui-toast[data-type="error"] .ui-toast__icon { color: var(--red); }
+.ui-toast[data-type="warning"] .ui-toast__icon { color: var(--amber, var(--muted)); }
+.ui-toast__content { display: flex; flex: 1 1 auto; flex-direction: column; gap: 2px; min-width: 0; }
+.ui-toast__title { font-weight: var(--weight-medium); overflow-wrap: anywhere; }
+.ui-toast__description { color: var(--muted); font-size: var(--text-support); line-height: var(--leading-body); overflow-wrap: anywhere; }
+.ui-toast__action { flex: none; height: var(--control-height-sm); padding: 0 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); font: inherit; font-size: var(--text-control); font-weight: var(--weight-medium); cursor: pointer; }
+.ui-toast__close { order: 1; display: flex; flex: none; align-items: center; justify-content: center; width: 24px; height: 24px; margin: -2px -6px 0 0; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; }
+@media (hover: hover) and (pointer: fine) {
+  .ui-toast__close:hover { background: var(--muted-surface); color: var(--text); }
+  .ui-toast__action:hover { background: var(--muted-surface); border-color: var(--strong-border); }
+}
+.ui-toast__close:focus-visible, .ui-toast__action:focus-visible { outline: 2px solid var(--focus-color); outline-offset: 2px; }
+}
