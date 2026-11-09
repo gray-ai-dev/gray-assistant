@@ -85,6 +85,7 @@ export function resolveConfigPaths(raw: JsonObject, directory: string): JsonObje
   const stack = out["stack"];
   if (isObject(stack)) resolveNested(stack, "registry", directory, ["password_file"]);
   resolveNested(out, "tunnel", directory, ["server_ca", "frpc", "caddy", "data_dir"]);
+  resolveNested(out, "chain", directory, ["guardian_key"]);
   const tunnel = out["tunnel"];
   if (isObject(tunnel)) {
     resolveNested(tunnel, "acme", directory, ["ca_root"]);

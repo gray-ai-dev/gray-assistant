@@ -106,6 +106,17 @@ export const BOOT_EVENTS = [
   "prelaunch_image_measured",
   "prelaunch_token_retry",
   "prelaunch_token_held",
+  // P2d (docs/design/relay-no-always-on-host.md 13.11): a phase-2 boot opens the sealed boot box instead of asking a token
+  // service, or runs the empty slot (its reason in `step`).
+  "prelaunch_boot_box_retry",
+  "prelaunch_boot_box",
+  "prelaunch_designation_signature",
+  "prelaunch_no_boot_box",
+  "prelaunch_empty_slot",
+  // Review 1109b design #2: the designated image's login or pull retried, or an image the boot cannot run (the empty
+  // slot, waiting for the relay's repair; the reason in `step`).
+  "prelaunch_relay_image_retry",
+  "prelaunch_relay_image_unusable",
   "prelaunch_other",
   "egress_started",
   "acme_started",

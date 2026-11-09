@@ -26,6 +26,7 @@
  */
 import {
   MAX_RELEASE_FRESHNESS_BYTES,
+  MAX_RELEASE_LIST_BYTES,
   osImageProvenance,
   releaseListSha256,
   verifyReleaseListText,
@@ -39,8 +40,8 @@ import {
 } from "@gray/lane-verify";
 import type { DaemonFetch, DaemonLog, DaemonOsImageStatus, DaemonReleaseStatus } from "./types.ts";
 
-/** The largest release list this tool reads; the real one is tens of kilobytes. */
-export const MAX_RELEASE_LIST_BYTES = 4 * 1024 * 1024;
+/** The largest release list this tool reads (@gray/lane-verify's, which the list's signer refuses to pass). */
+export { MAX_RELEASE_LIST_BYTES };
 
 /** A release list that could not be fetched, verified or parsed. No body text is echoed. */
 export type ReleaseListErrorCode =

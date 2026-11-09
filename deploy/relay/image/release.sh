@@ -19,7 +19,14 @@
 #   --sign-password-file  the key's password alone in a 0600 file, read into COSIGN_PASSWORD only; none: empty
 #   --source          the org.opencontainers.image.source label; none when not given
 #   --docker          the docker command (the box's is ~/gray-tee/bin/docker); default $DOCKER, else docker
-#   --dry-run         build for every platform without pushing, print what would be pushed
+#   --dry-run         build for every platform without pushing, print each platform's manifest digest and the index
+#                     that would be pushed
+#
+# One build path with the published source's rebuild.sh (scripts/ops/public-source/templates/gray-assistant): the build
+# context is `git archive` of the commit, built with --no-cache and exported as an OCI layout with rebuild.sh's
+# exporter options; that layout is what is pushed (`docker buildx imagetools create` from oci-layout://), and the pushed
+# index must have the layout's digest. Each platform's manifest digest is printed before the push, so a dry run and a
+# rebuild can be compared (docs/design/public-source.md §7).
 #
 # The tag is the commit's first 12 characters. The image is built with GRAY_ASSISTANT_IMAGE=<repository>:<tag>, so
 # `init --pair` in it writes a compose.yaml that runs exactly this tag; release notes should give the digest too
@@ -75,6 +82,7 @@ if [ -n "$sign_password_file" ]; then
   export COSIGN_PASSWORD
 fi
 read -r -a dk <<<"$docker"
+command -v node >/dev/null 2>&1 || die "node is required (it reads the OCI layout; box-run.sh puts the box's on the PATH)"
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 [ -z "$(git -C "$root" status --porcelain --untracked-files=no)" ] || die "the checkout has uncommitted changes; publish a commit"
 sha=$(git -C "$root" rev-parse HEAD)
@@ -103,11 +111,14 @@ if [ -n "$source" ]; then
 fi
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/gray-assistant-release.XXXXXX")
-# The login lives in this throwaway config only; it is logged out and deleted however the script ends. The build
-# leaves the image in the local store under its own tag, removed at the end too.
+# The login lives in this throwaway config only; it is logged out and deleted however the script ends, with the build
+# context and the OCI layout. Nothing is left in the local image store.
 export DOCKER_CONFIG="$work/docker"
 mkdir -p "$DOCKER_CONFIG"
-trap '"${dk[@]}" logout "$registry" >/dev/null 2>&1; "${dk[@]}" image rm "$image" >/dev/null 2>&1; rm -rf "$work" 2>/dev/null || true' EXIT
+# buildx keeps its state in $DOCKER_CONFIG/buildx unless BUILDX_CONFIG names another directory; where docker runs as
+# root (the box) that directory is root's, and $work could not be removed (a directory was left in /tmp per release).
+export BUILDX_CONFIG="${BUILDX_CONFIG:-$HOME/.docker/buildx}"
+trap '"${dk[@]}" logout "$registry" >/dev/null 2>&1; rm -rf "$work" 2>/dev/null || true' EXIT
 # cosign signs as this script's user with its own throwaway login: the build box's docker runs as root, so the
 # config.json its login writes is root's alone and cosign could not read it (kit 1.0.8's first run, 2026-11-05).
 cosign_config="$work/cosign"
@@ -120,24 +131,59 @@ if [ "$dry_run" = 0 ]; then
 fi
 
 echo "release.sh: building $image (gray-assistant $version) for $platforms"
-push=false
-if [ "$dry_run" = 0 ]; then push=true; fi
-# Reproducible per platform (docs/design/public-source.md §7): every time in the image is the commit's (SOURCE_DATE_EPOCH:
-# the config's and history's times and, through the RUN steps' environment, useradd's day in /etc/shadow;
-# rewrite-timestamp: every file's time in the layers), so a rebuild from the published source has the same platform
-# manifest digests. The provenance attestation keeps the build's own times, so the index digest differs. unpack=false:
-# the docker driver on a containerd image store unpacks an image export by default, which BuildKit refuses beside
-# rewrite-timestamp ("exporter option rewrite-timestamp conflicts with unpack"); the image is pushed, not run here.
+# Reproducible per platform (docs/design/public-source.md §7). Every time in the image is the commit's: SOURCE_DATE_EPOCH
+# sets the config's and history's times and, through the RUN steps' environment, useradd's day in /etc/shadow;
+# rewrite-timestamp sets every file time in the layers that is later than SOURCE_DATE_EPOCH. It leaves an earlier time
+# as it is, and COPY keeps a context file's time. So the context is `git archive` of the commit, every file and
+# directory dated the commit, not this checkout, whose files are dated whenever git last wrote them here: kit 1.3.0's
+# first image carried those dates in two layers and did not rebuild to its digest (2026-11-10). A rebuild's tree is
+# written after the commit, so rewrite-timestamp dates it the same. --no-cache: a layer from an earlier build would
+# keep that build's times. The provenance attestation keeps the build's own times, so the index digest differs from a
+# rebuild's; the platform manifests do not.
 source_date_epoch=$(git -C "$root" log -1 --format=%ct "$sha")
-BUILDX_GIT_INFO=0 "${dk[@]}" buildx build --platform "$platforms" -f "$root/deploy/relay/image/Dockerfile" \
+context="$work/context"
+mkdir -p "$context"
+(umask 022 && git -C "$root" -c tar.umask=0022 archive "$sha" | tar -x -C "$context") || die "could not write $tag into the build context"
+# The exporter options are rebuild.sh's. The layout comes through stdout (dest=-), so its files are this user's even
+# where docker runs as root (the box), and leave with $work.
+layout="$work/oci"
+mkdir -p "$layout"
+BUILDX_GIT_INFO=0 "${dk[@]}" buildx build --no-cache --platform "$platforms" -f "$context/deploy/relay/image/Dockerfile" \
   --provenance=mode=max --sbom=true --build-arg "SOURCE_DATE_EPOCH=$source_date_epoch" --build-arg "GRAY_ASSISTANT_IMAGE=$image" \
-  --build-arg "GRAY_ASSISTANT_VERSION=$version" "${labels[@]}" --output "type=image,name=$image,push=$push,rewrite-timestamp=true,unpack=false" "$root"
+  --build-arg "GRAY_ASSISTANT_VERSION=$version" "${labels[@]}" --output "type=oci,dest=-,rewrite-timestamp=true" "$context" \
+  | tar -x -C "$layout"
+# The layout's image index (its blob checked against its digest), then each platform's manifest; attestations left out.
+listing=$(node -e '
+const fs = require("fs"), path = require("path"), crypto = require("crypto");
+const dir = process.argv[1];
+const top = JSON.parse(fs.readFileSync(path.join(dir, "index.json"), "utf8"));
+if (top.manifests?.length !== 1 || top.manifests[0].mediaType !== "application/vnd.oci.image.index.v1+json") process.exit(1);
+const digest = top.manifests[0].digest;
+const blob = fs.readFileSync(path.join(dir, "blobs", ...digest.split(":")));
+if (`sha256:${crypto.createHash("sha256").update(blob).digest("hex")}` !== digest) process.exit(1);
+console.log(digest);
+for (const m of JSON.parse(blob).manifests) {
+  if (m.annotations?.["vnd.docker.reference.type"] === "attestation-manifest") continue;
+  console.log(`${m.platform.os}/${m.platform.architecture}${m.platform.variant ? `/${m.platform.variant}` : ""} ${m.digest}`);
+}' "$layout") || die "the build's OCI layout holds no image index"
+index=${listing%%$'\n'*}
+[[ $index =~ ^sha256:[0-9a-f]{64}$ ]] || die "the build's OCI layout holds no image index"
+while read -r platform digest; do echo "release.sh: $platform manifest $digest"; done <<<"${listing#*$'\n'}"
+echo "release.sh: index $index"
+source_ref="oci-layout://$layout@$index"
 if [ "$dry_run" = 1 ]; then
-  echo "release.sh: dry run, nothing pushed; would push $image"
+  # What the push would send: `imagetools create` copies a single index unchanged, so it prints the layout's index.
+  "${dk[@]}" buildx imagetools create --dry-run --tag "$image" "$source_ref" >"$work/push.json" || die "imagetools create --dry-run failed"
+  would=$(node -e 'const b = require("fs").readFileSync(0); const t = b[b.length - 1] === 10 ? b.subarray(0, -1) : b;
+process.stdout.write(`sha256:${require("crypto").createHash("sha256").update(t).digest("hex")}`)' <"$work/push.json")
+  [ "$would" = "$index" ] || die "imagetools create would push the index $would, not the layout's $index"
+  echo "release.sh: dry run, nothing pushed; would push $image@$index"
   exit 0
 fi
+"${dk[@]}" buildx imagetools create --tag "$image" "$source_ref" >&2 || die "pushing the OCI layout to $image failed"
 digest=$("${dk[@]}" buildx imagetools inspect "$image" --format '{{.Manifest.Digest}}')
 [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || die "pushed, but could not read the digest; read it with: docker buildx imagetools inspect $image"
+[ "$digest" = "$index" ] || die "pushed $image, but the registry's index is $digest, not the built layout's $index; not signed"
 echo "pushed $image"
 DOCKER_CONFIG="$cosign_config" "$cosign_sh" sign-image "$sign_key_file" "$repository@$digest" "$sha" "$version" || die "pushed $image@$digest, but signing it failed"
 DOCKER_CONFIG="$cosign_config" "$cosign_sh" verify-image "$repository@$digest" >&2 || die "signed $image@$digest, but the signature does not verify"

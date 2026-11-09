@@ -1,4 +1,5 @@
-import { ed25519VerifyHex, sha256BareHex, sha256Raw, utf8Bytes } from "@gray/attest";
+import { ed25519VerifyHex, jcsBytes, sha256BareHex, sha256Raw, utf8Bytes } from "@gray/attest";
+import type { Json } from "@gray/json";
 import { z } from "zod";
 import { STACK_ID_PATTERN } from "./stack.ts";
 
@@ -17,7 +18,12 @@ import { STACK_ID_PATTERN } from "./stack.ts";
  *   only by whoever holds it, and a code is spent on exactly that key;
  * - the answer (`pairAnswerSchema`): the relay id and the setup values;
  * - the refusals, each a code and the operator's sentence;
- * - the key's fingerprint, which both the panel and gray-assistant print for the operator to compare.
+ * - the key's fingerprint, which both the panel and gray-assistant print for the operator to compare;
+ * - phase 2 (docs/design/relay-no-always-on-host.md 3.2, 4, 13.3): the chain terms a live code reads before pairing
+ *   (`pairChainRequestSchema`, `pairChainAnswerSchema`: the relay id, Gray's proposer, the chain and the first release),
+ *   from which gray-assistant computes the relay's contract and signs the guardian's approvals, and the guardian part
+ *   the pairing request then carries (`pairGuardianSchema`), covered by the relay key's signature
+ *   (`pairMessage(code, key, guardian)`).
  */
 
 /** The code's first group; a reader knows the string at sight. */
@@ -84,14 +90,27 @@ export function pairingCodeHash(code: string): string {
 /** The first line of the signed message. */
 export const PAIR_DOMAIN = "gray-relay-pair/v1";
 
-/** The bytes the relay key signs: the domain, the canonical code and the public key (64 lower hex), one per line. */
-export function pairMessage(code: string, publicKeyHex: string): Uint8Array {
-  return utf8Bytes([PAIR_DOMAIN, code, publicKeyHex].join("\n"));
+/**
+ * The bytes the relay key signs: the domain, the canonical code and the public key (64 lower hex), one per line; with a
+ * guardian part (phase 2), a fourth line, SHA-256 of the part's JCS form (RFC 8785, `@gray/attest` `jcsBytes`) as 64
+ * lower hex, so the key vouches for the guardian and the approvals the request carries. A phase-1 request signs the
+ * three lines exactly as before.
+ */
+export function pairMessage(code: string, publicKeyHex: string, guardian: PairGuardian | null = null): Uint8Array {
+  const lines = [PAIR_DOMAIN, code, publicKeyHex];
+  if (guardian !== null) lines.push(pairGuardianDigest(guardian));
+  return utf8Bytes(lines.join("\n"));
 }
 
-/** Whether `signatureHex` is the key's over `pairMessage(code, publicKeyHex)`. */
-export async function verifyPairSignature(code: string, publicKeyHex: string, signatureHex: string): Promise<boolean> {
-  return ed25519VerifyHex(publicKeyHex, pairMessage(code, publicKeyHex), signatureHex).catch(() => false);
+/** SHA-256 of the guardian part's JCS form, lower hex: the pairing message's fourth line. */
+export function pairGuardianDigest(guardian: PairGuardian): string {
+  // @gray/json spells an integer as a bigint, the only number JCS takes here.
+  return sha256BareHex(jcsBytes({ ...guardian, chain_id: BigInt(guardian.chain_id) } as unknown as Json));
+}
+
+/** Whether `signatureHex` is the key's over `pairMessage(code, publicKeyHex, guardian)`. */
+export async function verifyPairSignature(code: string, publicKeyHex: string, signatureHex: string, guardian: PairGuardian | null = null): Promise<boolean> {
+  return ed25519VerifyHex(publicKeyHex, pairMessage(code, publicKeyHex, guardian), signatureHex).catch(() => false);
 }
 
 /**
@@ -111,16 +130,98 @@ export function relayKeyFingerprint(publicKeyHex: string): string | null {
 const hex64 = z.string().regex(/^[0-9a-f]{64}$/);
 const origin = z.string().max(2048).regex(/^https?:\/\/[A-Za-z0-9.-]+(?::[0-9]{1,5})?$/);
 
-/** `POST /v1/lane-stack/pair`: the code as typed (normalized by the console), the key, its signature, gray-assistant's version. */
+/** An EVM address as the guardian part names it: 0x and 40 hex digits, any case (the console checks it, checksummed). */
+const evmAddress = z.string().regex(/^0x[0-9a-fA-F]{40}$/);
+/** A release hash as the contract takes it: 0x and 64 lower hex digits. */
+const releaseHash = z.string().regex(/^0x[0-9a-f]{64}$/);
+/** A uint as a decimal string (a nonce, a deadline, a version): no sign, no leading zero, at most 78 digits (2^256). */
+const decimal = z.string().regex(/^(0|[1-9][0-9]{0,77})$/);
+
+/**
+ * The pairing's guardian part (phase 2; relay-kit's `pairingGuardianJson` of `@gray/relay-app-auth`'s
+ * `pairingGuardianPart`, signed approvals only): the relay's guardian and optional recovery address, the chain, the
+ * contract gray-assistant computed from the chain terms, and the guardian's EIP-712 `Approve` of each hash of the first
+ * release (compose hashes first, nonces 0, 1, …), which Gray's relayer submits once Deploy deployed the contract. The
+ * console recomputes the contract and checks every signature before it keeps the part (lane-stack/pairing.ts).
+ */
+export const pairGuardianSchema = z
+  .object({
+    guardian: evmAddress,
+    recovery: evmAddress.nullable(),
+    chain_id: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+    contract: evmAddress,
+    approvals: z
+      .array(
+        z
+          .object({
+            kind: z.enum(["compose", "os_image"]),
+            hash: releaseHash,
+            version: decimal,
+            nonce: decimal,
+            deadline: decimal,
+            /** 65 bytes `r ‖ s ‖ v`. */
+            signature: z.string().regex(/^0x[0-9a-f]{130}$/),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(8),
+  })
+  .strict();
+export type PairGuardian = z.infer<typeof pairGuardianSchema>;
+
+/**
+ * `POST /v1/lane-stack/pair`: the code as typed (normalized by the console), the key, its signature, gray-assistant's
+ * version, and for a phase-2 pairing the guardian part (which the signature then covers).
+ */
 export const pairRequestSchema = z
   .object({
     code: z.string().min(1).max(128),
     public_key: hex64,
     signature: z.string().regex(/^[0-9a-f]{128}$/),
     agent_version: z.string().regex(/^[0-9A-Za-z.+-]{1,64}$/),
+    guardian: pairGuardianSchema.optional(),
   })
   .strict();
 export type PairRequest = z.infer<typeof pairRequestSchema>;
+
+/** Phase 2: the chain terms of a live pairing code, read before the pairing (nothing is spent or recorded). */
+export const PAIR_CHAIN_PATH = "/v1/lane-stack/pair/chain";
+
+/** `POST /v1/lane-stack/pair/chain`: the code as typed. */
+export const pairChainRequestSchema = z.object({ code: z.string().min(1).max(128) }).strict();
+export type PairChainRequest = z.infer<typeof pairChainRequestSchema>;
+
+const releaseAnswer = z.object({ list: z.string().max(2048).regex(/^https?:\/\//), public_key: hex64, freshness_public_key: hex64.nullable() }).strict();
+
+/**
+ * The chain terms: null while the relay is not on phase 2 (the switch is off for it, or Gray has no proposer or no
+ * phase-2 release for it), and the pairing is the phase-1 one. Otherwise everything the relay's contract address depends
+ * on but the guardian (docs/design/relay-no-always-on-host.md 13.8, C12): the relay id (the CREATE2 salt), Gray's
+ * proposer, the chain, Phala's `DstackKms` there, and the first release Deploy boots, compose hash (Phala's measured
+ * form) and OS image hash, 0x and 64 lower hex each; with the two RPC endpoints `init --pair` writes into the kit's
+ * `chain` member and Gray's release list (as the pairing answer names it), so gray-assistant checks the release against
+ * the signed list before its guardian approves it.
+ */
+export const pairChainAnswerSchema = z
+  .object({
+    chain: z
+      .object({
+        relay_id: z.string().regex(STACK_ID_PATTERN),
+        chain_id: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+        proposer: evmAddress,
+        dstack_kms: evmAddress,
+        compose_hash: releaseHash,
+        os_image_hash: releaseHash,
+        rpc: z.array(z.string().max(2048).regex(/^https?:\/\//)).length(2),
+        release: releaseAnswer.nullable(),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict();
+export type PairChainAnswer = z.infer<typeof pairChainAnswerSchema>;
+export type PairChainTerms = NonNullable<PairChainAnswer["chain"]>;
 
 /**
  * The answer: the relay, its key as Gray now holds it, and the values `init` writes into gray-assistant's config.
@@ -140,7 +241,7 @@ export const pairAnswerSchema = z
     public_key: hex64,
     fingerprint: z.string().regex(/^SHA256:[A-Za-z0-9+/]{43}$/),
     paired_ms: z.number().int().min(0),
-    release: z.object({ list: z.string().max(2048).regex(/^https?:\/\//), public_key: hex64, freshness_public_key: hex64.nullable() }).strict().nullable(),
+    release: releaseAnswer.nullable(),
     report_origin: origin,
     token_url: origin.nullable(),
     tunnel: z
@@ -162,9 +263,9 @@ export type PairAnswer = z.infer<typeof pairAnswerSchema>;
  * envelope) with its HTTP status, and the sentence gray-assistant prints. None names a value from the request.
  */
 export const PAIR_REFUSALS = {
-  lane_stack_pairing_code_unknown: { status: 404, text: "Gray knows no such pairing code. Check it was copied whole, or make a new one on the relay's page." },
-  lane_stack_pairing_code_expired: { status: 410, text: "The pairing code expired (codes last 15 minutes). Make a new one on the relay's page." },
-  lane_stack_pairing_code_used: { status: 409, text: "The pairing code was already used. Make a new one on the relay's page to pair again." },
+  lane_stack_pairing_code_unknown: { status: 404, text: "Gray knows no such pairing code. Check it was copied whole, or make a new one on the relay's Integration page." },
+  lane_stack_pairing_code_expired: { status: 410, text: "The pairing code expired (codes last 15 minutes). Make a new one on the relay's Integration page." },
+  lane_stack_pairing_code_used: { status: 409, text: "The pairing code was already used. Make a new one on the relay's Integration page to pair again." },
   lane_stack_pairing_signature_invalid: { status: 401, text: "The key's signature over the code did not verify." },
   lane_stack_pairing_key_taken: { status: 409, text: "This key is already paired with another relay. Pair this relay with a key of its own." },
   lane_stack_pairing_key_mismatch: {
@@ -173,5 +274,13 @@ export const PAIR_REFUSALS = {
   },
   lane_stack_pairing_locked: { status: 409, text: "This relay's VM is running with the key it has; delete the VM before pairing another key." },
   lane_stack_pairing_rate_limited: { status: 429, text: "Too many pairing attempts from this address. Wait a minute and try again." },
+  lane_stack_pairing_guardian_unavailable: {
+    status: 409,
+    text: "This relay is not on phase 2 now, so Gray takes no guardian at pairing. Run init --pair again with the same code: it asks Gray's chain terms first.",
+  },
+  lane_stack_pairing_guardian_invalid: {
+    status: 422,
+    text: "The guardian part does not match Gray's chain terms (the contract address, the release or a signature). Run init --pair again with the same code; if it repeats, tell Gray.",
+  },
 } as const;
 export type PairRefusal = keyof typeof PAIR_REFUSALS;

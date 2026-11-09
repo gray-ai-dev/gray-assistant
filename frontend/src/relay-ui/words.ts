@@ -226,7 +226,9 @@ export function fieldError(field: string, code: string): string {
 /** A short name for a release: its version or the start of its commit, never the whole hash. */
 export function releaseName(release: Pick<Release, 'kind' | 'version' | 'git_commit' | 'hash'>): string {
   if (release.kind === 'os_image') return release.version ? `OS image ${release.version}` : `OS image ${release.hash.slice(0, 7)}`;
-  return release.git_commit ? `Release ${release.git_commit.slice(0, 7)}` : `Release ${release.hash.slice(0, 7)}`;
+  // Twelve hex digits of the commit: the end of the tag Gray's console names the release by (2026.11.09-745af9427725,
+  // the lane's public source), so the two pages name a release alike.
+  return release.git_commit ? `Release ${release.git_commit.slice(0, 12)}` : `Release ${release.hash.slice(0, 7)}`;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

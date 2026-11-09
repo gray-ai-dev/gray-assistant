@@ -110,7 +110,7 @@ function LoginRow({ login, now, highlighted, starting, running, onSignIn }: { lo
       <span><Badge tone={words.tone} dot>{words.label}</Badge></span>
       {problem && <Text as="span" size="meta" tone="muted">{problem}</Text>}
     </Stack></TableCell>
-    <TableCell data-label="Access ends" nowrap>{login.access_expires_at_ms === null ? <Text as="span" tone="muted">—</Text> : <Text as="span" size="support" title={clockText(login.access_expires_at_ms, now)}>{relativeTime(login.access_expires_at_ms, now)}</Text>}</TableCell>
+    <TableCell data-label="Access ends" nowrap>{login.access_expires_at_ms === null ? <Text as="span" tone="muted">—</Text> : <Text as="span" size="support" title={clockText(login.access_expires_at_ms, now)}>{login.access_expires_at_ms <= now ? `Ended ${relativeTime(login.access_expires_at_ms, now)}` : relativeTime(login.access_expires_at_ms, now)}</Text>}</TableCell>
     <TableCell data-label="Next refresh" nowrap>{login.next_refresh_at_ms === null ? <Text as="span" tone="muted">{login.state === 'failed' ? 'After a new sign-in' : '—'}</Text> : <Text as="span" size="support" title={clockText(login.next_refresh_at_ms, now)}>{relativeTime(login.next_refresh_at_ms, now)}</Text>}</TableCell>
     <TableCell kind="actions"><Button size="sm" variant={needsHand && !running ? 'primary' : 'secondary'} loading={starting} disabled={running}
       title={running ? 'Its sign-in is running above.' : undefined} onClick={onSignIn}>{login.state === 'missing' ? 'Sign in' : 'Sign in again'}</Button></TableCell>

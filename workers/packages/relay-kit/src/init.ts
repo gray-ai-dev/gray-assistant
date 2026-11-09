@@ -296,6 +296,20 @@ export interface PairedConfigOptions {
   readonly pairing: { readonly gray: string; readonly fingerprint: string; readonly pairedAt: string };
   /** The releases of Gray's verified list at pairing (`releases.accepted_at_pairing`); none when it was not read. */
   readonly acceptedAtPairing: readonly PairingAcceptedHash[];
+  /**
+   * Phase 2: the relay's contract and how the kit reads it (the `chain` member, src/chain/config.ts), from Gray's chain
+   * terms and the guardian; absent or null for a phase-1 pairing.
+   */
+  readonly chain?: {
+    readonly chainId: number;
+    readonly rpc: readonly [string, string];
+    readonly proposer: string;
+    readonly guardian: string;
+    /** Relative to the config's directory. */
+    readonly guardianKey: string;
+    readonly contract: string;
+    readonly dstackKms: string;
+  } | null;
 }
 
 /**
@@ -383,9 +397,29 @@ ${options.tunnel === null ? "" : `
   "tunnel": { "server": ${j(options.tunnel.server)}, "zone": ${j(options.tunnel.zone)} },
 `}
   // The relay's own page stays off on the public origin; ui.public set to true turns it on (passkeys only, GUIDE §12).
-
+${pairedChainText(options.chain ?? null)}
   "pairing": { "gray": ${j(options.pairing.gray)}, "fingerprint": ${j(options.pairing.fingerprint)}, "paired_at": ${j(options.pairing.pairedAt)} }
 }
+`;
+}
+
+/** The `chain` member of a phase-2 pairing (an empty line for phase 1). */
+function pairedChainText(chain: PairedConfigOptions["chain"] | null): string {
+  if (chain === null || chain === undefined) return "";
+  const j = (value: unknown): string => JSON.stringify(value);
+  return `
+  // Phase 2: your relay's contract on Base, its app id. Gray deploys it at Deploy with the guardian's approvals this
+  // pairing signed; guardian-key.json is your release veto: back it up, never share it. Two endpoints of different
+  // providers, which must agree; you may name others.
+  "chain": {
+    "chain_id": ${chain.chainId},
+    "rpc": [${j(chain.rpc[0])}, ${j(chain.rpc[1])}],
+    "proposer": ${j(chain.proposer)},
+    "guardian": ${j(chain.guardian)},
+    "guardian_key": ${j(chain.guardianKey)},
+    "contract": ${j(chain.contract)},
+    "dstack_kms": ${j(chain.dstackKms)}
+  },
 `;
 }
 

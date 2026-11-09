@@ -136,7 +136,7 @@ export function EnrollPage({ code }: { code: string }) {
   }
   return <Page size="narrow">
     <Stack gap={6}>
-      <PageHeader title="Add a passkey" description="This device will sign in to your relay’s page with its fingerprint, face or PIN. The link that opened this page works once." />
+      <PageHeader title="Add a passkey" description="This device will sign in to the gray-assistant page with its fingerprint, face or PIN. The link that opened this page works once." />
       {!supported && <Notice tone="warning" role="alert">This browser can’t make passkeys. Open the link in a current Chrome, Safari, Edge or Firefox.</Notice>}
       {failure && !failure.field && <Notice tone="danger" role="alert">{failure.text}</Notice>}
       <Panel>

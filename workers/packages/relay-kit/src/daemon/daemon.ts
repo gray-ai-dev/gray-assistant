@@ -116,7 +116,7 @@ export const STACK_BOOTS_POLL_MS = 10_000;
 /** How long a boot a candidate was dropped for is not tried again (its VM may still be starting, or be gone). */
 export const STACK_BOOT_SKIP_MS = 2 * 60_000;
 /** The entry's public boots route of a relay (workers/gateway/src/lane/peer-link.ts). */
-const STACK_BOOTS_PATH = "/v1/peer/relays/";
+export const STACK_BOOTS_PATH = "/v1/peer/relays/";
 /**
  * The longest wait between two attempts of a relay-stack replica the entry could not reach a VM for (`tunnel_refused`):
  * a VM that just started attaches within seconds (an image rollout's new one, a restarted one), and a minute's backoff
@@ -224,7 +224,7 @@ interface LaneBundleAccount extends BundleAccount {
  * no declared password is sealed with an empty password, which is the one wire form E2 has for it.
  * Nothing here logs or returns a value in an error.
  */
-function egressOf(planned: PlannedAccount, read: SourceCredential): EgressSpec | undefined | "invalid" {
+export function egressOf(planned: PlannedAccount, read: SourceCredential): EgressSpec | undefined | "invalid" {
   const declared = planned.account.egress;
   if (declared === undefined) {
     // A password without a declared proxy has no wire form.
@@ -1271,11 +1271,19 @@ class RelayDaemonImpl implements RelayDaemon {
    * stack replica, and the one it replaced turns `draining`: renewed, never revoked, until its boot is gone (dropped,
    * nothing to revoke) or STACK_DRAIN_MAX_MS passed (the whole-relay revoke). If the new boot goes while the old one
    * still drains (a rollout Gray undid), the old one is the stack replica again at once. Nothing here changes
-   * control.json: both boots are the adopted app's.
+   * control.json: both boots are the adopted app's. With `stack.instance: "config"` the app is the config's (its
+   * `stack.lane_origin` and that origin's `lane.instances` binding), and a rollout's second boot is found, attested
+   * against that binding and sealed the same way (review 11-09: the console's rollout gate checks only the kit).
    */
   async #syncStackSecondary(): Promise<void> {
-    if (this.#config.stack?.instanceSource !== "gray") return;
-    const held = this.#control.stackInstance ?? null;
+    const stack = this.#config.stack;
+    if (stack === null) return;
+    const held: StackInstanceValues | null =
+      stack.instanceSource === "gray"
+        ? (this.#control.stackInstance ?? null)
+        : stack.laneOrigin === null || stack.instance === null
+          ? null
+          : { ...bindingOf(stack.instance), laneOrigin: stack.laneOrigin };
     const primary = this.#stackReplica;
     const mono = this.#options.clock.monoMs();
     let second = this.#stackSecondary;
@@ -2827,9 +2835,14 @@ class RelayDaemonImpl implements RelayDaemon {
     });
   }
 
-  /** A relay-stack replica reaches its own boot through the entry (`?keyset=`, docs/design/relay-zero-downtime.md). */
+  /**
+   * A relay-stack replica reaches its own boot through the entry (`?keyset=`, docs/design/relay-zero-downtime.md). Only
+   * a stack replica gets an address keyset, and it keeps it once it is no longer one: the whole-relay revoke of a boot
+   * leaving supervision (a drained or dropped second replica, a removed or replaced instance) goes to that boot, not to
+   * the entry's newest.
+   */
   #tunnelKeysetOf(replica: ReplicaRuntime): { readonly tunnelKeyset?: string } {
-    return this.#isStackOrigin(replica) && replica.addressKeyset !== null && tunnelOriginOf(replica.origin) !== null ? { tunnelKeyset: replica.addressKeyset } : {};
+    return replica.addressKeyset !== null && tunnelOriginOf(replica.origin) !== null ? { tunnelKeyset: replica.addressKeyset } : {};
   }
 
   async #request(url: string, init: Parameters<RelayDaemonOptions["fetch"]>[1]) {
@@ -2967,7 +2980,7 @@ export function refusalCode(response: { readonly status: number; readonly body: 
 }
 
 /** R04: a source error that names one account, so the rest of the bundle can still install. */
-function isPerAccountSourceError(error: unknown): boolean {
+export function isPerAccountSourceError(error: unknown): boolean {
   return error instanceof RelayKitError && (error.code === "source_not_found" || error.code === "source_shape_changed");
 }
 
@@ -2978,7 +2991,7 @@ function bareKeyset(digest: string): string {
 }
 
 /** The boots of the entry's boots-route answer for `relayId`, newest first; none for an answer of another shape. */
-function bootRowsOf(value: Json, relayId: string): { readonly keyset: string; readonly appId: string | null }[] {
+export function bootRowsOf(value: Json, relayId: string): { readonly keyset: string; readonly appId: string | null }[] {
   if (!isObject(value) || value.relay_id !== relayId || !Array.isArray(value.boots)) return [];
   const out: { keyset: string; appId: string | null }[] = [];
   for (const row of value.boots) {

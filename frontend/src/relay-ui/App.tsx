@@ -111,8 +111,8 @@ export function App() {
       </a>
       <span className="relay-ui-where">
         {mode === 'public'
-          ? <Badge icon={<ShieldCheck size={14} aria-hidden="true" />} title={`gray-assistant serves this page from your relay at ${window.location.host}. Keys you enter here go to gray-assistant and nowhere else: Gray’s website never sees them.`}>Your relay’s page</Badge>
-          : <Badge icon={<ShieldCheck size={14} aria-hidden="true" />} title="gray-assistant serves this page on 127.0.0.1 of your relay’s machine, reached directly or through ssh -L. Keys you enter here go to gray-assistant there and nowhere else: Gray’s website never sees them.">Your relay’s page</Badge>}
+          ? <Badge icon={<ShieldCheck size={14} aria-hidden="true" />} title={`gray-assistant serves this page from your relay at ${window.location.host}. Keys you enter here go to gray-assistant and nowhere else: Gray’s website never sees them.`}>gray-assistant page</Badge>
+          : <Badge icon={<ShieldCheck size={14} aria-hidden="true" />} title="gray-assistant serves this page on 127.0.0.1 of your relay’s machine, reached directly or through ssh -L. Keys you enter here go to gray-assistant there and nowhere else: Gray’s website never sees them.">gray-assistant page</Badge>}
       </span>
       {links.length > 0 && <OverflowNav className="desktop-nav" label="Pages" links={links} />}
       <div className="account-nav">

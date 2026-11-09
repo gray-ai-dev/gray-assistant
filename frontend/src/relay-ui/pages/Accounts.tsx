@@ -126,7 +126,8 @@ function SealedCell({ account, pollSeconds }: { account: Account; pollSeconds: n
       <Badge tone={sealed.state === 'sealed' ? 'success' : 'info'} dot>{sealed.state === 'sealed' ? 'Sealed' : 'On some lanes'}</Badge>
       {sealed.at_ms !== null && <Text as="span" size="meta" tone="muted" title={clockText(sealed.at_ms, now)}>{relativeTime(sealed.at_ms, now)}</Text>}
     </Inline>
-    <Text as="span" size="meta" tone="muted" numeric>Version {sealed.version}</Text>
+    {/* A version that is a time (gray-assistant numbers by the clock) says no more than the time above it. */}
+    {sealed.version !== null && !/^\d{13,}$/.test(sealed.version) && <Text as="span" size="meta" tone="muted" numeric>Version {sealed.version}</Text>}
   </Stack>;
   if (sealed.state === 'waiting') return <Stack gap={1}>
     <span><Badge tone="info" dot>Waiting to seal</Badge></span>

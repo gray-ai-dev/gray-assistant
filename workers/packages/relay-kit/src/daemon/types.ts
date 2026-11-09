@@ -68,6 +68,8 @@ export interface DaemonAttestInput {
   readonly instance?: LaneBinding;
   /** Through a tunnel origin, the boot to attest (its keyset digest, 64 hex); absent: the entry's newest boot. */
   readonly keyset?: string;
+  /** P4b: a phase-2 boot in the empty slot passes (the relay's own `deliver` only; the daemon never sets it). */
+  readonly allowEmptySlot?: boolean;
 }
 
 /** A verified replica, as the daemon needs it to seal and to identify the boot. */

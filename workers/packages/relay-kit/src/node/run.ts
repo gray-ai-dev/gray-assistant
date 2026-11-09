@@ -171,6 +171,7 @@ export function createDaemonAttest(options: {
         quoteVerifier: options.quoteVerifier,
         expectedInstance,
         ...(input.keyset === undefined ? {} : { keyset: input.keyset }),
+        ...(input.allowEmptySlot === true ? { allowEmptySlot: true } : {}),
       });
     } catch (error) {
       const code = error instanceof RelayKitError ? error.code : "io";

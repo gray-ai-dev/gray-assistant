@@ -85,7 +85,7 @@ export function HealthPage({ relay }: { relay: RelayInfo }) {
             <Text size="meta" tone="muted">{line.message}</Text>
           </li>)}</List>
         </Disclosure>}
-        {skipped.length > 0 && <Text size="meta" tone="muted">Not checked here: {skipped.map(line => checkTitle(line.id)).join(', ')}.</Text>}
+        {skipped.length > 0 && <Text size="meta" tone="muted">Not run from this page: {skipped.map(line => checkTitle(line.id)).join(', ')}. gray-assistant doctor on the relay’s host runs {skipped.length === 1 ? 'it' : 'them'}.</Text>}
       </>}
     </Stack>
   </Page>;

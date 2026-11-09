@@ -135,6 +135,11 @@ export interface AttestLaneOptions {
   readonly keyset?: string;
   readonly expectedInstance: LaneBinding;
   /**
+   * P2d/P4b: accept a phase-2 boot in the empty slot (`@gray/lane-verify` `allowEmptySlot`). Only the relay's own
+   * delivery (`deliver`) sets it: an empty slot serves nothing, so nothing else may be sent to it.
+   */
+  readonly allowEmptySlot?: boolean;
+  /**
    * S11b for a caller with no release registry (`gray-assistant attest`): the boot's OS image must be
    * production by its own texts in the release list, or one of `acceptedOsImages`; a verified dev
    * image is refused either way. The daemon leaves it out: its registry decides (first sight, delay,
@@ -232,6 +237,7 @@ export async function attestLane(options: AttestLaneOptions): Promise<AttestLane
     ...(tunnelOriginOf(options.origin) === null ? { host: new URL(options.origin).hostname } : {}),
     nowSecs: options.nowSecs,
     quoteVerifier: options.quoteVerifier,
+    ...(options.allowEmptySlot === true ? { allowEmptySlot: true } : {}),
   });
   // The instance checks join the transcript, so a mismatch fails the verification like any other
   // check and the CLI prints it with the rest.

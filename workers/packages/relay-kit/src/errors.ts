@@ -46,7 +46,15 @@ export type RelayKitErrorCode =
   | "upload_failed"
   | "unsupported_document"
   | "relay_connector"
-  | "relay_policy";
+  | "relay_policy"
+  /** The relay's contract answered, and the answer refuses the step (wrong code, chain, guardian; not effective; paused). */
+  | "chain_refused"
+  /** An RPC endpoint of the relay's chain could not be read. */
+  | "chain_unreachable"
+  /** The two RPC endpoints answered the same question differently. */
+  | "chain_disagreement"
+  /** The two endpoints' latest blocks are too far apart, or the block both have is too old, to read the chain as it is now. */
+  | "chain_stale";
 
 /** An error the CLI prints as `gray-assistant: <code>[: <detail>]`, never with a secret in it. */
 export class RelayKitError extends Error {

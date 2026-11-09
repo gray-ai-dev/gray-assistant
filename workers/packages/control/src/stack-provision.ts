@@ -84,7 +84,18 @@ export const PROVISION_STEPS = {
   // that instance the new release's compose and its own env.
   upgrade: ["check", "replicate", "update", "watch", "shift", "drain", "remove_old"],
 } as const satisfies Record<ProvisionKind, readonly string[]>;
-export type ProvisionStep = (typeof PROVISION_STEPS)[ProvisionKind][number];
+/**
+ * A phase-2 Deploy (docs/design/relay-no-always-on-host.md 3.2, 13.11 P5a-2): before the app is provisioned, `contract`
+ * puts the relay's own contract on Base (deployed through the CREATE2 proxy, registered on Phala's DstackKms, the
+ * guardian's pairing approvals submitted), whose address is the app id. A deploy queued for such a relay counts these.
+ */
+export const PHASE2_DEPLOY_STEPS = ["check", "contract", "provision", "publish", "create", "watch"] as const;
+export type ProvisionStep = (typeof PROVISION_STEPS)[ProvisionKind][number] | (typeof PHASE2_DEPLOY_STEPS)[number];
+
+/** The steps an operation of `kind` counts: a phase-2 Deploy's include `contract`. */
+export function provisionStepsOf(kind: ProvisionKind, phase2: boolean): readonly string[] {
+  return kind === "deploy" && phase2 ? PHASE2_DEPLOY_STEPS : PROVISION_STEPS[kind];
+}
 
 // ------------------------------------------------------------------------------------------------- release profile (P4)
 
@@ -128,6 +139,15 @@ export const releaseProfileInputSchema = z
      * The provisioner checks the landed KMS's CA against the compose, so a wrong id refuses before a VM is made.
      */
     kms_id: z.string().regex(PHALA_KMS_ID),
+    /**
+     * 1 (the default): Phala's own KMS and the token service. 2 (docs/design/relay-no-always-on-host.md 13.11 P5a): an
+     * on-chain KMS of the relays' chain under the relay's own contract; the compose names the KMS lease (lane's
+     * LANE_KMS_URL, `app-compose.mjs --kms-url`), `kms_id` is one of the console's RELAY_CHAIN_KMS_IDS and
+     * `os_image_hash` is set. A scope has one current profile per phase.
+     */
+    phase: z.union([z.literal(1), z.literal(2)]).optional(),
+    /** Phase 2: the OS image hash the VMs measure (Phala's `os_image_hash` for `image_os`), 64 lower hex, no 0x. */
+    os_image_hash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
     reason: z.string(),
   })
   .strict();
@@ -249,7 +269,31 @@ export const PRELAUNCH_STATUS: Readonly<Record<string, BootEvent>> = {
   "relay image measured": "prelaunch_image_measured",
   // life/image's bounded token-service retry (S51a): one line per unanswered attempt, no value in it.
   "pull-token service not answering, retrying": "prelaunch_token_retry",
+  // P2d: a phase-2 boot (no token service): Gray's copy or share retried, the boot box opened and its designation
+  // checked, or the empty slot in place (`no boot box to run (<reason>): the empty slot` is read with its reason below).
+  "boot box copy or share unavailable, retrying": "prelaunch_boot_box_retry",
+  "boot box opened": "prelaunch_boot_box",
+  "designation signature verified": "prelaunch_designation_signature",
+  "empty slot in the relay's slot": "prelaunch_empty_slot",
+  // Review 1109b design #2: the designated image's login or pull tried again, or an image the boot cannot run, which
+  // boots the empty slot to wait for the relay's repair.
+  "relay registry login refused, retrying": "prelaunch_relay_image_retry",
+  "relay image pull failed, retrying": "prelaunch_relay_image_retry",
+  "relay image cannot run (registry_login_failed): the empty slot, waiting for a repair": "prelaunch_relay_image_unusable",
+  "relay image cannot run (image_pull_failed): the empty slot, waiting for a repair": "prelaunch_relay_image_unusable",
+  "relay image cannot run (image_declares_volume): the empty slot, waiting for a repair": "prelaunch_relay_image_unusable",
 };
+
+/** P2d: why a phase-2 boot runs the empty slot (pre-launch.stack.sh's closed list; the helper's EMPTY_SLOT_REASONS). */
+export const PRELAUNCH_EMPTY_SLOT_REASONS = [
+  "no_boot_box",
+  "boot_box_missing",
+  "boot_box_rolled_back",
+  "boot_box_unopened",
+  "boot_box_invalid",
+  "designation_refused",
+  "share_refused",
+] as const;
 
 /** pre-launch.stack.sh's failure labels (`gray-prelaunch: FAILED: <label>`), each with its class. */
 export const PRELAUNCH_FAILURES: Readonly<Record<string, BootFailureClass>> = {
@@ -261,6 +305,8 @@ export const PRELAUNCH_FAILURES: Readonly<Record<string, BootFailureClass>> = {
   "the relay token service did not answer in time": "token_service",
   "the token wait is not whole seconds": "gray_platform",
   "waiting for the relay token service": "gray_platform",
+  "waiting for the relay registry": "gray_platform",
+  "removing the relay image that cannot run": "gray_platform",
   "opening the pull-token envelope": "token_service",
   "the registry login": "relay_registry",
   "pulling the relay image": "relay_registry",
@@ -296,6 +342,21 @@ export const PRELAUNCH_FAILURES: Readonly<Record<string, BootFailureClass>> = {
   "app-compose.json or the compose file is missing": "gray_platform",
   "a required tool is missing": "gray_platform",
   "/run is not on tmpfs": "gray_platform",
+  // P2d: a phase-2 boot. The helper and the empty slot are Gray's; a designation pre-launch refuses itself is the image's.
+  "the relay's data-disk directory": "gray_platform",
+  "the boot box helper's inputs": "gray_platform",
+  "the boot box helper's directory": "gray_platform",
+  "the boot box helper": "gray_platform",
+  "the boot box helper's answer": "gray_platform",
+  "Gray's boot box copy or share did not answer in time": "gray_platform",
+  "waiting for Gray's boot box copy or share": "gray_platform",
+  "the designation in the boot box": "relay_image",
+  "the designation signature": "relay_image",
+  "preparing the empty slot": "gray_platform",
+  "importing the empty slot": "gray_platform",
+  "removing the empty slot's source container": "gray_platform",
+  "the empty slot is not gray-idle alone": "gray_platform",
+  "deleting the work directory": "gray_platform",
 };
 
 /**
@@ -333,6 +394,8 @@ const CONTAINER = /^\s*Container (\S+)\s+(Started|Exited|Error)\s*$/;
 const HELD = /^pull-token service held the boot \(([a-z0-9_]{1,64})\), retrying$/;
 /** A failure label with the token service's refusal code after it: `the pull-token request (release_rejected)`. */
 const REFUSED = /^(.+) \(([a-z0-9_]{1,64})\)$/;
+/** P2d: a phase-2 boot with no boot box to run, and why (PRELAUNCH_EMPTY_SLOT_REASONS). */
+const NO_BOOT_BOX = /^no boot box to run \(([a-z_]{1,64})\): the empty slot$/;
 
 /** A code a line names, as a closed word: one of TOKEN_SERVICE_CODES, else `other` (its text dropped). */
 export function tokenServiceCodeOf(text: string): TokenServiceCode | "other" {
@@ -370,6 +433,13 @@ export function bootEventsOf(serial: string): SerialEvent[] {
         const cls = PRELAUNCH_FAILURES[base];
         if (refused !== null && cls !== undefined) add({ event: "prelaunch_failed", uptimeS, failure: "token_refused", step: base, code: tokenServiceCodeOf(refused[2]!) });
         else add({ event: "prelaunch_failed", uptimeS, failure: cls ?? "gray_platform", step: cls === undefined ? null : label, code: null });
+        continue;
+      }
+      const empty = NO_BOOT_BOX.exec(label);
+      if (empty !== null) {
+        // The reason, as a closed word in `step` (a reason the list lacks is `other`).
+        const reason = (PRELAUNCH_EMPTY_SLOT_REASONS as readonly string[]).includes(empty[1]!) ? empty[1]! : "other";
+        add({ event: "prelaunch_no_boot_box", uptimeS, failure: null, step: reason, code: null });
         continue;
       }
       const held = HELD.exec(label);
@@ -415,7 +485,7 @@ export interface FailureWords {
 export const BOOT_FAILURE_WORDS: Readonly<Record<BootFailureClass, FailureWords>> = {
   token_service: {
     title: "Your VM could not get its pull token from your token service.",
-    fix: "Is gray-assistant run up? Check that it is running and that its token URL answers from the internet (gray-assistant doctor), then retry the boot.",
+    fix: "Check that gray-assistant is running and that its token URL answers from the internet (gray-assistant doctor), then retry the boot.",
     side: "relay",
   },
   // The code's own words (TOKEN_SERVICE_CODE_WORDS) replace these whenever the boot event names a known code.
@@ -545,14 +615,14 @@ export const TOKEN_SERVICE_CODE_WORDS: Readonly<Record<TokenServiceCode, TokenSe
   compose_not_listed: gray("The VM runs a Gray release your release list does not name."),
   release_rejected: {
     title: "You rejected the Gray release this VM runs.",
-    fix: "Accept it on your relay's page under Releases, or on the host, then retry the boot.",
+    fix: "Accept it on the gray-assistant page (gray-assistant ui) under Releases, or on the host, then retry the boot.",
     side: "relay",
     command: "gray-assistant releases accept <compose hash>",
     waits: false,
   },
   release_not_accepted: {
     title: "This Gray release waits for your acceptance.",
-    fix: "Accept it on your relay's page under Releases, or on the host. The waiting boot then goes on.",
+    fix: "Accept it on the gray-assistant page (gray-assistant ui) under Releases, or on the host. The waiting boot then goes on.",
     side: "relay",
     command: "gray-assistant releases accept <compose hash>",
     waits: true,
@@ -561,7 +631,7 @@ export const TOKEN_SERVICE_CODE_WORDS: Readonly<Record<TokenServiceCode, TokenSe
   os_image_not_listed: gray("The VM's OS image is not in Gray's release list."),
   os_image_rejected: {
     title: "You rejected the VM's OS image.",
-    fix: "Accept it on your relay's page under Releases, or on the host, then retry the boot.",
+    fix: "Accept it on the gray-assistant page (gray-assistant ui) under Releases, or on the host, then retry the boot.",
     side: "relay",
     command: "gray-assistant releases accept <os image hash>",
     waits: false,
@@ -570,7 +640,7 @@ export const TOKEN_SERVICE_CODE_WORDS: Readonly<Record<TokenServiceCode, TokenSe
   os_image_unverified: gray("The VM's OS image could not be verified."),
   os_image_not_accepted: {
     title: "The VM's OS image waits for your acceptance.",
-    fix: "Accept it on your relay's page under Releases, or on the host. The waiting boot then goes on.",
+    fix: "Accept it on the gray-assistant page (gray-assistant ui) under Releases, or on the host. The waiting boot then goes on.",
     side: "relay",
     command: "gray-assistant releases accept <os image hash>",
     waits: true,
@@ -675,7 +745,7 @@ export const STEP_FAILURE_WORDS: Readonly<Record<string, FailureWords>> = {
   // Relay standard v1.7 item 9: a wait, not a failure. The VM is not made until gray-assistant reports the release accepted.
   release_not_accepted: {
     title: "Your relay has not accepted the Gray release the VM would run.",
-    fix: "Accept it on your relay's page under Releases, or on the relay's host (gray-assistant releases accept <compose hash>). gray-assistant reports it within a minute; then Deploy.",
+    fix: "Accept it on the gray-assistant page (gray-assistant ui) under Releases, or on the relay's host (gray-assistant releases accept <compose hash>). gray-assistant reports it within a minute; then Deploy.",
     side: "relay",
   },
   // A wait too: Gray has no list of the relay's accepted releases since it paired. gray-assistant sends one with its first
@@ -689,6 +759,21 @@ export const STEP_FAILURE_WORDS: Readonly<Record<string, FailureWords>> = {
   // docs/design/relay-outbound-only.md decision R10: a VM of this release has no public address, and only a gray-assistant
   // with the tunnel transport reaches it; an older one could not renew the VM's lease and its accounts would stop.
   kit_outdated: kitOutdatedWords(null, null),
+  // Phase 2 (docs/design/relay-no-always-on-host.md 13.11 P5a-2): Deploy's `contract` step on Base.
+  chain_unconfigured: { title: "Gray cannot deploy relay contracts in this environment yet.", fix: "Gray's operators have been told; nothing was deployed. Retry later.", side: "gray" },
+  chain_unavailable: { title: "Base did not answer Gray's requests.", fix: "Retry in a few minutes; a step done before is not repeated.", side: "gray" },
+  // Review 2026-11-09b chain #1: the relayer's gas ceiling or a day's spend cap (the timeline names which part and limit).
+  relayer_limit: {
+    title: "Gray does not pay for this transaction of your relay's contract.",
+    fix: "It is past what Gray's relayer pays for one transaction or for a day. Submit it yourself from a key with Base ETH, or retry tomorrow; Deploy finds what is done on Base and does not send it again.",
+    side: "relay",
+  },
+  contract_mismatch: { title: "The address of your relay's contract holds other code.", fix: "Gray's operators have been told; nothing was started. Pair again with a new code, then Deploy.", side: "gray" },
+  approval_refused: {
+    title: "Your guardian's approvals from pairing can no longer be submitted.",
+    fix: "They expire 30 days after pairing, and a later decision on the release supersedes them. Pair again with a new code (it signs fresh approvals), then Deploy.",
+    side: "relay",
+  },
   phala_refused: { title: "The cloud provider refused the request.", fix: "Gray's operators have been told. Retry later.", side: "gray" },
   phala_unavailable: { title: "The cloud provider did not answer.", fix: "Retry in a few minutes.", side: "gray" },
   kms_untrusted: { title: "The VM landed on a key service Gray does not trust.", fix: "Gray's operators have been told; nothing was started. Retry later.", side: "gray" },
@@ -930,6 +1015,28 @@ export interface ProvisionPlan {
   readonly channel?: StackChannel;
   /** LANE_STACK_ENTRY_ORIGIN: the entry an outbound VM's health and gray-assistant's tunnel go through; null when unset. */
   readonly entryOrigin?: string | null;
+  /**
+   * Phase 2 (docs/design/relay-no-always-on-host.md 13.11 P5a-2): a Deploy of a relay whose pairing gave a guardian part
+   * (lane_stack_relay_guardians), with the phase-2 switch on for it. The app id is `contract`; the profile is the release
+   * the guardian approved. Absent or null: phase 1.
+   */
+  readonly chain?: ProvisionChain | null;
+}
+
+/** What a phase-2 Deploy deploys on the relays' chain: the pairing's guardian part as the console checked it. */
+export interface ProvisionChain {
+  readonly chainId: number;
+  /** Gray's release proposer, 0x and 40 hex. */
+  readonly proposer: string;
+  readonly guardian: string;
+  readonly recovery: string | null;
+  /** The relay's contract (CREATE2), the app id. */
+  readonly contract: string;
+  /** The approved release, 64 lower hex each (the profile's compose hash and its OS image hash). */
+  readonly composeHash: string;
+  readonly osImageHash: string;
+  /** The guardian's EIP-712 approvals in submission order (integers as decimal strings). */
+  readonly approvals: readonly { readonly kind: "compose" | "os_image"; readonly hash: string; readonly version: string; readonly nonce: string; readonly deadline: string; readonly signature: string }[];
 }
 
 export type PlanAnswer = { readonly ok: true; readonly plan: ProvisionPlan } | { readonly ok: false; readonly code: string };
@@ -991,6 +1098,104 @@ export interface ProvisionerStoreRpc {
    */
   queueReleaseMoves(input: { readonly limit: number }): Promise<{ readonly queued: readonly string[] }>;
   containers(input: { readonly relayId: string; readonly online: boolean; readonly containers: unknown }): Promise<{ readonly crashLoop: readonly string[] }>;
+}
+
+// ------------------------------------------------------------------------------------------------- Gray's relayer (phase 2, P5a-3)
+
+const evmAddress = z.string().regex(/^0x[0-9a-fA-F]{40}$/);
+const uintText = z.string().regex(/^(0|[1-9][0-9]{0,77})$/);
+
+/**
+ * A guardian's signed decision for Gray's relayer (docs/design/relay-no-always-on-host.md 3.2, 13.11 P5a-3): the JSON
+ * gray-assistant prints for `releases approve|reject`, `pause` and `unpause` (relay-kit `signedActionJson`; its
+ * `function` and `calldata` members may come along and are recomputed, never sent as given), or the Releases page
+ * builds from a wallet's signature. `kind` and `hash` for an approve, veto or remove; null for a pause or unpause.
+ * The signature is 65 bytes for a key, longer for a contract guardian (ERC-1271, a Safe).
+ */
+export const relayerActionSchema = z
+  .object({
+    action: z.enum(["approve", "veto", "remove", "pause", "unpause"]),
+    kind: z.enum(["compose", "os_image"]).nullable(),
+    hash: z.string().regex(/^0x[0-9a-f]{64}$/).nullable(),
+    chain_id: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+    contract: evmAddress,
+    version: uintText,
+    signer: evmAddress,
+    nonce: uintText,
+    deadline: uintText,
+    signature: z.string().regex(/^0x(?:[0-9a-fA-F]{2}){65,4096}$/),
+    function: z.string().max(64).optional(),
+    calldata: z.string().max(20_000).optional(),
+  })
+  .strict()
+  .refine((a) => (a.action === "pause" || a.action === "unpause" ? a.kind === null && a.hash === null : a.kind !== null && a.hash !== null), {
+    message: "an approve, veto or remove names its kind and hash; a pause or unpause names neither",
+    path: ["kind"],
+  });
+export type RelayerAction = z.infer<typeof relayerActionSchema>;
+
+/**
+ * Why Gray's relayer did not submit a decision, each with the HTTP status the console answers and the words the panel
+ * and gray-assistant show. `not_sponsored`, `unavailable`, `busy` and `over_limit` are Gray's side (the relay may `--submit` itself);
+ * the rest are the decision's own.
+ */
+export const RELAYER_REFUSALS = {
+  not_sponsored: { status: 503, text: "Gray does not submit guardian decisions here. Send it yourself: gray-assistant ... --submit --rpc <url> (a few cents of Base ETH from the guardian key)." },
+  unavailable: { status: 503, text: "Gray could not reach Base just now. Retry in a minute, or send it yourself with --submit." },
+  busy: { status: 503, text: "Gray's relayer has a transaction waiting to be mined. Retry in a minute, or send it yourself with --submit." },
+  // Review 2026-11-09b chain #1: past the relayer's gas ceiling or a day's spend cap nothing is sent.
+  over_limit: { status: 503, text: "Gray does not pay for this; submit it yourself: gray-assistant ... --submit --rpc <url> (a few cents of Base ETH from the guardian key)." },
+  chain: { status: 422, text: "The decision is signed for another chain than your relay's contract is on." },
+  no_contract: { status: 422, text: "There is no contract at that address on Base yet: Deploy deploys it." },
+  not_guardian: { status: 422, text: "The signer is neither your contract's guardian nor its recovery address." },
+  superseded: { status: 422, text: "A later decision on the same release (or on pause) superseded this signature. Sign it again." },
+  nonce: { status: 422, text: "The signature names another nonce than the signer's next one. Sign it again (gray-assistant reads the nonce)." },
+  expired: { status: 422, text: "The signature's deadline has passed. Sign it again." },
+  reverted: { status: 422, text: "Your contract would refuse this decision (a bad signature, or a release not proposed or removed)." },
+  not_proposer: { status: 422, text: "The message is not signed by the contract's proposer, Gray's release key." },
+} as const;
+export type RelayerRefusal = keyof typeof RELAYER_REFUSALS;
+
+export type RelayerAnswer = { readonly ok: true; readonly transactionHash: string } | { readonly ok: false; readonly code: RelayerRefusal; readonly detail: string | null };
+
+/**
+ * One signed item of the release tool's proposals file (`gray-release-proposals/1`, deploy/tee/release/proposals.mjs,
+ * `@gray/relay-app-auth` `proposerItemJson`): Gray's proposer's `Propose` or `Remove` of a release on one relay's
+ * contract (docs/design/relay-no-always-on-host.md 13.11 P5b). The digest is checked against the fields
+ * (`parseProposerItem`) wherever the item is read; `typed_data` is the offline signer's and is not carried.
+ */
+export const relayerProposalSchema = z
+  .object({
+    relay_id: z.string().regex(/^[A-Za-z0-9_.:-]{1,128}$/),
+    chain_id: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
+    contract: evmAddress,
+    action: z.enum(["propose", "remove"]),
+    kind: z.enum(["compose", "os_image"]),
+    hash: z.string().regex(/^0x[0-9a-f]{64}$/),
+    version: uintText,
+    proposer: evmAddress,
+    nonce: uintText,
+    deadline: uintText,
+    digest: z.string().regex(/^0x[0-9a-f]{64}$/),
+    signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/),
+  })
+  .strict();
+export type RelayerProposal = z.infer<typeof relayerProposalSchema>;
+
+/**
+ * gray-provisioner's Relayer entrypoint as the console calls it through its RELAYER binding (P5a-3): the provisioner
+ * holds the relayer key and the chain; the console has checked the relay's session, that the contract is the relay's,
+ * the chain and the deadline, and the rate.
+ */
+export interface RelayerRpc {
+  submit(input: { readonly relayId: string; readonly action: RelayerAction }): Promise<RelayerAnswer>;
+  /**
+   * Gray's proposer's signed `Propose` or `Remove` (P5b), from an operator's route only: the console has checked the
+   * operator, that the contract is the relay's and the chain. The provisioner checks the signer is the contract's
+   * `proposer()`, the nonce, a `Remove`'s version and the simulated call, sends it and waits for its receipt (so the
+   * next message of the file, at the proposer's next nonce, can follow).
+   */
+  propose(input: { readonly relayId: string; readonly proposal: RelayerProposal }): Promise<RelayerAnswer>;
 }
 
 // ------------------------------------------------------------------------------------------------- the agent channel (P12)

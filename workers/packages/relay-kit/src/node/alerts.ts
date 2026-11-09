@@ -44,7 +44,7 @@ export function foreignCertificateAlert(relayId: string, name: string, finding: 
     text:
       `gray-assistant ${relayId}: a certificate for ${name} exists whose key this relay never served (${finding.issuer}, ` +
       `key SHA-256 ${finding.pubkeySha256}, valid until ${notAfter}, seen in CT by ${finding.source}). Someone who can ` +
-      `route ${name} (Gray's rendezvous, or whoever holds its DNS) may be intercepting the relay's page. Stop using ` +
+      `route ${name} (Gray's rendezvous, or whoever holds its DNS) may be intercepting the gray-assistant page. Stop using ` +
       `the page through the tunnel, check the certificate, and run \`gray-assistant tunnel ack ${finding.certSha256 ?? finding.pubkeySha256}\` once it is explained.`,
   };
 }

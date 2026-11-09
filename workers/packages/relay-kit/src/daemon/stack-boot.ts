@@ -4,7 +4,7 @@
  * relay's. Verification itself (the quote, the replay, the release pinning, the instance) is `DaemonAttest`'s; these
  * are the comparisons after it.
  */
-import type { StackBootFacts } from "@gray/lane-verify";
+import { isRelayDesignationClaim, type StackBootFacts } from "@gray/lane-verify";
 import { tunnelOriginOf } from "../lane-origin.ts";
 import type { StackConfig } from "./config.ts";
 import type { DaemonAttestation, StackIssueRecord } from "./types.ts";
@@ -30,6 +30,13 @@ export function attestationMismatch(result: DaemonAttestation, origin: string, r
  * S54: a relay-stack boot is the relay's when pre-launch sealed it, its identity names this relay, its token service
  * and its key, its image is one of `stack.relay_images`, and this relay's own pull-token record issued that image to
  * that boot (its nonce) for the same compose. The code is the replica's error without its `attest_` prefix.
+ *
+ * P2d (docs/design/relay-no-always-on-host.md §3.5): a phase-2 boot measures the relay-signed designation from its boot
+ * box (`gray-relay-image` v2) instead of a token service's answer. Its signature by the identity's key is
+ * `verifyStackBoot`'s, and the identity's key is this relay's (checked here), so a listed image needs no issue log: no
+ * token service issued it. A phase-2 boot in the empty slot (no boot box opened, `image: null`) runs no relay image and
+ * serves nothing: `stack_boot_empty_slot`, which the daemon treats like any boot it does not serve; the one-shot
+ * `deliver` (P4) is what accepts it.
  */
 export async function stackBootDecision(input: {
   readonly facts: StackBootFacts | null;
@@ -43,6 +50,7 @@ export async function stackBootDecision(input: {
   const { facts, stack } = input;
   if (stack === null) return { ok: false, code: "stack_not_configured" };
   if (facts === null) return { ok: false, code: "stack_boot_missing" };
+  if (facts.phase === "empty_slot") return { ok: false, code: "stack_boot_empty_slot" };
   if (facts.phase !== "sealed") return { ok: false, code: "stack_boot_not_sealed" };
   const identity = facts.identity;
   if (identity.relayId !== input.relayId || identity.tokenUrl !== stack.tokenUrl || identity.publicKey !== input.relayPublicKeyHex) {
@@ -50,6 +58,7 @@ export async function stackBootDecision(input: {
   }
   const image = facts.image.image;
   if (!stack.relayImages.includes(image)) return { ok: false, code: "relay_image_unlisted" };
+  if (isRelayDesignationClaim(facts.image)) return { ok: true, image };
   let issued: StackIssueRecord | null;
   try {
     issued = input.stackIssue === undefined ? null : await input.stackIssue(facts.image.nonce);

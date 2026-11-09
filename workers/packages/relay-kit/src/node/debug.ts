@@ -13,6 +13,9 @@
  * 2. It signs a request with the relay key, naming the request and a fresh X25519 reply key
  *    (`@gray/relay-connector` `debugRequestValue`), and posts it to `<origin>/v1/aci/relay-debug` through the same
  *    pinned fetch the agent uses: Gray's entry carries the TLS session to the VM, pinned to the key the VM attested.
+ *    During an image rollout two VMs of the app run (docs/design/relay-zero-downtime.md) and the record is the one's
+ *    that served the request: the command asks each boot the entry lists, newest first, each attested and asked at its
+ *    own boot (`?keyset=`), until one holds the record.
  * 3. The VM answers the record HPKE-sealed to the reply key; the command opens it here (`openDebugAnswer` checks the
  *    record's size and SHA-256 against the answer's metadata) and writes it to `--out` (created 0600, never over an
  *    existing file) or to stdout when stdout is not a terminal. Gray's entry only ever carries ciphertext.
@@ -26,8 +29,9 @@ import { dirname, resolve } from "node:path";
 import { bytesToLowerHex, ed25519PublicKey } from "@gray/attest";
 import { get, isObject, parseStrictBytes, toJsonString, type Json, type JsonObject } from "@gray/json";
 import { debugReplyKey, debugRequestValue, openDebugAnswer, RELAY_DEBUG_MAX_SKEW_SECONDS, RELAY_DEBUG_PATH, RELAY_DEBUG_RECORD_MAX_BYTES, RELAY_DEBUG_REQUEST_ID_PATTERN, type RelayDebugMeta } from "@gray/relay-connector";
+import { bootRowsOf, STACK_BOOTS_PATH } from "../daemon/daemon.ts";
 import { attestationMismatch, stackBootDecision } from "../daemon/stack-boot.ts";
-import { DaemonTransportError, type DaemonAttestResult, type DaemonFetch, type StackIssueRecord } from "../daemon/types.ts";
+import { DaemonTransportError, type DaemonAttestResult, type DaemonFetch, type DaemonHttpResponse, type StackIssueRecord } from "../daemon/types.ts";
 import { RelayKitError } from "../errors.ts";
 import type { LaneBinding } from "../lane-binding.ts";
 import { tunnelOriginOf } from "../lane-origin.ts";
@@ -47,8 +51,11 @@ export interface DebugIo {
   readonly stdoutBytes: (bytes: Uint8Array) => Promise<void>;
 }
 
-/** One attestation of the stack VM; the CLI's fetches the signed release list and loads the quote verifier first. */
-export type DebugAttest = (input: { readonly origin: string; readonly instance?: LaneBinding; readonly nowSecs: bigint }) => Promise<DaemonAttestResult>;
+/**
+ * One attestation of the stack VM; the CLI's fetches the signed release list and loads the quote verifier first. `keyset`
+ * (64 hex) is the boot to reach through the entry (`?keyset=`); absent, the entry's newest.
+ */
+export type DebugAttest = (input: { readonly origin: string; readonly instance?: LaneBinding; readonly keyset?: string; readonly nowSecs: bigint }) => Promise<DaemonAttestResult>;
 
 export interface DebugGetOptions {
   readonly config: LoadedRelayConfig;
@@ -160,8 +167,37 @@ function cliAttest(config: LoadedRelayConfig): DebugAttest {
     const { createDaemonAttest } = await import("./run.ts");
     const verified = await releaseListForCommand(config, Number(input.nowSecs) * 1000);
     const quoteVerifier = await loadQuoteVerifier(config.daemon.pccsUrl === null ? {} : { pccs: config.daemon.pccsUrl });
-    return createDaemonAttest({ config, quoteVerifier })({ origin: input.origin, release: verified.list, nowSecs: input.nowSecs, ...(input.instance === undefined ? {} : { instance: input.instance }) });
+    return createDaemonAttest({ config, quoteVerifier })({
+      origin: input.origin,
+      release: verified.list,
+      nowSecs: input.nowSecs,
+      ...(input.instance === undefined ? {} : { instance: input.instance }),
+      ...(input.keyset === undefined ? {} : { keyset: input.keyset }),
+    });
   };
+}
+
+/**
+ * The boots of the stack app the entry lists for this relay, newest first (docs/design/relay-zero-downtime.md: during an
+ * image rollout two VMs of the app run, and the record is held by the one that served the request). Null when the
+ * origin is no tunnel, the entry has no boots route (before its release) or answers nothing usable: one try at the
+ * entry's newest boot, as before. The route is public and only a hint: each boot's own attestation decides.
+ */
+async function stackBoots(fetch: DaemonFetch, origin: string, appId: string | null): Promise<readonly string[] | null> {
+  const tunnel = tunnelOriginOf(origin);
+  if (tunnel === null) return null;
+  try {
+    const response = await fetch(`${tunnel.entry}${STACK_BOOTS_PATH}${encodeURIComponent(tunnel.relayId)}/boots`, {
+      method: "GET",
+      headers: { accept: "application/json", "user-agent": "gray-assistant" },
+      timeoutMs: 10_000,
+    });
+    if (response.status !== 200) return null;
+    const rows = bootRowsOf(parseStrictBytes(response.body), tunnel.relayId).filter((row) => appId === null || row.appId === null || row.appId === appId);
+    return rows.length === 0 ? null : rows.map((row) => row.keyset);
+  } catch {
+    return null;
+  }
 }
 
 /** `debug get <request id> [--out <file>]`: fetch, open and write one authorized request's record. */
@@ -178,61 +214,71 @@ export async function debugGet(options: DebugGetOptions): Promise<number> {
     return 1;
   };
 
-  // The agent's attestation, then the agent's checks of the boot: the VM is talked to only once its quote proves it
-  // is this relay's stack boot.
-  const nowMs = io.now();
-  const nowSecs = BigInt(Math.floor(nowMs / 1000));
-  let attested: DaemonAttestResult;
-  try {
-    attested = await (options.attest ?? cliAttest(config))({ origin: vm.origin, nowSecs, ...(vm.instance === undefined ? {} : { instance: vm.instance }) });
-  } catch (error) {
-    if (error instanceof RelayKitError) throw error;
-    return refuse("attest_transport_io", "the stack VM could not be attested (attest_transport_io); `gray-assistant doctor` checks the path to it");
-  }
-  if (!attested.ok) {
-    const code = `attest_${attested.stage}_${attested.code}`;
-    return refuse(code, `the stack VM did not attest (${code}); \`gray-assistant doctor\` says more`);
-  }
-  const mismatch = attestationMismatch(attested, vm.origin, relayId);
-  if (mismatch !== null) return refuse(mismatch, `the stack VM's attestation is not this relay's VM at ${vm.origin} (${mismatch})`);
+  const fetch = options.fetch ?? (await import("./daemon/fetch.ts")).createPinnedDaemonFetch({ maxResponseBytes: DEBUG_ANSWER_MAX_BYTES });
   const stack = config.daemon.stack;
   const issueReader = options.stackIssue ?? (stack === null ? undefined : (await import("./daemon/pull-token-log.ts")).createPullTokenIssueReader(stack.issueLog));
-  const boot = await stackBootDecision({
-    facts: attested.stackBoot ?? null,
-    composeHash: attested.composeHash,
-    relayId,
-    relayPublicKeyHex: bytesToLowerHex(await ed25519PublicKey(options.seed)),
-    stack,
-    stackIssue: issueReader,
-  });
-  if (!boot.ok) return refuse(`attest_${boot.code}`, `the stack VM's boot is not one this agent sealed credentials to (attest_${boot.code}); \`gray-assistant doctor\` says more`);
+  const relayPublicKeyHex = bytesToLowerHex(await ed25519PublicKey(options.seed));
+  type Refusal = { readonly code: string; readonly message: string };
 
-  // The signed request, with a reply key that lives only in this process.
-  const reply = await debugReplyKey();
-  const ask = await debugRequestValue({ relayId, requestId, signingKey: options.seed, replyPublicKey: reply.publicKey, issuedAt: Math.floor(io.now() / 1000) });
-  const fetch = options.fetch ?? (await import("./daemon/fetch.ts")).createPinnedDaemonFetch({ maxResponseBytes: DEBUG_ANSWER_MAX_BYTES });
-  let response;
-  try {
-    response = await fetch(`${vm.origin}${RELAY_DEBUG_PATH}`, {
-      method: "POST",
-      headers: { "content-type": "application/json", accept: "application/json", "user-agent": "gray-assistant" },
-      body: new TextEncoder().encode(toJsonString(ask)),
-      expectedSpkiSha256: attested.tlsSpkiSha256,
-      timeoutMs: 60_000,
-    });
-  } catch (error) {
-    const code = error instanceof DaemonTransportError || error instanceof RelayKitError ? error.code : "io";
-    if (code === "tls_spki_mismatch") return refuse(`transport_${code}`, "the VM's TLS key is not the one it attested a moment ago (tls_spki_mismatch): it restarted in between; try again");
-    return refuse(`transport_${code}`, `the request did not reach the stack VM through Gray's entry (${code}); \`gray-assistant doctor\` checks the path`);
-  }
-  if (response.status !== 200) {
-    const refusal = refusalMessage(response.status, errorCodeOf(response.body), relayId);
-    return refuse(refusal.code, refusal.message);
-  }
+  /**
+   * One boot (`keyset`; undefined: the entry's newest): the agent's attestation, then the agent's checks of the boot, so
+   * the VM is talked to only once its quote proves it is this relay's stack boot; then the signed request with a reply
+   * key that lives only in this process, at that same boot.
+   */
+  const ask = async (keyset: string | undefined): Promise<{ readonly response: DaemonHttpResponse; readonly privateKey: CryptoKey } | Refusal> => {
+    const nowSecs = BigInt(Math.floor(io.now() / 1000));
+    let attested: DaemonAttestResult;
+    try {
+      attested = await (options.attest ?? cliAttest(config))({ origin: vm.origin, nowSecs, ...(vm.instance === undefined ? {} : { instance: vm.instance }), ...(keyset === undefined ? {} : { keyset }) });
+    } catch (error) {
+      if (error instanceof RelayKitError) throw error;
+      return { code: "attest_transport_io", message: "the stack VM could not be attested (attest_transport_io); `gray-assistant doctor` checks the path to it" };
+    }
+    if (!attested.ok) {
+      const code = `attest_${attested.stage}_${attested.code}`;
+      return { code, message: `the stack VM did not attest (${code}); \`gray-assistant doctor\` says more` };
+    }
+    const mismatch = attestationMismatch(attested, vm.origin, relayId);
+    if (mismatch !== null) return { code: mismatch, message: `the stack VM's attestation is not this relay's VM at ${vm.origin} (${mismatch})` };
+    const boot = await stackBootDecision({ facts: attested.stackBoot ?? null, composeHash: attested.composeHash, relayId, relayPublicKeyHex, stack, stackIssue: issueReader });
+    if (!boot.ok) return { code: `attest_${boot.code}`, message: `the stack VM's boot is not one this agent sealed credentials to (attest_${boot.code}); \`gray-assistant doctor\` says more` };
 
+    const reply = await debugReplyKey();
+    const signed = await debugRequestValue({ relayId, requestId, signingKey: options.seed, replyPublicKey: reply.publicKey, issuedAt: Math.floor(io.now() / 1000) });
+    let response: DaemonHttpResponse;
+    try {
+      response = await fetch(`${vm.origin}${RELAY_DEBUG_PATH}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "application/json", "user-agent": "gray-assistant" },
+        body: new TextEncoder().encode(toJsonString(signed)),
+        expectedSpkiSha256: attested.tlsSpkiSha256,
+        // The boot just attested, never the entry's newest one meanwhile.
+        ...(keyset === undefined ? {} : { tunnelKeyset: keyset }),
+        timeoutMs: 60_000,
+      });
+    } catch (error) {
+      const code = error instanceof DaemonTransportError || error instanceof RelayKitError ? error.code : "io";
+      if (code === "tls_spki_mismatch") return { code: `transport_${code}`, message: "the VM's TLS key is not the one it attested a moment ago (tls_spki_mismatch): it restarted in between; try again" };
+      return { code: `transport_${code}`, message: `the request did not reach the stack VM through Gray's entry (${code}); \`gray-assistant doctor\` checks the path` };
+    }
+    if (response.status !== 200) return refusalMessage(response.status, errorCodeOf(response.body), relayId);
+    return { response, privateKey: reply.privateKey };
+  };
+
+  // Every boot of the stack app the entry lists, newest first: a boot that does not hold the record (another VM of an
+  // image rollout served the request) passes the ask on to the next one.
+  const appId = vm.instance?.appId ?? config.daemon.lane.instances.get(vm.origin)?.appId ?? null;
+  const boots: readonly (string | undefined)[] = (await stackBoots(fetch, vm.origin, appId)) ?? [undefined];
+  let answered: { readonly response: DaemonHttpResponse; readonly privateKey: CryptoKey } | null = null;
+  for (let index = 0; index < boots.length && answered === null; index += 1) {
+    const outcome = await ask(boots[index]);
+    if ("response" in outcome) answered = outcome;
+    else if (outcome.code !== "debug_record_not_held" || index === boots.length - 1) return refuse(outcome.code, outcome.message);
+  }
+  if (answered === null) return refuse("debug_record_not_held", refusalMessage(404, "debug_record_not_held", relayId).message);
   let opened: { readonly meta: RelayDebugMeta; readonly record: Uint8Array };
   try {
-    opened = await openDebugAnswer(parseStrictBytes(response.body), reply.privateKey, relayId);
+    opened = await openDebugAnswer(parseStrictBytes(answered.response.body), answered.privateKey, relayId);
   } catch {
     return refuse("answer_invalid", "the VM's answer did not open as a record sealed to this request; nothing was written");
   }

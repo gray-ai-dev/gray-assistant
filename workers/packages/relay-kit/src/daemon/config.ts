@@ -100,6 +100,7 @@ import { DEFAULT_AFFINITY_TTL_MS, MAX_AFFINITY_CAP, MAX_AFFINITY_TTL_MS, MIN_AFF
 import { MAX_REPLAY_CAP, MIN_REPLAY_CAP } from "../scheduler/replay.ts";
 import { normalizeHttpsOrigin } from "../verified-report.ts";
 import { tunnelOriginOf } from "../lane-origin.ts";
+import { parseChainConfig, type ChainConfig } from "../chain/config.ts";
 
 /** P12: `stack.instance`, where the stack app's origin and binding come from; a config without it reads `config`. */
 export const STACK_INSTANCE_SOURCES = ["gray", "config"] as const;
@@ -179,6 +180,8 @@ export interface RelayDaemonConfig {
    * paired it. `doctor` names it; nothing else reads it. Null for a config written by hand or by plain `init`.
    */
   readonly pairing: { readonly gray: string; readonly fingerprint: string; readonly pairedAt: string } | null;
+  /** Phase 2: the relay's contract (`chain`), or null; absent in configs built by hand in tests. */
+  readonly chain?: ChainConfig | null;
 }
 
 /** The relay tunnel: Gray's rendezvous, the relay's name under the relays zone, and how the name gets its certificate. */
@@ -590,6 +593,8 @@ const configSchema = z
     tunnel: tunnelSchema.optional(),
     alerts: alertsSchema.optional(),
     pairing: pairingSchema.optional(),
+    // Phase 2: the relay's contract (../chain/config.ts); the chain commands read it, the agent does not.
+    chain: z.unknown().optional(),
   })
   .strict();
 
@@ -812,6 +817,7 @@ export function parseRelayDaemonConfig(value: unknown): RelayDaemonConfig {
     ui: parsed.data.ui === undefined ? null : { port: parsed.data.ui.listen?.port ?? null, public: parsed.data.ui.public ?? false, origin: parsed.data.ui.origin ?? null },
     tunnel,
     alerts: parsed.data.alerts === undefined ? null : { webhook: parsed.data.alerts.webhook === undefined ? null : { url: parsed.data.alerts.webhook.url, format: parsed.data.alerts.webhook.format ?? "json" } },
+    chain: parsed.data.chain === undefined ? null : parseChainConfig(parsed.data.chain),
     pairing: parsed.data.pairing === undefined ? null : { gray: parsed.data.pairing.gray, fingerprint: parsed.data.pairing.fingerprint, pairedAt: parsed.data.pairing.paired_at },
   };
 }

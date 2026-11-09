@@ -14,7 +14,20 @@
 import { chmodSync, existsSync, lstatSync, mkdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { bytesToLowerHex, ed25519Sign, lowerHexBytes } from "@gray/attest";
-import { PAIR_REFUSALS, normalizePairingCode, pairAnswerSchema, pairMessage, relayKeyFingerprint, type PairAnswer, type PairRefusal } from "@gray/control/stack-pairing";
+import {
+  PAIR_CHAIN_PATH,
+  PAIR_REFUSALS,
+  normalizePairingCode,
+  pairAnswerSchema,
+  pairChainAnswerSchema,
+  pairGuardianSchema,
+  pairMessage,
+  relayKeyFingerprint,
+  type PairAnswer,
+  type PairChainTerms,
+  type PairGuardian,
+  type PairRefusal,
+} from "@gray/control/stack-pairing";
 import { tunnelName } from "@gray/control/tunnel";
 import { get, isObject, parseStrict, toJsonString, type Json } from "@gray/json";
 import { isStackRelayImage, osImageProvenance, relayImageRegistry, releaseFreshnessLocation } from "@gray/lane-verify";
@@ -57,6 +70,11 @@ import { createPlainDaemonFetch } from "./release-list-source.ts";
 import { initWorkspaceInterpreter } from "./interpreter.ts";
 import { buildKeyFromText } from "./scheduler-load.ts";
 import { APP_ID_PATTERN, KMS_CA_PUBKEY_PATTERN } from "../lane-binding.ts";
+import { checkedAddress, releaseHash } from "../chain/app-auth.ts";
+import { PAIRING_APPROVAL_LIFETIME_SECONDS, pairingGuardianJson, pairingGuardianPart } from "../chain/guardian.ts";
+import { GUARDIAN_KEY_FILE, generateGuardianKey, type GuardianKeyFile } from "../chain/guardian-key.ts";
+import { checkedRpcUrl } from "../chain/rpc.ts";
+import { readGuardianKeyFile, writeGuardianKeyFile } from "./chain.ts";
 
 const URL_MAX = 2048;
 const TOKEN = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -241,6 +259,27 @@ export interface PairWorkspaceOptions {
    */
   readonly registryUser?: string;
   readonly registryExpiresAt?: string;
+  /**
+   * `--guardian <address>`: the relay's own wallet or Safe is the guardian of its contract (docs/design/
+   * relay-no-always-on-host.md 3.2, H10); the kit then holds no guardian key and gives the wallet typed data to sign.
+   * Without it the kit's `guardian-key.json` is the guardian: one already in the kit is kept (never replaced, not even
+   * with `--force`: a contract may already name it), else a new one is generated.
+   */
+  readonly guardian?: string;
+}
+
+/** The pairing's guardian: the address, and the kit's key file when the kit holds the key. */
+export interface PairingGuardian {
+  readonly address: string;
+  /** `guardian-key.json` in the kit, or null for `--guardian <address>`. */
+  readonly keyPath: string | null;
+  /** Whether this pairing generated the key (false: kept the kit's, or an own wallet). */
+  readonly generated: boolean;
+  /**
+   * Phase 2: the relay's contract this pairing approved the first release for (Gray deploys it at Deploy), with the
+   * release's hashes; null for a phase-1 pairing (Gray named no chain terms, or the guardian is an own wallet).
+   */
+  readonly phase2: { readonly contract: string; readonly chainId: number; readonly composeHash: string; readonly osImageHash: string } | null;
 }
 
 /**
@@ -272,6 +311,8 @@ export type PairWorkspaceResult =
       readonly image: boolean;
       /** What the pairing accepted from Gray's release list; null when Gray's answer names no list. */
       readonly releases: PairingAcceptance | null;
+      /** The guardian of the relay's contract (phase 2); its approvals of the first release come with P5's pairing answer. */
+      readonly guardian: PairingGuardian;
     }
   /** Gray answered with a refusal (`code` one of `PAIR_REFUSALS` or null), did not answer, or answered something else. */
   | { readonly ok: false; readonly reason: "refused" | "unreachable" | "malformed"; readonly status: number | null; readonly code: PairRefusal | null; readonly text: string };
@@ -387,13 +428,14 @@ function pairRegistryLogin(user: string | undefined, expiresAt: string | undefin
 
 /**
  * `init --pair`: make the relay key (or read `--key`), pair its public half with Gray's code, and write the kit from
- * the answer (S57). Nothing is written unless Gray pairs the key; a refused, unanswered or unreadable pairing returns
+ * the answer (S57). Nothing is written unless Gray pairs the key, but a phase-2 pairing's new guardian key, kept before
+ * the request that carries its approvals (a retry reuses it); a refused, unanswered or unreadable pairing returns
  * `ok: false`. A wrong flag, a code that is no code, or a kit file already there (without `--force`) is refused before
  * any network.
  */
 export async function pairWorkspace(options: PairWorkspaceOptions): Promise<PairWorkspaceResult> {
   const code = normalizePairingCode(options.code);
-  if (code === null) throw new RelayKitError("usage", "--pair is not a pairing code (GRAY- and six groups of four characters, as the relay's page shows it)");
+  if (code === null) throw new RelayKitError("usage", "--pair is not a pairing code (GRAY- and six groups of four characters, as the relay's Integration page shows it)");
   const gray = grayOrigin(options.gray);
   const directory = options.directory;
   const force = options.force === true;
@@ -408,24 +450,50 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
   assertWritable(configPath, force);
   if (composeImage !== null) assertWritable(composePath, force);
   if (existsSync(directory) && !statSync(directory).isDirectory()) throw new RelayKitError("io", `${directory} is not a directory`);
+  const guardianKeyPath = join(directory, GUARDIAN_KEY_FILE);
+  const pairingGuardian = guardianForPairing(options.guardian, guardianKeyPath);
 
   const key: RelayKeyFile =
     keySource === null ? await generateRelayKey() : await buildKeyFromText(readPrivateFile(keySource, "relay key", 64 * 1024));
   if (keySource === null) await verifyRelayKeyPair(key);
   const publicKeyHex = relayPublicKeyHex(key);
   const fingerprint = relayKeyFingerprint(publicKeyHex) as string;
-  const signature = bytesToLowerHex(await ed25519Sign(key.seed, pairMessage(code, publicKeyHex)));
+  const nowMs = options.nowMs ?? Date.now();
+  const timeoutMs = options.timeoutMs ?? PAIR_TIMEOUT_MS;
+
+  // Phase 2 (docs/design/relay-no-always-on-host.md 13.3): with a guardian key in the kit, ask Gray's chain terms for
+  // this code first; when Gray names some, compute the relay's contract and sign the guardian's approvals of the first
+  // release, which the pairing request then carries. An own wallet as guardian pairs as in phase 1.
+  let phase2: Phase2Pairing | null = null;
+  if (pairingGuardian.keyPath !== null) {
+    const terms = await chainTerms(gray, code, timeoutMs);
+    if (!terms.ok) return terms.failure;
+    if (terms.chain !== null) {
+      const prepared = await phase2Part(terms.chain, pairingGuardian, nowMs, timeoutMs);
+      if (!prepared.ok) return prepared.failure;
+      phase2 = prepared.pairing;
+    }
+  }
+  const signature = bytesToLowerHex(await ed25519Sign(key.seed, pairMessage(code, publicKeyHex, phase2?.part ?? null)));
+  // A new guardian key is on disk (0600, synced) before the request that carries its approvals: Gray may keep them even
+  // when its answer is lost, and a contract naming a guardian whose key this kit lost could never be paused or vetoed.
+  // A retry finds the file and signs with the same key (`guardianForPairing`). A phase-1 pairing sends no approval: its
+  // key is written with the kit, once Gray paired.
+  if (pairingGuardian.generated !== null && phase2 !== null) {
+    ensureDirectory(directory);
+    writeGuardianKeyFile(guardianKeyPath, pairingGuardian.generated);
+  }
 
   let status: number;
   let body: string;
   try {
     const response = await fetch(`${gray}${PAIR_PATH}`, {
       method: "POST",
-      // No header names the operator or the machine: the code, the key and the version are the whole request.
+      // No header names the operator or the machine: the code, the key, the version and the guardian part are the whole request.
       headers: { "content-type": "application/json", accept: "application/json", "user-agent": "gray-assistant" },
-      body: JSON.stringify({ code, public_key: publicKeyHex, signature, agent_version: RELAY_KIT_VERSION }),
+      body: JSON.stringify({ code, public_key: publicKeyHex, signature, agent_version: RELAY_KIT_VERSION, ...(phase2 === null ? {} : { guardian: phase2.part }) }),
       redirect: "error",
-      signal: AbortSignal.timeout(options.timeoutMs ?? PAIR_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     status = response.status;
     body = await response.text();
@@ -435,7 +503,7 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
       reason: "unreachable",
       status: null,
       code: null,
-      text: `Gray did not answer at ${gray}${PAIR_PATH}; check --gray and this machine's network, then run the command again (make a new code if the relay's page says this one was used)`,
+      text: `Gray did not answer at ${gray}${PAIR_PATH}; check --gray and this machine's network, then run the command again (make a new code if the relay's Integration page says this one was used)`,
     };
   }
   if (status < 200 || status > 299) {
@@ -447,6 +515,10 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
   // Gray paired the key this request sent: an answer naming another is not this pairing's.
   if (answer.public_key !== publicKeyHex || answer.fingerprint !== fingerprint) {
     return { ok: false, reason: "malformed", status, code: null, text: "Gray's answer names another key than the one this command sent; tell Gray, and pair again with a new code" };
+  }
+  // The contract's address is the relay id's: an answer for another relay than the terms named is not this pairing's.
+  if (phase2 !== null && answer.relay_id !== phase2.terms.relay_id) {
+    return { ok: false, reason: "malformed", status, code: null, text: "Gray's answer names another relay than its chain terms did; tell Gray, and pair again with a new code" };
   }
 
   const placeholders: string[] = [];
@@ -462,7 +534,7 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
   const tokenUrl = answer.token_url !== null && answer.token_url !== tunnelOrigin ? answer.token_url : tunnelOrigin === null ? TOKEN_URL_PLACEHOLDER : null;
   if (tokenUrl === TOKEN_URL_PLACEHOLDER) placeholders.push("stack.token_url");
   // Gray paired the key: the code is spent. A list that cannot be read now only means nothing is accepted at pairing.
-  const releases = answer.release === null ? null : await pairingAcceptance(answer.release, options.nowMs ?? Date.now(), options.timeoutMs ?? PAIR_TIMEOUT_MS);
+  const releases = answer.release === null ? null : await pairingAcceptance(answer.release, nowMs, timeoutMs);
   const text = pairedConfigText({
     relayId: answer.relay_id,
     release: answer.release === null ? null : { list: answer.release.list, publicKey: answer.release.public_key, freshnessPublicKey: answer.release.freshness_public_key },
@@ -474,6 +546,18 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
     registryLogin,
     pairing: { gray, fingerprint, pairedAt: utcSeconds(answer.paired_ms) },
     acceptedAtPairing: releases?.accepted ?? [],
+    chain:
+      phase2 === null
+        ? null
+        : {
+            chainId: phase2.terms.chain_id,
+            rpc: [phase2.terms.rpc[0]!, phase2.terms.rpc[1]!],
+            proposer: phase2.terms.proposer,
+            guardian: phase2.part.guardian,
+            guardianKey: GUARDIAN_KEY_FILE,
+            contract: phase2.part.contract,
+            dstackKms: phase2.terms.dstack_kms,
+          },
   });
 
   ensureDirectory(directory);
@@ -485,12 +569,164 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
   // 0600 like every kit file: the host install refuses a kit file other users can read (deploy/relay/host/install.sh).
   writePrivateFile(configPath, text, { force });
   files.push(configPath);
+  // A phase-2 pairing's was written before the request (above).
+  if (pairingGuardian.generated !== null) {
+    if (phase2 === null) writeGuardianKeyFile(guardianKeyPath, pairingGuardian.generated);
+    files.push(guardianKeyPath);
+  }
   // Public: it names the image and the mounts, no secret, and `docker compose` reads it as the operator.
   if (composeImage !== null) {
     writePublicFile(composePath, pairedComposeText(composeImage, answer.relay_id), force);
     files.push(composePath);
   }
-  return { ok: true, directory, relayId: answer.relay_id, publicKeyHex, fingerprint, keyPath, configPath, composePath: composeImage === null ? null : composePath, files, placeholders, image: image !== null, releases };
+  return {
+    ok: true,
+    directory,
+    relayId: answer.relay_id,
+    publicKeyHex,
+    fingerprint,
+    keyPath,
+    configPath,
+    composePath: composeImage === null ? null : composePath,
+    files,
+    placeholders,
+    image: image !== null,
+    releases,
+    guardian: {
+      address: pairingGuardian.address,
+      keyPath: pairingGuardian.keyPath,
+      generated: pairingGuardian.generated !== null,
+      phase2: phase2 === null ? null : { contract: phase2.part.contract, chainId: phase2.terms.chain_id, composeHash: phase2.terms.compose_hash, osImageHash: phase2.terms.os_image_hash },
+    },
+  };
+}
+
+/** A phase-2 pairing's terms and the guardian part made from them. */
+interface Phase2Pairing {
+  readonly terms: PairChainTerms;
+  readonly part: PairGuardian;
+}
+
+type PairFailure = Extract<PairWorkspaceResult, { ok: false }>;
+
+/**
+ * `POST /v1/lane-stack/pair/chain`: Gray's chain terms for the code, null for a relay not on phase 2 or a Gray that has
+ * no such route yet (404 without a pairing refusal). Nothing is spent by it; a refusal of the code is the pairing's.
+ */
+async function chainTerms(gray: string, code: string, timeoutMs: number): Promise<{ readonly ok: true; readonly chain: PairChainTerms | null } | { readonly ok: false; readonly failure: PairFailure }> {
+  let status: number;
+  let body: string;
+  try {
+    const response = await fetch(`${gray}${PAIR_CHAIN_PATH}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json", "user-agent": "gray-assistant" },
+      body: JSON.stringify({ code }),
+      redirect: "error",
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    status = response.status;
+    body = await response.text();
+  } catch {
+    return {
+      ok: false,
+      failure: { ok: false, reason: "unreachable", status: null, code: null, text: `Gray did not answer at ${gray}${PAIR_CHAIN_PATH}; check --gray and this machine's network, then run the command again` },
+    };
+  }
+  if (status < 200 || status > 299) {
+    const refusal = refusalCode(body);
+    if (status === 404 && refusal === null) return { ok: true, chain: null };
+    return { ok: false, failure: { ok: false, reason: "refused", status, code: refusal, text: refusal === null ? `Gray refused the pairing's chain terms (HTTP ${status})` : PAIR_REFUSALS[refusal].text } };
+  }
+  let parsed;
+  try {
+    parsed = body.length > MAX_PAIR_ANSWER_BYTES ? null : pairChainAnswerSchema.safeParse(parsePlainJson(body));
+  } catch {
+    parsed = null;
+  }
+  if (parsed === null || !parsed.success) {
+    return { ok: false, failure: { ok: false, reason: "malformed", status, code: null, text: `Gray's answer at ${gray}${PAIR_CHAIN_PATH} is not chain terms; upgrade gray-assistant, or tell Gray` } };
+  }
+  return { ok: true, chain: parsed.data.chain };
+}
+
+/** JSON text as plain values, integers as numbers (the terms' chain id is one). */
+function parsePlainJson(text: string): unknown {
+  const value = parseStrict(text);
+  const plain = (v: Json): unknown => {
+    if (typeof v === "bigint") return Number.isSafeInteger(Number(v)) ? Number(v) : v;
+    if (Array.isArray(v)) return v.map(plain);
+    if (v !== null && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, plain(x as Json)]));
+    return v;
+  };
+  return plain(value);
+}
+
+/** A hash as Gray's release list writes it: 64 lower hex, without 0x. */
+const bareHash = (hash: string): string => hash.replace(/^0x/, "").toLowerCase();
+
+/**
+ * The guardian part for Gray's terms: the release they name must be in Gray's signed release list (a compose release
+ * with a commit and a production OS image, the ones pairing accepts) before the guardian approves it; then the contract's
+ * address for this guardian (no recovery address) and the approvals, signed with the kit's guardian key and valid for
+ * `PAIRING_APPROVAL_LIFETIME_SECONDS`.
+ */
+async function phase2Part(
+  terms: PairChainTerms,
+  guardian: { readonly address: string; readonly keyPath: string | null; readonly generated: GuardianKeyFile | null },
+  nowMs: number,
+  timeoutMs: number,
+): Promise<{ readonly ok: true; readonly pairing: Phase2Pairing } | { readonly ok: false; readonly failure: PairFailure }> {
+  const refused = (text: string): { ok: false; failure: PairFailure } => ({ ok: false, failure: { ok: false, reason: "refused", status: null, code: null, text } });
+  let rpc: [string, string];
+  try {
+    rpc = [checkedRpcUrl(terms.rpc[0]!, "the chain terms' first endpoint"), checkedRpcUrl(terms.rpc[1]!, "the chain terms' second endpoint")];
+  } catch {
+    return { ok: false, failure: { ok: false, reason: "malformed", status: null, code: null, text: "Gray's chain terms name an RPC endpoint the kit cannot use; tell Gray" } };
+  }
+  if (terms.release !== null) {
+    const listed = await pairingAcceptance(terms.release, nowMs, timeoutMs);
+    if (listed.listError !== null) return refused(`Gray's signed release list could not be verified (${listed.listError}), so the guardian approves nothing; run the command again (the code is not spent)`);
+    const accepted = new Set(listed.accepted.map((entry) => `${entry.kind}:${entry.hash}`));
+    if (!accepted.has(`release:${bareHash(terms.compose_hash)}`)) return refused("The release Gray will deploy is not a release in its signed list, so the guardian does not approve it; tell Gray (the code is not spent)");
+    if (!accepted.has(`os_image:${bareHash(terms.os_image_hash)}`)) return refused("The OS image Gray will deploy is not a production image its signed list proves, so the guardian does not approve it; tell Gray (the code is not spent)");
+  }
+  const privateKey = guardian.generated?.privateKey ?? readGuardianKeyFile(guardian.keyPath!).privateKey;
+  const part = await pairingGuardianPart({
+    deployment: {
+      relayId: terms.relay_id,
+      proposer: checkedAddress(terms.proposer, "Gray's proposer"),
+      guardian: checkedAddress(guardian.address, "the guardian"),
+      recovery: null,
+      composeHashes: [releaseHash(terms.compose_hash, "the compose hash")],
+      osImageHashes: [releaseHash(terms.os_image_hash, "the OS image hash")],
+    },
+    chainId: terms.chain_id,
+    deadline: BigInt(Math.floor(nowMs / 1000)) + PAIRING_APPROVAL_LIFETIME_SECONDS,
+    privateKey,
+  });
+  const wire = pairGuardianSchema.parse(pairingGuardianJson(part));
+  return { ok: true, pairing: { terms: { ...terms, rpc }, part: wire } };
+}
+
+/**
+ * The pairing's guardian, decided before any network: `--guardian <address>` (no key in the kit), the kit's
+ * `guardian-key.json` when there is one (kept), or a new key (written once Gray pairs).
+ */
+function guardianForPairing(given: string | undefined, keyPath: string): { readonly address: string; readonly keyPath: string | null; readonly generated: GuardianKeyFile | null } {
+  if (given !== undefined) {
+    if (existsSync(keyPath)) throw new RelayKitError("usage", `--guardian names your own wallet, but the kit holds a guardian key (${keyPath}); move that file away first, or pair without --guardian`);
+    return { address: checkedAddress(given, "--guardian"), keyPath: null, generated: null };
+  }
+  let existing = false;
+  try {
+    lstatSync(keyPath);
+    existing = true;
+  } catch {
+    // None yet: generate one.
+  }
+  if (existing) return { address: readGuardianKeyFile(keyPath).address, keyPath, generated: null };
+  const generated = generateGuardianKey();
+  return { address: generated.address, keyPath, generated };
 }
 
 /** For the CLI's machine-readable line after a pairing. */
@@ -506,6 +742,11 @@ export function pairSummary(result: Extract<PairWorkspaceResult, { ok: true }>):
     config: result.configPath,
     files: [...result.files],
     placeholders: [...result.placeholders],
+    guardian: result.guardian.address,
+    guardian_key_file: result.guardian.keyPath,
+    ...(result.guardian.phase2 === null
+      ? {}
+      : { contract: result.guardian.phase2.contract, chain_id: result.guardian.phase2.chainId, approved: { compose_hash: result.guardian.phase2.composeHash, os_image_hash: result.guardian.phase2.osImageHash } }),
     accepted_at_pairing: (result.releases?.accepted ?? []).map((entry) => ({ kind: entry.kind, hash: entry.hash, name: entry.name })),
     ...(result.releases === null || result.releases.listError === null ? {} : { release_list_error: result.releases.listError }),
   };
