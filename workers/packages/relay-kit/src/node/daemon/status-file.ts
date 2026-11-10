@@ -10,7 +10,7 @@
 import { closeSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { dirname, resolve } from "node:path";
-import { parsePlain, toJsonString, type JsonObject } from "@gray/json";
+import { get, isObject, parsePlain, toJsonString, type JsonObject } from "@gray/json";
 import type { DaemonHealth, DaemonStatus } from "../../daemon/types.ts";
 import type { AgentStatusReportState } from "./agent-status-report.ts";
 
@@ -213,4 +213,18 @@ export function readDaemonStatusFile(path: string): JsonObject | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Whether an agent runs for this config: its status snapshot is fresh (written within 3 ticks and one 60 s request,
+ * R23's rule for `status`) and not a stopped agent's last one. `releases accept` and `doctor` read it.
+ */
+export function agentRunning(snapshot: JsonObject | null, tickMs: number, nowMs: number): boolean {
+  if (snapshot === null) return false;
+  const writtenAt = get(snapshot, "written_at_ms");
+  const at = typeof writtenAt === "number" ? writtenAt : typeof writtenAt === "bigint" ? Number(writtenAt) : null;
+  if (at === null || nowMs - at > 3 * tickMs + 60_000) return false;
+  const health = get(snapshot, "health");
+  const reasons = isObject(health as never) ? get(health as JsonObject, "reasons") : undefined;
+  return !(Array.isArray(reasons) ? reasons.map(String) : []).includes("stopped");
 }

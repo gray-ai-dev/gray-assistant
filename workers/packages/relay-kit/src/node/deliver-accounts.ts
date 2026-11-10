@@ -31,6 +31,8 @@ export interface SkippedAccount {
   readonly vendor: Vendor;
   readonly panelId: string | null;
   readonly reason: "unsupported_credential_type" | "invalid_credential_format" | "invalid_egress_format" | "credential_unreadable" | "missing_credential" | "no_panel_id";
+  /** The credential's type, once its secret was read (`credentialFormatHint` names the form it needs). */
+  readonly credentialType?: string;
 }
 
 export interface ReadAccounts {
@@ -70,7 +72,8 @@ export async function readAccountsOnce(config: LoadedRelayConfig, deps: ReadAcco
   const skipped: SkippedAccount[] = [];
   for (const entry of planned) {
     const id = panelId(entry.vendor, entry.account.sourceId);
-    const skip = (reason: SkippedAccount["reason"]): void => void skipped.push({ vendor: entry.vendor, panelId: id, reason });
+    const skip = (reason: SkippedAccount["reason"], credentialType?: string): void =>
+      void skipped.push({ vendor: entry.vendor, panelId: id, reason, ...(credentialType === undefined ? {} : { credentialType }) });
     const metadata = metadataParkReason(entry.account);
     if (metadata !== null) {
       skip(metadata);
@@ -97,7 +100,7 @@ export async function readAccountsOnce(config: LoadedRelayConfig, deps: ReadAcco
     }
     const reason = credentialParkReason(entry.vendor, read.credential);
     if (reason !== null) {
-      skip(reason);
+      skip(reason, read.credential.type);
       continue;
     }
     const egress = egressOf(entry, read);

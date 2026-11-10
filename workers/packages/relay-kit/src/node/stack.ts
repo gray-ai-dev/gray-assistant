@@ -170,7 +170,9 @@ export async function stackStatus(options: StackCommandOptions): Promise<number>
   io.stdout(`current_image  ${current}${stack.relayImages.includes(current) ? "" : "   (not in stack.relay_images: boots get no token)"}\n`);
   io.stdout(`previous_image ${previous ?? "-"}\n`);
   io.stdout(`last_issue     ${issue === null ? "-" : `${new Date(issue.atMs).toISOString()} ${issue.relayImage}`}\n`);
-  io.stdout(`running_image  ${running ?? "- (no attested stack boot in the status file)"}\n`);
+  // Phase 2 runs no agent here to record the boot; `deliver` attests it each time and prints what the VM runs.
+  const noBoot = (options.config.daemon.chain ?? null) !== null ? "phase 2: no agent records the boot here; deliver prints what the VM runs" : "no attested stack boot in the status file";
+  io.stdout(`running_image  ${running ?? `- (${noBoot})`}\n`);
   io.stdout(`${toJsonString({
     command: "stack.status",
     ok: true,

@@ -24,6 +24,11 @@
  *     agent's status), the certificate the local terminator serves for it, whether the public name answers with
  *     that same key from here, and the CT monitor's verdict.
  *
+ * Phase 2 (a config with a `chain`) runs no agent on the host. With no fresh status snapshot (`agentRunning`, the rule
+ * `status` uses), every line that only a running agent serves or records (the scheduler's, the lane registration, the
+ * agent status, the pull-token routes, the sealed accounts, the tunnel) is SKIP with that reason, and a snapshot left
+ * from before the move is named stale with its age (`phase2Idle`).
+ *
  * No secret is ever printed. A line names a path, a mode, a UID, the software name, an origin, a
  * digest or a fixed reason; it never names a token, a password or a body.
  */
@@ -39,7 +44,7 @@ import { STACK_ID_PATTERN } from "@gray/control";
 import { stackInstanceAnswerSchema, type StackInstanceAnswer } from "@gray/control/stack-provision";
 import { relayKeyFingerprint } from "@gray/control/stack-pairing";
 import { RELAY_UNKNOWN_RETRY_MS, STACK_ACCOUNT_ID_RULE } from "../daemon/daemon.ts";
-import { credentialParkReason, metadataParkReason, planAccount } from "../daemon/eligibility.ts";
+import { credentialFormatHint, credentialParkReason, metadataParkReason, planAccount } from "../daemon/eligibility.ts";
 import { PULL_TOKEN_CHALLENGE_PATH, pullTokenCredentialProblem } from "../daemon/pull-token.ts";
 import { RELEASE_STATUS_PATH, verifyReleaseStatusText } from "../daemon/release-status.ts";
 import { fetchReleaseList, ReleaseListError, type VerifiedReleaseList } from "../daemon/releases.ts";
@@ -55,7 +60,7 @@ import { tunnelOriginOf, type TunnelOrigin } from "../lane-origin.ts";
 import { createPlainDaemonFetch } from "./release-list-source.ts";
 import { readControlView, type ControlView } from "./control.ts";
 import { controlFileBeside } from "./daemon/control-file.ts";
-import { readDaemonStatusFile } from "./daemon/status-file.ts";
+import { agentRunning, readDaemonStatusFile } from "./daemon/status-file.ts";
 import { accountAliasesPath, readAccountAliasesFile } from "./daemon/account-aliases-file.ts";
 import { ACCOUNT_ALIAS_VENDOR_WORDS } from "../daemon/account-aliases.ts";
 import { agentStatusVerdict } from "./daemon/agent-status-report.ts";
@@ -591,6 +596,21 @@ function checkLaneRegistration(doctor: Doctor, config: LoadedRelayConfig, origin
   }
 }
 
+/**
+ * Phase 2 with no agent on this host: a config with a `chain` and no fresh status snapshot (`agentRunning`). Returns the
+ * reason the host agent's lines are skipped, naming a snapshot left from before the move stale with its age; null while
+ * an agent runs, and before phase 2.
+ */
+export function phase2Idle(config: LoadedRelayConfig, nowMs: number): string | null {
+  if ((config.daemon.chain ?? null) === null) return null;
+  const snapshot = readDaemonStatusFile(config.daemon.statusFile);
+  if (agentRunning(snapshot, config.daemon.tickMs, nowMs)) return null;
+  const written = snapshot === null ? undefined : get(snapshot, "written_at_ms");
+  const ageMinutes = typeof written === "number" ? Math.max(0, Math.floor((nowMs - written) / 60_000)) : null;
+  const stale = ageMinutes === null ? "" : `; the status file is stale (written ${Math.floor(ageMinutes / 60)} h ${ageMinutes % 60} min ago, before the move)`;
+  return `phase 2: no agent runs on this host${stale}`;
+}
+
 /** Run every check. It never throws for a failed check; only a programming error would escape. */
 export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   const doctor = new Doctor();
@@ -619,6 +639,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   const releasePlaceholderSkip = "skipped: release key/list not configured";
   const controlFile = controlFileBeside(config.daemon.stateFile);
   const controlView = await readControlView(config.daemon.stateFile, controlFile);
+  const idle = phase2Idle(config, nowMs);
 
   // The key is needed for the scheduler echo and every origin check; a bad key stops those.
   let key: RelayKeyFile | null = null;
@@ -773,7 +794,8 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
             const reason = credentialParkReason(account.vendor, read.credential);
             if (reason !== null) {
               parked += 1;
-              doctor.add(`parked:${planned.accountId}`, "warn", `${planned.accountId} (${account.vendor}) parked: ${reason}`);
+              const hint = reason === "invalid_credential_format" ? ` (${credentialFormatHint(account.vendor, read.credential.type)})` : "";
+              doctor.add(`parked:${planned.accountId}`, "warn", `${planned.accountId} (${account.vendor}) parked: ${reason}${hint}`);
             } else {
               readable += 1;
             }
@@ -891,7 +913,10 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
 
   // The scheduler's certificate and its signed echo through the TLS proxy.
   const publicUrl = config.daemon.scheduler.publicUrl;
-  if (publicUrl === null) {
+  if (idle !== null) {
+    // Phase 2: the VM picks the account itself, and nothing on this host serves or records what these lines read.
+    for (const id of ["scheduler_tls", "scheduler_echo", ...origins.flatMap((origin) => [`scheduler_api:${origin}`, `lane_registration:${origin}`]), "agent_status"]) doctor.add(id, "skip", idle);
+  } else if (publicUrl === null) {
     doctor.add("scheduler_tls", "fail", "scheduler.public_url is not configured");
   } else {
     try {
@@ -908,16 +933,19 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
       doctor.add("scheduler_tls", "fail", `${publicUrl}: TLS could not be validated (${code})`);
     }
   }
-  if (key !== null) {
-    await checkSchedulerEcho(doctor, config, key, nowMs, options.ca);
-  } else {
-    doctor.add("scheduler_echo", "skip", "the relay key is unavailable; the echo was not signed");
+  if (idle === null) {
+    if (key !== null) {
+      await checkSchedulerEcho(doctor, config, key, nowMs, options.ca);
+    } else {
+      doctor.add("scheduler_echo", "skip", "the relay key is unavailable; the echo was not signed");
+    }
+    checkSchedulerApi(doctor, config, origins, stackLaneOrigin(config, controlView));
+    checkLaneRegistration(doctor, config, origins);
+    checkAgentStatus(doctor, config, nowMs);
   }
-  checkSchedulerApi(doctor, config, origins, stackLaneOrigin(config, controlView));
-  checkLaneRegistration(doctor, config, origins);
-  checkAgentStatus(doctor, config, nowMs);
-  await checkStack(doctor, config, key, nowMs, options.ca, controlView);
-  await checkTunnel(doctor, config, nowMs, options.ca);
+  await checkStack(doctor, config, key, nowMs, options.ca, controlView, idle);
+  if (idle === null) await checkTunnel(doctor, config, nowMs, options.ca);
+  else if (config.daemon.tunnel !== null) doctor.add("tunnel", "skip", idle);
   return { ok: !doctor.failed, lines: doctor.lines };
 }
 
@@ -1085,8 +1113,9 @@ export function stackInstanceLine(
   return { status: "ok", message: text };
 }
 
-function checkStackInstance(doctor: Doctor, config: LoadedRelayConfig, stack: StackConfig, controlView: ControlView): void {
-  const line = stackInstanceLine(stack, adoptedStack(config, controlView), namedStackInstance(config), config.daemon.relayId);
+function checkStackInstance(doctor: Doctor, config: LoadedRelayConfig, stack: StackConfig, controlView: ControlView, idle: string | null): void {
+  // Phase 2 with no agent: a status file left from before the move names the old VM; `deliver` adopts the new one.
+  const line = stackInstanceLine(stack, adoptedStack(config, controlView), idle === null ? namedStackInstance(config) : null, config.daemon.relayId);
   doctor.add("stack_instance", line.status, line.message);
 }
 
@@ -1130,7 +1159,7 @@ export function stackRegistryExpiry(stack: StackConfig, nowMs: number): { readon
  * reads at start, and the two public routes as a booting CVM and Gray's release tooling reach them.
  * The challenge creates one nonce the agent forgets in 60 s; no quote and no credential is involved.
  */
-async function checkStack(doctor: Doctor, config: LoadedRelayConfig, key: RelayKeyFile | null, nowMs: number, ca: string | undefined, controlView: ControlView): Promise<void> {
+async function checkStack(doctor: Doctor, config: LoadedRelayConfig, key: RelayKeyFile | null, nowMs: number, ca: string | undefined, controlView: ControlView, idle: string | null): Promise<void> {
   const stack = config.daemon.stack;
   if (stack === null) return;
   const credential = stackCredentialProblem(stack);
@@ -1147,14 +1176,14 @@ async function checkStack(doctor: Doctor, config: LoadedRelayConfig, key: RelayK
   }
   const expiry = stackRegistryExpiry(stack, nowMs);
   doctor.add("stack_registry", expiry.status, expiry.message);
-  checkStackInstance(doctor, config, stack, controlView);
+  checkStackInstance(doctor, config, stack, controlView, idle);
   // P12: the config's stack origin, or the adopted instance's; none before the first adoption.
   const stackOrigin = stack.laneOrigin ?? adoptedStack(config, controlView)?.laneOrigin ?? null;
   // S53: the image new boots get (control.json's after a rollout, else the config's) must be one the agent names.
-  const replica = stackOrigin === null ? undefined : statusReplicas(config).get(stackOrigin);
+  const replica = stackOrigin === null || idle !== null ? undefined : statusReplicas(config).get(stackOrigin);
   const current = controlView.control.stackCurrentImage ?? stack.currentImage;
   const running = replica === undefined ? undefined : get(replica, "relay_image");
-  const runningText = typeof running === "string" ? `the attested VM runs ${running}` : "no attested stack boot in the status file";
+  const runningText = typeof running === "string" ? `the attested VM runs ${running}` : idle !== null ? "deliver attests what the VM runs" : "no attested stack boot in the status file";
   if (stack.relayImages.includes(current)) {
     doctor.add("stack_image", "ok", `boots get ${current}; ${runningText}`);
   } else {
@@ -1164,7 +1193,12 @@ async function checkStack(doctor: Doctor, config: LoadedRelayConfig, key: RelayK
   const sealed = replica === undefined ? undefined : get(replica, "sealed_account_ids");
   const refused = replica === undefined ? undefined : get(replica, "refused_account_ids");
   const phase = replica === undefined ? undefined : get(replica, "phase");
-  if (stackOrigin === null) {
+  if (idle !== null) {
+    doctor.add("stack_accounts", "skip", `${idle}; deliver and accounts push print what they seal`);
+    doctor.add("stack_challenge", "skip", `${idle}; a phase-2 VM takes its registry login from the boot box, not a pull token`);
+    doctor.add("stack_release_status", "skip", idle);
+    return;
+  } else if (stackOrigin === null) {
     doctor.add("stack_accounts", "skip", "no stack instance adopted yet, so nothing is sealed to the relay-stack app (the stack_instance line)");
   } else if (!Array.isArray(sealed)) {
     doctor.add("stack_accounts", "skip", `${stackOrigin}: no status recorded yet (gray-assistant run lists the account ids it sealed to the relay-stack origin)`);

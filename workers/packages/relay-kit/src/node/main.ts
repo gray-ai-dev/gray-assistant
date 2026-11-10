@@ -943,7 +943,12 @@ async function initPairCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   if (placeholderNote !== null) io.stdout(`${placeholderNote}\n`);
   // The config names the paths the host install mounts the kit at, so the install's own check reads it there.
   const then = left.length > 0 || placeholderNote !== null ? "then" : "next:";
-  if (result.composePath === null) io.stdout(`${then} install it: deploy/relay/host/install.sh --host <ssh alias> --kit ${shown(result.directory)}\n`);
+  if (phase2 !== null) {
+    // Phase 2 runs nothing on the host: the person's Delete and Deploy, then one delivery from the kit directory.
+    io.stdout(`${then} the person, in the panel: Delete the VM, then Deploy (the relay serves nothing from the Delete until deliver)\n`);
+    io.stdout(`      stop the host's agent, if one runs: docker compose stop agent (phase 2 runs nothing on this host)\n`);
+    io.stdout(`      once the VM waits for its delivery, from ${shown(result.directory)}: docker compose run --rm --no-deps agent deliver\n`);
+  } else if (result.composePath === null) io.stdout(`${then} install it: deploy/relay/host/install.sh --host <ssh alias> --kit ${shown(result.directory)}\n`);
   else io.stdout(`${then} start gray-assistant from ${shown(result.directory)}: docker compose up -d\n`);
   printJson(io, { ...pairSummary(result), ...(hostDir === null ? {} : { host_directory: hostDir }) } as JsonObject);
   return 0;
@@ -1744,7 +1749,7 @@ async function releasesCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   const waitMs = args.flags.has("no-wait") ? 0 : timeout === undefined ? RELEASE_ACCEPT_WAIT_DEFAULT_MS : Number(timeout) * 1000;
   const { loadRelayConfigFile } = await import("./config-file.ts");
   const { controlFileBeside } = await import("./daemon/control-file.ts");
-  const { readDaemonStatusFile } = await import("./daemon/status-file.ts");
+  const { agentRunning, readDaemonStatusFile } = await import("./daemon/status-file.ts");
   const { acceptReleaseId } = await import("./release-control.ts");
   const config = loadRelayConfigFile(configPathOf(args));
   const controlFile = controlFileBeside(config.daemon.stateFile);
@@ -1821,18 +1826,6 @@ async function releasesCommand(args: ParsedArgs, io: CliIo): Promise<number> {
 
 /** How long `releases accept` waits for the agent's first sight by default: its forced read of the list takes a tick and two 20 s GETs at most. */
 const RELEASE_ACCEPT_WAIT_DEFAULT_MS = 120_000;
-
-/**
- * Whether an agent runs for this config: its status snapshot is fresh (written within 3 ticks and one 60 s request,
- * R23's rule for `status`) and not a stopped agent's last one.
- */
-function agentRunning(snapshot: JsonObject | null, tickMs: number, nowMs: number): boolean {
-  if (snapshot === null) return false;
-  const writtenAt = numeric(get(snapshot, "written_at_ms"));
-  if (writtenAt === null || nowMs - writtenAt > 3 * tickMs + 60_000) return false;
-  const health = objectOf(get(snapshot, "health"));
-  return !(health === null ? [] : arrayOf(get(health, "reasons")).map(String)).includes("stopped");
-}
 
 /**
  * S11b's veto (`./release-control.ts`): `reject <hash>` records a compose hash or an OS image hash of the current

@@ -58,6 +58,7 @@ import type { Hex } from "viem";
 import type { ChainCheckResult } from "../chain/checks.ts";
 import type { ReleaseContentResult } from "../chain/release-compose.ts";
 import { AGENT_STATUS_PATH, agentStatusDocument, refreshGrayOf, signAgentStatus } from "../daemon/agent-status.ts";
+import { credentialFormatHint } from "../daemon/eligibility.ts";
 import { attestationMismatch } from "../daemon/stack-boot.ts";
 import { DaemonTransportError, type DaemonAttestResult, type DaemonFetch, type DaemonStackInstance } from "../daemon/types.ts";
 import { LANE_ENDPOINTS, RELAY_KIT_VERSION } from "../endpoints.ts";
@@ -654,7 +655,15 @@ export async function deliverCommand(options: DeliverOptions): Promise<number> {
     const refreshed = boot.running === null ? [] : await vmRefreshedTokens(post, relayId, seed, io.now());
     accounts = await (options.readAccounts ?? ((extra: DeliverAccountsExtra) => cliAccounts(config, io.now(), extra)))({ refreshGray, refreshed });
     for (const skipped of accounts.skipped) {
-      io.stderr(`gray-assistant ${name}: left out a ${skipped.vendor} account${skipped.panelId === null ? "" : ` (${skipped.panelId})`}: ${skipped.reason}\n`);
+      io.stderr(`gray-assistant ${name}: left out a ${skipped.vendor} account${skipped.panelId === null ? "" : ` (${skipped.panelId})`}: ${skipped.reason}${skipped.reason === "invalid_credential_format" ? ` (${credentialFormatHint(skipped.vendor, skipped.credentialType ?? "")})` : ""}\n`);
+    }
+    // Token refresh `gray` works only with the refresh token sealed beside the access token (a `login codex` login, or a
+    // source whose credential answer carries `refresh_token`); without one the VM cannot refresh it (`refresh_failing`).
+    for (const account of accounts.accounts) {
+      if (refreshGray?.has(account.account_id) !== true || account.credential.type !== "oauth_access_token" || account.credential.refresh_token !== undefined) continue;
+      io.stderr(
+        `gray-assistant ${name}: warning: ${account.account_id} is set to Token refresh gray, but its source gives no refresh token, so the VM cannot refresh it and it stops at its access token's expiry; sign it in with gray-assistant login codex, have the source answer refresh_token, or set it back to source and keep a host refreshing it\n`,
+      );
     }
     if (accounts.accounts.length === 0 && accounts.listed > 0) {
       // Nothing is sent. A first delivery would start the relay's image with no account, which serves nothing while the
@@ -723,7 +732,8 @@ export async function deliverCommand(options: DeliverOptions): Promise<number> {
       return refuse(`vault_${vault}`, `the VM keeps the boot box, but its vault could not follow the new image (${vault}); no restart was requested: run the command again`);
     }
   }
-  if (target !== null && (action === "rollout" || action === "rollback" || (action === "deliver" && boot.running !== null))) {
+  // control.json's current image follows every designation the VM took (`stack status`), the first delivery's too.
+  if (target !== null && action !== "registry") {
     await setStackImageState(controlFile, config.daemon.stateFile, target, stack.currentImage);
   }
   const done = (extra: JsonObject): number => {
