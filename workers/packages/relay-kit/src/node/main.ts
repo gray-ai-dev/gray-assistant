@@ -279,6 +279,8 @@ function usage(): string {
     "       gray-assistant tunnel ack <cert or key sha256> [--config <config>]   (a CT finding the operator has explained)",
     "       gray-assistant config set <member> <value> [--json] [--config <config>]   (one member, e.g. source.logins.proxy; restart the agent after)",
     "       gray-assistant config unset <member> [--config <config>]",
+    "       gray-assistant upgrade --dir <kit dir> [--image <image@sha256:...>]   (a kit of any earlier version, of the old name too, to this one;",
+    "                                    run from the newest image: docker run --rm -v \"$PWD:/work\" <image> upgrade --dir /work)",
     "       gray-assistant --version   (this build: the kit version and its commit)",
     "       gray-assistant policy test --bundle <bundle.json> --fixtures <fixtures.jsonl>",
     "                                 (--key <relay-key.json> | --public-key <64 hex>) [--interpreter <wasm>]",
@@ -350,6 +352,7 @@ async function dispatch(args: ParsedArgs, io: CliIo): Promise<number> {
   if (command === "source") return sourceCommand(args, io);
   if (command === "run") return runCommand(args, io);
   if (command === "doctor") return doctorCommand(args, io);
+  if (command === "upgrade") return upgradeCommand(args, io);
   if (command === "status") return statusCommand(args, io);
   if (command === "pause" || command === "resume") {
     // Phase 2: with a `chain` member, `pause` is the contract's off switch; `resume` stays the agent's.
@@ -369,6 +372,41 @@ async function dispatch(args: ParsedArgs, io: CliIo): Promise<number> {
   if (command === "config") return configCommand(args, io);
   io.stderr(`gray-assistant: unknown command ${JSON.stringify(command)}\n${usage()}`);
   return 2;
+}
+
+// ---------------------------------------------------------------------------------------------
+// upgrade
+// ---------------------------------------------------------------------------------------------
+
+/** `upgrade --dir <kit>` (./upgrade.ts): the kit directory of any earlier kit moved to this one's names and image. */
+async function upgradeCommand(args: ParsedArgs, io: CliIo): Promise<number> {
+  assertFlags(args, ["dir", "image"]);
+  assertPositionals(args, 1);
+  const { upgradeWorkspace } = await import("./upgrade.ts");
+  const image = (args.flags.get("image") ?? io.env["GRAY_ASSISTANT_IMAGE"] ?? "").trim();
+  const result = upgradeWorkspace({ directory: requiredFlag(args, "dir"), image: image === "" ? null : image, version: RELAY_KIT_VERSION.split("+")[0] as string });
+  io.stdout(`gray-assistant upgrade: relay ${result.relayId}, ${result.found} in ${result.directory}, to kit ${RELAY_KIT_VERSION}\n`);
+  for (const file of result.written) io.stdout(`wrote ${file}\n`);
+  for (const file of result.backups) io.stdout(`kept the previous file as ${file}\n`);
+  for (const member of result.members) io.stdout(`renamed the old path in ${member}\n`);
+  for (const note of result.notes) io.stdout(`note: ${note}\n`);
+  if (result.written.length === 0) io.stdout("nothing to change: the kit is already this version's\n");
+  const next = result.project === null ? [] : ["docker compose up -d", "docker compose exec agent gray-assistant doctor"];
+  for (const line of next) io.stdout(`next, in the kit directory: ${line}\n`);
+  printJson(io, {
+    command: "upgrade",
+    relay_id: result.relayId,
+    kit: RELAY_KIT_VERSION,
+    found: result.found,
+    changed: result.written.length > 0,
+    written: [...result.written],
+    backups: [...result.backups],
+    members: [...result.members],
+    project: result.project,
+    notes: [...result.notes],
+    next,
+  });
+  return 0;
 }
 
 // ---------------------------------------------------------------------------------------------

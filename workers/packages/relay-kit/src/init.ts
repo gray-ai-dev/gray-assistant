@@ -439,14 +439,18 @@ export function pairedComposeName(relayId: string): string {
  * a valid compose project name): the network takes the project's name (`COMPOSE_PROJECT_NAME`, which compose sets
  * for interpolation from `name:`, `-p` or the environment), so a project started under another name keeps its network
  * beside it, and the relay's own software joins it by that name.
+ *
+ * `keep` is what `upgrade` carries over from an older kit's file: its project name (the one kits up to 1.1.1 wrote, under the old name)
+ * and its state volume's key, so the project keeps its volume and network.
  */
-export function pairedComposeText(image: string, relayId: string): string {
-  const name = pairedComposeName(relayId);
+export function pairedComposeText(image: string, relayId: string, keep: { readonly name?: string; readonly stateVolume?: string } = {}): string {
+  const name = keep.name ?? pairedComposeName(relayId);
+  const volume = keep.stateVolume ?? "relay-state";
   return `# gray-assistant's agent, written by \`gray-assistant init --pair\`. Start it from this directory: docker compose up -d
 #
 # The directory is the kit: mounted read-only at ${KIT_MOUNT} (the paths gray-assistant.jsonc names), its config where the
 # image's command reads it. Every kit file is owned by 10001:10001 (the agent's uid) with mode 0600 or 0400, as
-# \`init\` wrote it; add registry-password the same way. The agent's state is the relay-state volume.
+# \`init\` wrote it; add registry-password the same way. The agent's state is the ${volume} volume.
 #
 # Change a config member with the agent's own writer, not an editor (e.g. the login proxy):
 #   docker compose run --rm --no-deps -v "$PWD:/work" agent config set --config /work/gray-assistant.jsonc source.logins.proxy http://proxy.example:3128
@@ -482,7 +486,7 @@ services:
     volumes:
       - ./${INIT_FILES.config}:/etc/gray-assistant/gray-assistant.jsonc:ro
       - .:${KIT_MOUNT}:ro
-      - relay-state:${STATE_MOUNT}
+      - ${volume}:${STATE_MOUNT}
     networks:
       - relay
     # No published port: with the config's tunnel section the agent connects out to Gray's rendezvous.
@@ -495,7 +499,7 @@ networks:
     name: "\${COMPOSE_PROJECT_NAME}"
 
 volumes:
-  relay-state:
+  ${volume}:
 `;
 }
 

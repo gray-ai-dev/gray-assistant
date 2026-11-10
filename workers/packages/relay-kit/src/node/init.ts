@@ -65,7 +65,8 @@ import {
 } from "../init.ts";
 import { generateRelayKey, relayPublicKeyHex, relayKeyValue, verifyRelayKeyPair, type RelayKeyFile } from "../keys.ts";
 import { prepareAndSignPolicyBundle } from "../policy-bundle.ts";
-import { ensureDirectory, readPrivateFile, writePrivateFile } from "./files.ts";
+import { ensureDirectory, readFileText, readPrivateFile, writePrivateFile } from "./files.ts";
+import { pairedComposeKeep } from "./upgrade.ts";
 import { createPlainDaemonFetch } from "./release-list-source.ts";
 import { initWorkspaceInterpreter } from "./interpreter.ts";
 import { buildKeyFromText } from "./scheduler-load.ts";
@@ -580,7 +581,9 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
   if (phase2 !== null && pairingRecovery.generated !== null) files.push(recoveryKeyPath);
   // Public: it names the image and the mounts, no secret, and `docker compose` reads it as the operator.
   if (composeImage !== null) {
-    writePublicFile(composePath, pairedComposeText(composeImage, answer.relay_id), force);
+    // A kit paired before (any kit, those of the old name too) keeps its project and state volume: a new pairing keeps the state.
+    const keep = existsSync(composePath) ? pairedComposeKeep(readFileText(composePath, "compose file", 1024 * 1024)) : null;
+    writePublicFile(composePath, pairedComposeText(composeImage, answer.relay_id, keep ?? {}), force);
     files.push(composePath);
   }
   return {

@@ -22,6 +22,8 @@ import { STACK_LAYOUT } from "./layout.ts";
 import { isYamlMap, parseComposeText, type YamlMap, type YamlValue } from "./yaml.ts";
 
 export { STACK_LAYOUT, type StackLayout } from "./layout.ts";
+// The strict compose reader, for relay-kit's `upgrade`, which reads the kit's own compose.yaml.
+export { isYamlMap, parseComposeText, type YamlMap } from "./yaml.ts";
 
 export interface SupplyExpectation {
   /** Digests the relay accepts for Gray's services (from the signed release list's `stack.gray_image`). */
