@@ -14,9 +14,11 @@ import {
   PROVISION_OP_STATES,
   RELAY_ALERT_KINDS,
   RELAY_ALERT_REQUIRED_KINDS,
+  RELAY_RELEASE_NOTICE_KINDS,
   RELEASE_MOVE_BLOCKS,
   TOKEN_SERVICE_CODES,
   type ReleaseMoveBlock,
+  type RelayReleaseNoticeKind,
   type BootEvent,
   type BootFailureClass,
   type DeploymentState,
@@ -56,9 +58,11 @@ export {
   PROVISION_OP_STATES,
   RELAY_ALERT_KINDS,
   RELAY_ALERT_REQUIRED_KINDS,
+  RELAY_RELEASE_NOTICE_KINDS,
   RELEASE_MOVE_BLOCKS,
   TOKEN_SERVICE_CODES,
   type ReleaseMoveBlock,
+  type RelayReleaseNoticeKind,
   type BootEvent,
   type BootFailureClass,
   type DeploymentState,
@@ -90,11 +94,24 @@ export const PROVISION_STEPS = {
  * guardian's pairing approvals submitted), whose address is the app id. A deploy queued for such a relay counts these.
  */
 export const PHASE2_DEPLOY_STEPS = ["check", "contract", "provision", "publish", "create", "watch"] as const;
-export type ProvisionStep = (typeof PROVISION_STEPS)[ProvisionKind][number] | (typeof PHASE2_DEPLOY_STEPS)[number];
+/**
+ * P7 (docs/design/relay-no-always-on-host.md 13.4): a phase-2 VM's image rollout first waits for `copies`, Gray's copy of
+ * the vault sealed for the designated image and of the boot box at the receipt's version, so the second instance can
+ * open them; its Gray release move first waits for `awaiting_effective`, the release's compose hash effective on the
+ * relay's contract, so the second instance's keys are released.
+ */
+export const PHASE2_ROLLOUT_STEPS = ["check", "copies", "replicate", "watch", "shift", "drain", "remove_old"] as const;
+export const PHASE2_UPGRADE_STEPS = ["check", "awaiting_effective", "replicate", "update", "watch", "shift", "drain", "remove_old"] as const;
+export type ProvisionStep =
+  | (typeof PROVISION_STEPS)[ProvisionKind][number]
+  | (typeof PHASE2_DEPLOY_STEPS)[number]
+  | (typeof PHASE2_ROLLOUT_STEPS)[number]
+  | (typeof PHASE2_UPGRADE_STEPS)[number];
 
-/** The steps an operation of `kind` counts: a phase-2 Deploy's include `contract`. */
+/** The steps an operation of `kind` counts: a phase-2 Deploy's include `contract`, a rollout's `copies`, an upgrade's `awaiting_effective`. */
 export function provisionStepsOf(kind: ProvisionKind, phase2: boolean): readonly string[] {
-  return kind === "deploy" && phase2 ? PHASE2_DEPLOY_STEPS : PROVISION_STEPS[kind];
+  if (!phase2) return PROVISION_STEPS[kind];
+  return kind === "deploy" ? PHASE2_DEPLOY_STEPS : kind === "rollout" ? PHASE2_ROLLOUT_STEPS : kind === "upgrade" ? PHASE2_UPGRADE_STEPS : PROVISION_STEPS[kind];
 }
 
 // ------------------------------------------------------------------------------------------------- release profile (P4)
@@ -780,6 +797,14 @@ export const STEP_FAILURE_WORDS: Readonly<Record<string, FailureWords>> = {
   dns_failed: { title: "The lane's DNS records could not be written.", fix: "Gray's operators have been told. Retry later.", side: "gray" },
   no_vm: { title: "There is no VM to restart.", fix: "Deploy first.", side: "relay" },
   busy: { title: "Another Deploy, Restart or Delete is still running.", fix: "Wait for it to finish; the timeline shows its progress.", side: "relay" },
+  // P7 (docs/design/relay-no-always-on-host.md 13.4): a phase-2 rollout or release move that stops before a second VM.
+  vault_not_uploaded: {
+    title: "Your VM had not stored its vault for the new image at Gray, so no second VM was started.",
+    fix: "Your VM keeps serving. Run the gray-assistant stack command again; it re-sends the designation and Gray tries again.",
+    side: "relay",
+  },
+  release_vetoed: { title: "Your relay's contract vetoed (or removed) the Gray release this move needed.", fix: "Your VM keeps its release and serves. Gray proposes the next release.", side: "relay" },
+  release_not_proposed: { title: "The Gray release this move needs is not proposed on your relay's contract yet.", fix: "Your VM keeps its release and serves. Gray proposes it, and tries again.", side: "gray" },
   internal: { title: "Something failed on Gray's side.", fix: "Gray's operators have been told. Retry later.", side: "gray" },
 };
 
@@ -846,6 +871,10 @@ export const RELAY_ALERT_WORDS: Readonly<Record<RelayAlertKind, { readonly title
   lease_expiring: { title: "Your VM's credential lease hasn't been renewed", resolved: "gray-assistant renewed your VM's credential lease" },
   relay_ejected: { title: "Gray took your relay out of routing", resolved: "Gray put your relay back into routing" },
   relay_violation: { title: "Gray found your relay changing a request or an answer", resolved: "Gray closed its report of a change by your relay" },
+  // Phase 2's release notices (P5b-2): told once each, never resolved; `resolved` is not sent.
+  relay_release_proposed: { title: "Gray proposed a release for your relay", resolved: "" },
+  relay_release_reminder: { title: "A proposed Gray release takes effect in 2 days", resolved: "" },
+  relay_release_effective: { title: "A Gray release took effect for your relay", resolved: "" },
 };
 
 // ------------------------------------------------------------------------------------------------- the store's RPC (P3)
@@ -936,6 +965,12 @@ export interface EntryBoot {
   readonly streams: number;
   /** Pinned, usable and holding the relay's sealed credentials: it takes new requests first. */
   readonly ready: boolean;
+  /**
+   * The boot is the empty slot (docs/design/relay-no-always-on-host.md 13.x): it runs no relay image and holds no sealed
+   * credentials, so no request was ever sent to it, and a stream it holds is the relay's own tunnel to it (its
+   * deliveries). False for a boot that runs an image, and for an entry that does not say (one from before phase 2).
+   */
+  readonly emptySlot?: boolean;
 }
 
 /** The boots of a boots-route answer (`{relay_id, boots: [...]}`), or null for an answer that is not one. */
@@ -946,14 +981,14 @@ export function entryBootsOf(value: unknown, relayId: string): EntryBoot[] | nul
   const out: EntryBoot[] = [];
   for (const row of v.boots) {
     if (row === null || typeof row !== "object") return null;
-    const b = row as { keyset?: unknown; app_id?: unknown; instance_id?: unknown; streams?: unknown; ready?: unknown };
+    const b = row as { keyset?: unknown; app_id?: unknown; instance_id?: unknown; streams?: unknown; ready?: unknown; relay_image?: unknown; sealed?: unknown };
     const streams = typeof b.streams === "bigint" ? Number(b.streams) : b.streams;
     if (typeof b.keyset !== "string" || !/^[0-9a-f]{64}$/.test(b.keyset)) return null;
     if (b.app_id !== null && (typeof b.app_id !== "string" || !/^[0-9a-f]{40}$/.test(b.app_id))) return null;
     // An entry from before instance ids answers none: the boot's instance is unknown, not refused.
     const instanceId = typeof b.instance_id === "string" && /^[0-9a-f]{40}$/.test(b.instance_id) ? b.instance_id : null;
     if (typeof streams !== "number" || !Number.isSafeInteger(streams) || streams < 0 || typeof b.ready !== "boolean") return null;
-    out.push({ keyset: b.keyset, appId: b.app_id, instanceId, streams, ready: b.ready });
+    out.push({ keyset: b.keyset, appId: b.app_id, instanceId, streams, ready: b.ready, emptySlot: b.relay_image === null && b.sealed === false });
   }
   return out;
 }
@@ -1021,6 +1056,25 @@ export interface ProvisionPlan {
    * the guardian approved. Absent or null: phase 1.
    */
   readonly chain?: ProvisionChain | null;
+  /**
+   * P7 (docs/design/relay-no-always-on-host.md 13.4): a rollout or upgrade of a VM on its relay's phase-2 contract (the
+   * deployed profile is phase 2 and the app id is the contract the relay paired). `rollout` is the relay-signed request's
+   * image and the boot box version its VM's receipt named, for the `copies` wait; null for an upgrade. Absent or null:
+   * phase 1.
+   */
+  readonly phase2?: { readonly contract: string; readonly chainId: number; readonly rollout: { readonly image: string; readonly bootVersion: number } | null } | null;
+}
+
+/**
+ * P7: what Gray's copy store holds of a relay's app (ProvisionerStore `vaultCopies`): each record's version and, for the
+ * vault, the image its clear header names. Null for a record Gray does not hold.
+ */
+export interface VaultCopyHeads {
+  readonly vault: { readonly version: number; readonly image: string | null } | null;
+  readonly vault_prev: { readonly version: number; readonly image: string | null } | null;
+  readonly boot: { readonly version: number } | null;
+  /** P7 (13.4, the final mark): the draining key whose final mark Gray's pair carries, else null. */
+  readonly finalFrom?: string | null;
 }
 
 /** What a phase-2 Deploy deploys on the relays' chain: the pairing's guardian part as the console checked it. */
@@ -1028,6 +1082,8 @@ export interface ProvisionChain {
   readonly chainId: number;
   /** Gray's release proposer, 0x and 40 hex. */
   readonly proposer: string;
+  /** Gray's proposer recovery key, 0x and 40 hex. */
+  readonly proposerRecovery: string;
   readonly guardian: string;
   readonly recovery: string | null;
   /** The relay's contract (CREATE2), the app id. */
@@ -1092,6 +1148,8 @@ export interface ProvisionerStoreRpc {
    * code that refuses it now (`busy`: an operation already runs, which boots the VM with the relay's current image).
    */
   queueSignedRestart(input: { readonly relayId: string; readonly requestId: string; readonly appId: string }): Promise<{ readonly opId: string } | { readonly refused: string }>;
+  /** P7: Gray's copies of the operation's relay's app (`stack.vault.*`), headers only; a console before it throws. */
+  vaultCopies?(input: { readonly opId: string }): Promise<VaultCopyHeads>;
   /**
    * docs/design/relay-release-zero-downtime.md: an `upgrade` queued for each relay (at most `limit`) whose running VM
    * should move to the newest Gray release the relay accepted, when every condition of the move holds.
@@ -1108,14 +1166,14 @@ const uintText = z.string().regex(/^(0|[1-9][0-9]{0,77})$/);
 /**
  * A guardian's signed decision for Gray's relayer (docs/design/relay-no-always-on-host.md 3.2, 13.11 P5a-3): the JSON
  * gray-assistant prints for `releases approve|reject`, `pause` and `unpause` (relay-kit `signedActionJson`; its
- * `function` and `calldata` members may come along and are recomputed, never sent as given), or the Releases page
- * builds from a wallet's signature. `kind` and `hash` for an approve, veto or remove; null for a pause or unpause.
- * The signature is 65 bytes for a key, longer for a contract guardian (ERC-1271, a Safe).
+ * `function` and `calldata` members may come along and are recomputed, never sent as given). `kind` and `hash` for an
+ * approve or veto (of a compose, an OS image or an upgrade of the contract); null for a pause or unpause. The relay never
+ * removes (a veto can be undone, a removal cannot). The signature is the guardian key's 65 bytes (ECDSA).
  */
 export const relayerActionSchema = z
   .object({
-    action: z.enum(["approve", "veto", "remove", "pause", "unpause"]),
-    kind: z.enum(["compose", "os_image"]).nullable(),
+    action: z.enum(["approve", "veto", "pause", "unpause"]),
+    kind: z.enum(["compose", "os_image", "implementation"]).nullable(),
     hash: z.string().regex(/^0x[0-9a-f]{64}$/).nullable(),
     chain_id: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
     contract: evmAddress,
@@ -1123,16 +1181,34 @@ export const relayerActionSchema = z
     signer: evmAddress,
     nonce: uintText,
     deadline: uintText,
-    signature: z.string().regex(/^0x(?:[0-9a-fA-F]{2}){65,4096}$/),
+    signature: z.string().regex(/^0x[0-9a-fA-F]{130}$/),
     function: z.string().max(64).optional(),
     calldata: z.string().max(20_000).optional(),
   })
   .strict()
   .refine((a) => (a.action === "pause" || a.action === "unpause" ? a.kind === null && a.hash === null : a.kind !== null && a.hash !== null), {
-    message: "an approve, veto or remove names its kind and hash; a pause or unpause names neither",
+    message: "an approve or veto names its kind and hash; a pause or unpause names neither",
     path: ["kind"],
   });
 export type RelayerAction = z.infer<typeof relayerActionSchema>;
+
+/** The first line of a relayer request the relay key signs (the restart request's form, S53). */
+export const RELAYER_REQUEST_DOMAIN = "gray-relay-stack-relayer/v1";
+
+/**
+ * gray-assistant's default for a guardian's decision: `POST /v1/lane-stack/relayer` with the decision and the relay key's
+ * Ed25519 signature over `relayerRequestMessage`, verified with the key the relay registered, as its restart requests are.
+ */
+export const relayerRequestSchema = z
+  .object({ relay_id: z.string().regex(LANE_RELAY_ID_PATTERN), decision: relayerActionSchema, signature: z.string().regex(/^[0-9a-f]{128}$/) })
+  .strict();
+export type RelayerRequest = z.infer<typeof relayerRequestSchema>;
+
+/** The bytes the relay key signs: the domain, the relay id and each signed member of the decision, one a line. */
+export function relayerRequestMessage(relayId: string, d: RelayerAction): Uint8Array {
+  const lines = [RELAYER_REQUEST_DOMAIN, relayId, d.action, d.kind ?? "", d.hash ?? "", String(d.chain_id), d.contract, d.version, d.signer, d.nonce, d.deadline, d.signature];
+  return new TextEncoder().encode(lines.join("\n"));
+}
 
 /**
  * Why Gray's relayer did not submit a decision, each with the HTTP status the console answers and the words the panel
@@ -1181,6 +1257,15 @@ export const relayerProposalSchema = z
   })
   .strict();
 export type RelayerProposal = z.infer<typeof relayerProposalSchema>;
+
+/**
+ * gray-provisioner's `Operations` entrypoint, for the console's PROVISIONER binding: `wake` starts what the console just
+ * queued without waiting for the provisioner's minute pass. It takes nothing and decides nothing; the pass starts
+ * whatever a wake missed.
+ */
+export interface ProvisionerWakeRpc {
+  wake(): Promise<{ readonly started: number; readonly restarts: number }>;
+}
 
 /**
  * gray-provisioner's Relayer entrypoint as the console calls it through its RELAYER binding (P5a-3): the provisioner

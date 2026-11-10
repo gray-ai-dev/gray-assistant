@@ -3,24 +3,28 @@
  * list|check|approve|reject` and `pause` / `unpause`, for a kit whose config has a `chain` member (`../chain/config.ts`).
  *
  * Each reads the contract from the config's two RPC endpoints, which must agree; signs the EIP-712 message with
- * `guardian-key.json` (or prints the typed data for the guardian's own wallet); prints the signed message as JSON for
+ * `guardian-key.json`; prints the signed message as JSON for
  * Gray's relayer (P5 adds the route that takes it); and with `--submit --rpc <url>` sends the `...BySig` transaction from
  * the guardian key itself (it pays; the chain id must be the config's). Nothing here prints the key.
  */
 import { closeSync, fsyncSync, openSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { get, isObject, parsePlain, type Json, type JsonObject } from "@gray/json";
-import { BaseError, createWalletClient, custom, decodeErrorResult, defineChain, type Address, type Hex } from "viem";
+import { bytesToLowerHex, ed25519Sign } from "@gray/attest";
+import { relayerActionSchema, relayerRequestMessage } from "@gray/control/stack-provision";
+import { BaseError, createWalletClient, custom, decodeErrorResult, defineChain, type Address, type Hex, type PublicClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { APP_AUTH_ABI, APP_AUTH_DELAY_SECONDS, releaseHash, type ReleaseKind } from "../chain/app-auth.ts";
+import { APP_AUTH_ABI, APP_AUTH_DELAY_SECONDS, publishedUpgrade, releaseHash, type ReleaseKind } from "../chain/app-auth.ts";
 import { checkRelayContract, chainCheckJson, kitErrorIn } from "../chain/checks.ts";
 import { parseChainConfig, type ChainConfig } from "../chain/config.ts";
-import { bySigCalldata, signedActionJson, signedActionSigner, signGuardianAction, walletTypedData, type GuardianAction, type GuardianMessageContext } from "../chain/guardian.ts";
+import { bySigCalldata, signedActionJson, signedActionSigner, signGuardianAction, type GuardianAction, type GuardianMessageContext } from "../chain/guardian.ts";
 import { GUARDIAN_KEY_FILE, guardianKeyValue, parseGuardianKeyValue, type GuardianKeyFile } from "../chain/guardian-key.ts";
 import { agreedChain, hasCode, listReleases, releaseState, releaseStateJson, signerNonce, switchState, type AgreedChain, type ReleaseState } from "../chain/releases.ts";
 import { checkedRpcUrl, httpRequestFn, rpcClient, rpcLabel, type RpcOptions } from "../chain/rpc.ts";
 import { RelayKitError } from "../errors.ts";
-import { parseJsoncText } from "./config-file.ts";
+import { loadRelayConfigFile, parseJsoncText } from "./config-file.ts";
+import { buildKeyFromText } from "./scheduler-load.ts";
+import { defaultPost, type StackPost } from "./stack.ts";
 import { readFileText, readPrivateFile, writePrivateFile } from "./files.ts";
 
 /** The largest config and key file read. */
@@ -30,11 +34,11 @@ export const DEFAULT_ACTION_LIFETIME_SECONDS = 24n * 60n * 60n;
 /** The longest `--deadline` accepted: 30 days from now (the pairing's approvals' lifetime). */
 const MAX_ACTION_LIFETIME_SECONDS = 30n * 24n * 60n * 60n;
 
-/** A kit's chain context: the parsed `chain` member and the guardian key file's absolute path, if any. */
+/** A kit's chain context: the parsed `chain` member and the guardian key file's absolute path. */
 export interface ChainContext {
   readonly configPath: string;
   readonly chain: ChainConfig;
-  readonly guardianKeyPath: string | null;
+  readonly guardianKeyPath: string;
 }
 
 /** The config's `chain` member, or null when the config has none (a phase-1 kit). The rest of the config is not judged here. */
@@ -45,7 +49,7 @@ export function readChainContext(configPath: string): ChainContext | null {
   if (member === undefined) return null;
   const chain = parseChainConfig(member);
   const base = dirname(resolve(configPath));
-  const guardianKeyPath = chain.guardianKey === null ? null : isAbsolute(chain.guardianKey) ? chain.guardianKey : resolve(base, chain.guardianKey);
+  const guardianKeyPath = isAbsolute(chain.guardianKey) ? chain.guardianKey : resolve(base, chain.guardianKey);
   return { configPath, chain, guardianKeyPath };
 }
 
@@ -113,8 +117,8 @@ function nonceFlag(value: string | undefined): bigint | null {
 /** `--kind compose|os_image`. */
 function kindFlag(value: string | undefined): ReleaseKind | null {
   if (value === undefined) return null;
-  if (value === "compose" || value === "os_image") return value;
-  throw new RelayKitError("usage", "--kind is compose or os_image");
+  if (value === "compose" || value === "os_image" || value === "implementation") return value;
+  throw new RelayKitError("usage", "--kind is compose, os_image or implementation");
 }
 
 export interface ChainCommandOptions extends RpcOptions {
@@ -132,11 +136,23 @@ async function openChain(context: ChainContext, options: ChainCommandOptions): P
 /** The kind of a hash on the contract: the given one, else the one kind it was proposed as. */
 async function kindOnChain(chain: AgreedChain, contract: Address, hash: Hex, given: ReleaseKind | null): Promise<ReleaseState> {
   if (given !== null) return releaseState(chain, contract, given, hash);
-  const [compose, osImage] = await Promise.all([releaseState(chain, contract, "compose", hash), releaseState(chain, contract, "os_image", hash)]);
-  if (compose.proposedAt !== 0n && osImage.proposedAt !== 0n) throw new RelayKitError("usage", `${hash} is proposed both as a compose hash and as an OS image hash; say which with --kind compose|os_image`);
-  if (compose.proposedAt !== 0n) return compose;
-  if (osImage.proposedAt !== 0n) return osImage;
+  const states = await Promise.all((["compose", "os_image", "implementation"] as const).map((kind) => releaseState(chain, contract, kind, hash)));
+  const proposed = states.filter((state) => state.proposedAt !== 0n);
+  if (proposed.length > 1) throw new RelayKitError("usage", `${hash} is proposed as more than one kind; say which with --kind compose|os_image|implementation`);
+  if (proposed[0] !== undefined) return proposed[0];
   throw new RelayKitError("chain_refused", `${hash} has not been proposed on ${contract}`);
+}
+
+/**
+ * An upgrade of the contract (kind `implementation`): Gray's when this kit's published list names it, from an
+ * implementation to a published one, with its call; anything else is not Gray's and the relay vetoes it.
+ */
+export function upgradeVerdict(hash: Hex): { readonly ok: boolean; readonly detail: string } {
+  const upgrade = publishedUpgrade(hash);
+  if (upgrade === null || upgrade.version === null) {
+    return { ok: false, detail: `${hash} is not an upgrade Gray publishes (this kit's abi/implementations.json): veto it with \`gray-assistant releases reject ${hash} --kind implementation\`` };
+  }
+  return { ok: true, detail: `an upgrade Gray publishes: from ${upgrade.from} to implementation ${upgrade.version} at ${upgrade.to} (code ${upgrade.codeHash}), ${upgrade.data === "0x" ? "no call" : `call ${upgrade.data}`}` };
 }
 
 /** `releases list`: every proposal since `chain.from_block` (or `--from-block`), with its state. */
@@ -159,7 +175,7 @@ export async function chainReleaseCheck(context: ChainContext, hashText: string,
 
 /** One sentence on a release's state, for the person deciding. */
 export function releaseVerdict(state: ReleaseState, now: bigint): string {
-  const what = state.kind === "compose" ? "compose" : "OS image";
+  const what = state.kind === "compose" ? "compose" : state.kind === "os_image" ? "OS image" : "upgrade";
   if (state.proposedAt === 0n) return `${what} ${state.hash} was never proposed`;
   if (state.removed) return `${what} ${state.hash} was removed; it is never effective again`;
   if (state.vetoed) return `${what} ${state.hash} is vetoed by the relay; it is not effective until the guardian approves it`;
@@ -171,28 +187,26 @@ export function releaseVerdict(state: ReleaseState, now: bigint): string {
 }
 
 /** What a guardian action command produced. */
-export type GuardianActionOutcome =
-  | {
-      readonly signed: true;
-      readonly json: Record<string, string | number | null>;
-      /** The transaction `--submit` sent, and the block it was mined in (null: not mined within the wait). */
-      readonly transaction: { readonly hash: Hex; readonly block: bigint | null } | null;
-      readonly note: string | null;
-    }
-  | { readonly signed: false; readonly typedData: Record<string, unknown>; readonly context: GuardianMessageContext; readonly note: string | null };
+export interface GuardianActionOutcome {
+  readonly json: Record<string, string | number | null>;
+  /** The transaction sent, and the block it was mined in (null: not mined within the wait); null with `--print`. */
+  readonly transaction: { readonly hash: Hex; readonly block: bigint | null } | null;
+  /** Who sent it: Gray's relayer (the default) or the guardian key (`--submit`). */
+  readonly via: "relayer" | "guardian" | null;
+  readonly note: string | null;
+}
 
-/** Approve, veto, pause or unpause: read what the contract needs, sign (or give the wallet's typed data), maybe submit. */
+/** Approve, veto, pause or unpause: read what the contract needs, sign with the guardian key, maybe submit. */
 export async function chainGuardianAction(
   context: ChainContext,
-  request: { readonly action: "approve" | "veto" | "pause" | "unpause"; readonly hash?: string; readonly kind?: string; readonly deadline?: string; readonly nonce?: string; readonly submit?: { readonly rpc: string } | null },
-  options: ChainCommandOptions,
+  request: { readonly action: "approve" | "veto" | "pause" | "unpause"; readonly hash?: string; readonly kind?: string; readonly deadline?: string; readonly nonce?: string; readonly submit?: { readonly rpc: string } | null; readonly print?: boolean },
+  options: ChainCommandOptions & { readonly post?: StackPost },
 ): Promise<GuardianActionOutcome> {
   const contract = context.chain.contract;
   const guardian = context.chain.guardian;
   const deadline = actionDeadline(request.deadline, options.nowMs);
   const givenNonce = nonceFlag(request.nonce);
-  const key = context.guardianKeyPath === null ? null : readGuardianKeyFile(context.guardianKeyPath, guardian);
-  if (request.submit && key === null) throw new RelayKitError("usage", "--submit sends the transaction from the guardian key, and this config names none (chain.guardian_key): sign with your wallet and send it there");
+  const key = readGuardianKeyFile(context.guardianKeyPath, guardian);
   const submitUrl = request.submit ? checkedRpcUrl(request.submit.rpc, "--rpc") : null;
 
   const chain = await openChain(context, options);
@@ -219,13 +233,60 @@ export async function chainGuardianAction(
   }
   const nonce = givenNonce ?? (await signerNonce(chain, contract, guardian));
   const messageContext: GuardianMessageContext = { chainId: context.chain.chainId, contract, version, signer: guardian, nonce, deadline };
-  if (key === null) return { signed: false, typedData: walletTypedData(action, messageContext), context: messageContext, note };
   const signed = await signGuardianAction(key.privateKey, action, messageContext);
   if ((await signedActionSigner(signed)) !== guardian) throw new RelayKitError("invalid_key_file", "the signature does not recover to the guardian");
   const json = signedActionJson(signed);
-  if (submitUrl === null) return { signed: true, json, transaction: null, note };
-  const transaction = await submitBySig(submitUrl, context.chain.chainId, key, contract, bySigCalldata(signed), options);
-  return { signed: true, json, transaction, note };
+  if (submitUrl !== null) return { json, transaction: await submitBySig(submitUrl, context.chain.chainId, key, contract, bySigCalldata(signed), options), via: "guardian", note };
+  if (request.print === true) return { json, transaction: null, via: null, note };
+  // The default: Gray's relayer pays, the request signed with the relay key as a restart request is.
+  const config = loadRelayConfigFile(context.configPath);
+  if (config.daemon.stack === null) throw new RelayKitError("usage", "the config has no stack section (stack.report_origin, where Gray's relayer is): send it yourself with --submit --rpc <url>, or --print it");
+  const relayKey = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "relay key", 64 * 1024));
+  const hash = await postToRelayer({ origin: config.daemon.stack.reportOrigin, relayId: config.daemon.relayId, seed: relayKey.seed, decision: json, ...(options.post === undefined ? {} : { post: options.post }) });
+  return { json, transaction: { hash, block: await minedBlock(rpcClient(context.chain.rpc[0] as string, options), hash, RECEIPT_TIMEOUT_MS) }, via: "relayer", note };
+}
+
+/** Gray's relayer for a decision the guardian signed, as gray-assistant sends it (the console's report.ts). */
+export const RELAYER_REQUEST_PATH = "/v1/lane-stack/relayer";
+/** Gray's relayer refusals that mean Gray does not pay for this one: the relay sends it with `--submit`. */
+const NOT_PAID = new Set(["relay_relayer_over_limit", "relay_relayer_not_sponsored"]);
+
+/** Sign the guardian's decision again with the relay key and have Gray's relayer submit it; the transaction's hash. */
+export async function postToRelayer(input: { readonly origin: string; readonly relayId: string; readonly seed: Uint8Array; readonly decision: Record<string, unknown>; readonly post?: StackPost }): Promise<Hex> {
+  const { function: _call, calldata: _data, ...signed } = input.decision;
+  const decision = relayerActionSchema.parse(signed);
+  const signature = bytesToLowerHex(await ed25519Sign(input.seed, relayerRequestMessage(input.relayId, decision)));
+  let answer: { readonly status: number; readonly text: string };
+  try {
+    answer = await (input.post ?? defaultPost)(`${input.origin}${RELAYER_REQUEST_PATH}`, JSON.stringify({ relay_id: input.relayId, decision, signature }));
+  } catch {
+    throw new RelayKitError("chain_unreachable", `Gray's relayer at ${input.origin} did not answer: run the command again, or send it yourself with --submit --rpc <url>`);
+  }
+  let body: Json = null;
+  try {
+    body = parsePlain(answer.text) as Json;
+  } catch {
+    // Not JSON: refused below with the status alone.
+  }
+  const hash = isObject(body) ? get(body, "transaction_hash") : undefined;
+  if (answer.status === 200 && typeof hash === "string" && /^0x[0-9a-f]{64}$/.test(hash)) return hash as Hex;
+  const error = isObject(body) ? get(body, "error") : undefined;
+  const code = isObject(error) && typeof get(error, "code") === "string" ? (get(error, "code") as string) : `HTTP ${answer.status}`;
+  const message = isObject(error) && typeof get(error, "message") === "string" ? (get(error, "message") as string).slice(0, 300) : "";
+  if (NOT_PAID.has(code)) throw new RelayKitError("chain_refused", `Gray's relayer does not pay for this one (${code}): send it yourself with --submit --rpc <url> (the guardian key pays a few cents of Base ETH)`);
+  throw new RelayKitError("chain_refused", `Gray's relayer refused it (${code}${message === "" ? "" : `: ${message}`}); nothing was sent`);
+}
+
+/** The block a sent transaction was mined in, or null when it was not within the wait; a reverted one is refused. */
+async function minedBlock(reader: PublicClient, hash: Hex, timeoutMs: number): Promise<bigint | null> {
+  try {
+    const receipt = await reader.waitForTransactionReceipt({ hash, timeout: timeoutMs, pollingInterval: 1000 });
+    if (receipt.status !== "success") throw new RelayKitError("chain_refused", `transaction ${hash} was mined in block ${receipt.blockNumber} and reverted`);
+    return receipt.blockNumber;
+  } catch (error) {
+    if (error instanceof RelayKitError) throw error;
+    return null;
+  }
 }
 
 /**
@@ -269,14 +330,7 @@ export async function submitBySig(
     throw new RelayKitError("chain_refused", `${rpcLabel(url)}: ${short}`);
   }
   // Sent: wait for it to be mined (Base makes a block every 2 s), so the command says whether the contract took it.
-  try {
-    const receipt = await reader.waitForTransactionReceipt({ hash, timeout: options.receiptTimeoutMs ?? RECEIPT_TIMEOUT_MS, pollingInterval: 1000 });
-    if (receipt.status !== "success") throw new RelayKitError("chain_refused", `transaction ${hash} was mined in block ${receipt.blockNumber} and reverted`);
-    return { hash, block: receipt.blockNumber };
-  } catch (error) {
-    if (error instanceof RelayKitError) throw error;
-    return { hash, block: null };
-  }
+  return { hash, block: await minedBlock(reader, hash, options.receiptTimeoutMs ?? RECEIPT_TIMEOUT_MS) };
 }
 
 /** How long `--submit` waits for its transaction to be mined before it prints the hash alone. */

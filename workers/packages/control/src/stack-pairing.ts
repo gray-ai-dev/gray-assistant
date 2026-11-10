@@ -210,6 +210,7 @@ export const pairChainAnswerSchema = z
         relay_id: z.string().regex(STACK_ID_PATTERN),
         chain_id: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
         proposer: evmAddress,
+        proposer_recovery: evmAddress,
         dstack_kms: evmAddress,
         compose_hash: releaseHash,
         os_image_hash: releaseHash,

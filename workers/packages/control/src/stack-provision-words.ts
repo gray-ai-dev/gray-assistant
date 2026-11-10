@@ -194,13 +194,32 @@ export const TOKEN_SERVICE_CODES = [
 export type TokenServiceCode = (typeof TOKEN_SERVICE_CODES)[number];
 
 /**
+ * Phase 2's release notices (docs/design/relay-no-always-on-host.md 3.2 "How the relay learns of a proposal", 13.11
+ * P5b-2): a Gray release proposed on the relay's contract, a reminder on day 5 while it is still undecided, and the
+ * release taking effect. Each is told once per release (lane_stack_relay_releases), not an open/resolved condition.
+ */
+export const RELAY_RELEASE_NOTICE_KINDS = ["relay_release_proposed", "relay_release_reminder", "relay_release_effective"] as const;
+export type RelayReleaseNoticeKind = (typeof RELAY_RELEASE_NOTICE_KINDS)[number];
+
+/**
  * What a relay is told about by e-mail and webhook (lifecycle §3.7): a failed boot (the token service unreachable is
  * its `token_service` class), its registry token near its end (only once gray-assistant reports it), Gray's release list
  * stale, a release waiting for the relay, a container crash loop, account-health problems (S46's states), and the VM's
  * credential lease past its renewal (S45, the credentials list's `lease_expiring`), and a non-compliant change: the relay
  * taken out of routing (`relay_ejected`), or the change recorded with the relay left routing (`relay_violation`).
  */
-export const RELAY_ALERT_KINDS = ["boot_failed", "registry_token_expiring", "release_list_stale", "release_pending", "container_crash_loop", "account_health", "lease_expiring", "relay_ejected", "relay_violation"] as const;
+export const RELAY_ALERT_KINDS = [
+  "boot_failed",
+  "registry_token_expiring",
+  "release_list_stale",
+  "release_pending",
+  "container_crash_loop",
+  "account_health",
+  "lease_expiring",
+  "relay_ejected",
+  "relay_violation",
+  ...RELAY_RELEASE_NOTICE_KINDS,
+] as const;
 /**
  * The kinds a relay cannot turn off (docs/design/relay-ejection.md): Gray took the relay out of routing for a
  * non-compliant change to a request or an answer, which only Gray's operators undo (`relay_ejected`), or, while the

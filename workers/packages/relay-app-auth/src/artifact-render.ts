@@ -5,10 +5,35 @@
 import { isArray, isObject, get, parsePlain, type Json } from "@gray/json";
 
 const HEX = /^0x(?:[0-9a-f]{2})+$/;
+const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+const HASH = /^0x[0-9a-f]{64}$/;
 
-function requireString(value: unknown, member: string): string {
-  if (typeof value !== "string") throw new Error(`GrayRelayAppAuth.json: ${member} is not a string`);
+function requireString(value: unknown, member: string, pattern?: RegExp): string {
+  if (typeof value !== "string" || (pattern !== undefined && !pattern.test(value))) throw new Error(`GrayRelayAppAuth.json: ${member} is not a string of the expected form`);
   return value;
+}
+
+/** The published implementations and upgrades (`published`, from abi/implementations.json), checked for shape. */
+function published(value: Json | undefined): { implementations: unknown[]; upgrades: unknown[] } {
+  if (value === undefined || !isObject(value)) throw new Error("GrayRelayAppAuth.json: published is not an object");
+  const implementations = get(value, "implementations");
+  const upgrades = get(value, "upgrades");
+  if (!isArray(implementations) || implementations.length === 0 || !isArray(upgrades)) throw new Error("GrayRelayAppAuth.json: published lists no implementation");
+  const list = implementations.map((entry, index) => {
+    if (!isObject(entry) || get(entry, "version") !== index + 1) throw new Error(`GrayRelayAppAuth.json: published implementation ${index} is not version ${index + 1}`);
+    return { version: index + 1, address: requireString(get(entry, "address"), "published address", ADDRESS), code_hash: requireString(get(entry, "code_hash"), "published code_hash", HASH) };
+  });
+  const moves = upgrades.map((entry) => {
+    if (!isObject(entry)) throw new Error("GrayRelayAppAuth.json: a published upgrade is not an object");
+    return {
+      id: requireString(get(entry, "id"), "upgrade id", HASH),
+      from: requireString(get(entry, "from"), "upgrade from", ADDRESS),
+      to: requireString(get(entry, "to"), "upgrade to", ADDRESS),
+      code_hash: requireString(get(entry, "code_hash"), "upgrade code_hash", HASH),
+      data: requireString(get(entry, "data"), "upgrade data", /^0x(?:[0-9a-f]{2})*$/),
+    };
+  });
+  return { implementations: list, upgrades: moves };
 }
 
 /** The generated module's text for the artifact's JSON text. Throws on an artifact that is not the export's shape. */
@@ -17,9 +42,8 @@ export function renderAppAuthArtifact(artifactText: string): string {
   if (!isObject(value)) throw new Error("GrayRelayAppAuth.json is not an object");
   const abi = get(value, "abi");
   if (!isArray(abi) || abi.length === 0) throw new Error("GrayRelayAppAuth.json: abi is not an ABI array");
-  const creation = requireString(get(value, "creation_code"), "creation_code");
-  const runtime = requireString(get(value, "runtime_code"), "runtime_code");
-  if (!HEX.test(creation) || !HEX.test(runtime)) throw new Error("GrayRelayAppAuth.json: the code is not 0x-prefixed lower-case hex");
+  const creation = requireString(get(value, "creation_code"), "creation_code", HEX);
+  const runtime = requireString(get(value, "runtime_code"), "runtime_code", HEX);
   const immutables = get(value, "immutables");
   if (!isObject(immutables)) throw new Error("GrayRelayAppAuth.json: immutables is not an object");
   const places: Record<string, { start: number; length: number }[]> = {};
@@ -32,6 +56,10 @@ export function renderAppAuthArtifact(artifactText: string): string {
       return { start, length };
     });
   }
+  const proxy = get(value, "proxy");
+  if (!isObject(proxy)) throw new Error("GrayRelayAppAuth.json: proxy is not an object");
+  const proxyCreation = requireString(get(proxy, "creation_code"), "proxy.creation_code", HEX);
+  const proxyRuntime = requireString(get(proxy, "runtime_code"), "proxy.runtime_code", HEX);
   const compiler = requireString(get(value, "compiler"), "compiler");
   const evmVersion = requireString(get(value, "evm_version"), "evm_version");
   return [
@@ -40,12 +68,17 @@ export function renderAppAuthArtifact(artifactText: string): string {
     `export const APP_AUTH_COMPILER = ${JSON.stringify(compiler)};`,
     `export const APP_AUTH_EVM_VERSION = ${JSON.stringify(evmVersion)};`,
     `export const APP_AUTH_ABI = ${JSON.stringify(abi, null, 2)} as const;`,
-    "/** The creation code; the constructor's arguments are ABI-encoded after it. */",
+    "/** The implementation's creation code (no constructor arguments). */",
     `export const APP_AUTH_CREATION_CODE = ${JSON.stringify(creation)} as const;`,
-    "/** The runtime code with every immutable zero; `appAuthRuntimeCode` fills them. */",
+    "/** The implementation's runtime code with every immutable zero; `appAuthImplementationRuntimeCode` fills them. */",
     `export const APP_AUTH_RUNTIME_TEMPLATE = ${JSON.stringify(runtime)} as const;`,
-    "/** Where each immutable sits in the runtime code, by `<contract>.<variable>`. */",
+    "/** Where each immutable sits in the implementation's runtime code, by `<contract>.<variable>`. */",
     `export const APP_AUTH_IMMUTABLES: Readonly<Record<string, readonly { readonly start: number; readonly length: number }[]>> = ${JSON.stringify(places, null, 2)};`,
+    "/** OpenZeppelin's ERC1967Proxy: its creation code (the implementation and the call follow, ABI-encoded) and runtime code. */",
+    `export const APP_AUTH_PROXY_CREATION_CODE = ${JSON.stringify(proxyCreation)} as const;`,
+    `export const APP_AUTH_PROXY_RUNTIME_CODE = ${JSON.stringify(proxyRuntime)} as const;`,
+    "/** The implementations Gray publishes, in order, and the upgrades it proposes (abi/implementations.json). */",
+    `export const APP_AUTH_PUBLISHED: { readonly implementations: readonly { readonly version: number; readonly address: string; readonly code_hash: string }[]; readonly upgrades: readonly { readonly id: string; readonly from: string; readonly to: string; readonly code_hash: string; readonly data: string }[] } = ${JSON.stringify(published(get(value, "published")), null, 2)};`,
     "",
   ].join("\n");
 }

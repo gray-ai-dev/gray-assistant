@@ -17,6 +17,12 @@ import { RelayKitError } from "../errors.ts";
 export const GUARDIAN_KEY_API_VERSION = "gray-guardian-key/v1";
 /** The kit file's name, beside `relay-key.json`. */
 export const GUARDIAN_KEY_FILE = "guardian-key.json";
+/**
+ * The relay's recovery key, generated at a phase-2 pairing in this file's format: the only key that replaces the guardian
+ * or itself on the contract. Gray receives its address only; the relay backs the file up offline and keeps it off the
+ * machine that holds the guardian key.
+ */
+export const RECOVERY_KEY_FILE = "recovery-key.json";
 
 export interface GuardianKeyFile {
   readonly address: Address;

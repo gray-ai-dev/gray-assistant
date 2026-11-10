@@ -8,7 +8,7 @@
  * The approvals are exactly the ones `pairingGuardianPart` makes for a release of one compose hash and one OS image hash:
  * the compose hash at nonce 0, the OS image hash at nonce 1, each at version 0 (a release's state before its first
  * decision, which a fresh deployment leaves), each with a deadline still ahead. A signature must recover to the guardian
- * (ECDSA): the kit's guardian is a plain key, and a wallet the kit holds no key for pairs without a guardian part.
+ * (ECDSA): the guardian is the key gray-assistant holds.
  *
  * Pure: no network; the caller gives the time.
  */
@@ -19,6 +19,7 @@ import { signedActionSigner, type SignedGuardianAction } from "./guardian.ts";
 /** The pairing's guardian part as JSON (relay-kit `pairingGuardianJson`, signed approvals only). */
 export interface PairingGuardianWire {
   readonly guardian: string;
+  /** Required: a pairing without a recovery address is refused (`recovery`). */
   readonly recovery: string | null;
   readonly chain_id: number;
   readonly contract: string;
@@ -36,6 +37,8 @@ export interface PairingGuardianWire {
 export interface PairingTerms {
   readonly relayId: string;
   readonly proposer: Address;
+  /** Gray's proposer recovery key. */
+  readonly proposerRecovery: Address;
   readonly chainId: number;
   /** The release Deploy boots: Phala's measured compose hash and the OS image hash, 0x and 64 lower hex. */
   readonly composeHash: Hex;
@@ -49,7 +52,7 @@ export type PairingGuardianCheck =
   | {
       readonly ok: true;
       readonly guardian: Address;
-      readonly recovery: Address | null;
+      readonly recovery: Address;
       readonly contract: Address;
       /** The approvals in submission order (nonce 0, 1), as the relayer submits them. */
       readonly approvals: readonly SignedGuardianAction[];
@@ -69,11 +72,15 @@ export async function checkPairingGuardian(part: PairingGuardianWire, terms: Pai
   const proposer = getAddress(terms.proposer);
   const guardian = address(part.guardian);
   if (guardian === null || guardian === proposer) return { ok: false, problem: "guardian" };
-  const recovery = part.recovery === null ? null : address(part.recovery);
-  if (part.recovery !== null && (recovery === null || recovery === proposer)) return { ok: false, problem: "recovery" };
+  // The recovery address is required (it alone replaces a lost or stolen guardian) and is another key than the guardian.
+  const recovery = address(part.recovery);
+  const proposerRecovery = getAddress(terms.proposerRecovery);
+  if (guardian === proposerRecovery) return { ok: false, problem: "guardian" };
+  if (recovery === null || recovery === proposer || recovery === proposerRecovery || recovery === guardian) return { ok: false, problem: "recovery" };
   const contract = appAuthAddress({
     relayId: terms.relayId,
     proposer,
+    proposerRecovery,
     guardian,
     recovery,
     composeHashes: [terms.composeHash],

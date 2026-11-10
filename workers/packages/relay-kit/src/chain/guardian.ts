@@ -15,7 +15,6 @@ export {
   pairingGuardianJson,
   signedActionJson,
   signedActionSigner,
-  walletTypedData,
   type GuardianAction,
   type GuardianMessageContext,
   type PairingApproval,

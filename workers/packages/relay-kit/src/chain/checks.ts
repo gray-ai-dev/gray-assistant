@@ -5,13 +5,14 @@
  * Each endpoint must answer the configured chain id. The reading is taken at the lower of the two endpoints' latest
  * blocks, so two honest endpoints answer the same state; any difference is a refusal, as is an endpoint that cannot be
  * read. That block must be the chain as it is now (`freshCommonBlock`): the heads at most MAX_HEAD_LAG_BLOCKS apart and
- * the block at most MAX_BLOCK_AGE_SECONDS old, else one lagging endpoint could hold both to a state before a pause. Then the reading must show: the code at the app id is `GrayRelayAppAuth`'s published runtime code for this
- * proposer, chain and address (`app-auth.ts`); `guardian()` is the kit's guardian; `DELAY()` is 7 days; Base's
- * `DstackKms` has the app registered; the given compose hash and OS image hash are `effective`; `paused()` is false.
+ * the block at most MAX_BLOCK_AGE_SECONDS old, else one lagging endpoint could hold both to a state before a pause. Then the reading must show: the code at the app id is `ERC1967Proxy`'s, and the implementation its
+ * ERC-1967 slot names is one Gray publishes, with its code hash (`app-auth.ts`); `proposer()` is Gray's proposer;
+ * `guardian()` is the kit's guardian; `DELAY()` is 7 days; Base's `DstackKms` has the app registered; the given compose
+ * hash and OS image hash are `effective`; `paused()` is false.
  */
 import { getAddress, keccak256, parseAbi, type Address, type Hex, type PublicClient } from "viem";
 import { isRelayKitError, RelayKitError } from "../errors.ts";
-import { APP_AUTH_ABI, APP_AUTH_DELAY_SECONDS, RELEASE_KIND_NUMBER, appAuthCodeHash } from "./app-auth.ts";
+import { APP_AUTH_ABI, APP_AUTH_DELAY_SECONDS, ERC1967_IMPLEMENTATION_SLOT, RELEASE_KIND_NUMBER, appAuthProxyCodeHash, implementationFromSlot, publishedImplementation } from "./app-auth.ts";
 import { rpcClient, rpcLabel, type RpcOptions } from "./rpc.ts";
 
 export const DSTACK_KMS_ABI = parseAbi(["function registeredApps(address app) view returns (bool)"]);
@@ -68,7 +69,7 @@ export interface ChainCheckInput {
   readonly chainId: number;
   /** The relay's contract: the app id. */
   readonly contract: Address;
-  /** Gray's proposer, an immutable of the contract (so part of its code hash). */
+  /** Gray's proposer, `proposer()`. */
   readonly proposer: Address;
   /** The kit's guardian. */
   readonly guardian: Address;
@@ -81,6 +82,10 @@ export interface ChainCheckInput {
 /** What one endpoint answered at the agreed block. */
 export interface ChainReading {
   readonly codeHash: Hex | null;
+  /** The implementation the proxy's ERC-1967 slot names, and keccak256 of its code (null: none). */
+  readonly implementation: Address | null;
+  readonly implementationCodeHash: Hex | null;
+  readonly proposer: Address | null;
   readonly guardian: Address | null;
   readonly delaySeconds: bigint | null;
   readonly paused: boolean | null;
@@ -89,7 +94,7 @@ export interface ChainReading {
   readonly osImageEffective: boolean | null;
 }
 
-export type ChainCheckName = "code" | "guardian" | "delay" | "registered" | "compose_effective" | "os_image_effective" | "not_paused";
+export type ChainCheckName = "code" | "implementation" | "proposer" | "guardian" | "delay" | "registered" | "compose_effective" | "os_image_effective" | "not_paused";
 
 export interface ChainCheck {
   readonly name: ChainCheckName;
@@ -148,17 +153,23 @@ async function readAt(client: PublicClient, url: string, input: ChainCheckInput,
     const code = await client.getCode({ address: input.contract, blockNumber: block });
     const codeHash = code === undefined || code === "0x" ? null : keccak256(code);
     const registered = await client.readContract({ address: input.dstackKms, abi: DSTACK_KMS_ABI, functionName: "registeredApps", args: [input.contract], blockNumber: block });
-    if (codeHash === null) return { codeHash, guardian: null, delaySeconds: null, paused: null, registered, composeEffective: null, osImageEffective: null };
+    if (codeHash === null) return { codeHash, implementation: null, implementationCodeHash: null, proposer: null, guardian: null, delaySeconds: null, paused: null, registered, composeEffective: null, osImageEffective: null };
+    // The implementation from the proxy's slot, read as storage: not from the implementation's own answer.
+    const slot = await client.getStorageAt({ address: input.contract, slot: ERC1967_IMPLEMENTATION_SLOT, blockNumber: block });
+    const implementation = slot === undefined ? null : implementationFromSlot(slot);
+    const implementationCode = implementation === null ? undefined : await client.getCode({ address: implementation, blockNumber: block });
+    const implementationCodeHash = implementationCode === undefined || implementationCode === "0x" ? null : keccak256(implementationCode);
     const read = <T>(functionName: string, args: readonly unknown[] = []) =>
       client.readContract({ address: input.contract, abi: APP_AUTH_ABI, functionName, args, blockNumber: block } as Parameters<PublicClient["readContract"]>[0]) as Promise<T>;
-    const [guardian, delaySeconds, paused, composeEffective, osImageEffective] = await Promise.all([
+    const [proposer, guardian, delaySeconds, paused, composeEffective, osImageEffective] = await Promise.all([
+      read<Address>("proposer"),
       read<Address>("guardian"),
       read<bigint>("DELAY"),
       read<boolean>("paused"),
       input.composeHash === null ? Promise.resolve(null) : read<boolean>("effective", [RELEASE_KIND_NUMBER.compose, input.composeHash]),
       input.osImageHash === null ? Promise.resolve(null) : read<boolean>("effective", [RELEASE_KIND_NUMBER.os_image, input.osImageHash]),
     ]);
-    return { codeHash, guardian: getAddress(guardian), delaySeconds, paused, registered, composeEffective, osImageEffective };
+    return { codeHash, implementation, implementationCodeHash, proposer: getAddress(proposer), guardian: getAddress(guardian), delaySeconds, paused, registered, composeEffective, osImageEffective };
   });
 }
 
@@ -175,8 +186,19 @@ function judge(reading: ChainReading, input: ChainCheckInput, expectedCodeHash: 
     reading.codeHash === null
       ? { name: "code", ok: false, detail: `no contract at ${input.contract}` }
       : reading.codeHash === expectedCodeHash
-        ? { name: "code", ok: true, detail: `the code at ${input.contract} is GrayRelayAppAuth's for this proposer and chain (${expectedCodeHash})` }
-        : { name: "code", ok: false, detail: `the code at ${input.contract} hashes to ${reading.codeHash}, not GrayRelayAppAuth's ${expectedCodeHash}` },
+        ? { name: "code", ok: true, detail: `the code at ${input.contract} is GrayRelayAppAuth's proxy (${expectedCodeHash})` }
+        : { name: "code", ok: false, detail: `the code at ${input.contract} hashes to ${reading.codeHash}, not GrayRelayAppAuth's proxy ${expectedCodeHash}` },
+  );
+  const published = reading.implementation === null ? null : publishedImplementation(reading.implementation, reading.implementationCodeHash);
+  checks.push(
+    published !== null
+      ? { name: "implementation", ok: true, detail: `the contract runs GrayRelayAppAuth implementation ${published.version} (${reading.implementation}), one Gray publishes` }
+      : { name: "implementation", ok: false, detail: `the contract runs ${reading.implementation ?? "no implementation"}${reading.implementationCodeHash === null ? "" : ` (code ${reading.implementationCodeHash})`}, not an implementation Gray publishes` },
+  );
+  checks.push(
+    reading.proposer === input.proposer
+      ? { name: "proposer", ok: true, detail: `proposer() is Gray's ${input.proposer}` }
+      : { name: "proposer", ok: false, detail: `proposer() is ${reading.proposer ?? "unreadable"}, not Gray's ${input.proposer}` },
   );
   checks.push(
     reading.guardian === input.guardian
@@ -219,7 +241,7 @@ export async function checkRelayContract(rpcUrls: readonly string[], input: Chai
   if (rpcUrls.length !== 2) throw new RelayKitError("usage", "the chain checks read two RPC endpoints");
   const endpoints = rpcUrls.map(rpcLabel);
   const clients = options.clients ?? rpcUrls.map((url) => rpcClient(url, options));
-  const expectedCodeHash = appAuthCodeHash({ proposer: input.proposer, chainId: input.chainId, address: input.contract });
+  const expectedCodeHash = appAuthProxyCodeHash();
   const unreachable = (detail: string, block: bigint | null = null): ChainCheckResult => ({ ok: false, reason: "unreachable", block, endpoints, reading: null, checks: [], detail });
   let block: bigint;
   try {
@@ -269,6 +291,9 @@ export function chainCheckJson(result: ChainCheckResult): Record<string, unknown
         ? null
         : {
             code_hash: reading.codeHash,
+            implementation: reading.implementation,
+            implementation_code_hash: reading.implementationCodeHash,
+            proposer: reading.proposer,
             guardian: reading.guardian,
             delay_seconds: reading.delaySeconds === null ? null : reading.delaySeconds.toString(),
             paused: reading.paused,

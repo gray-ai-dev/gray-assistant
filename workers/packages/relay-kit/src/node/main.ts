@@ -158,6 +158,7 @@ const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "accept-unpinned",
   "accept-os-unpinned",
   "submit",
+  "print",
 ]);
 
 function parseArgs(argv: readonly string[]): ParsedArgs {
@@ -242,7 +243,6 @@ function usage(): string {
     "                        [--release-list <url>] [--release-public-key <64 hex>] [--release-freshness-public-key <64 hex>]",
     "                        [--app-id <40 hex>] [--kms-ca-pubkey <182 hex>] [--force]",
     "       gray-assistant init --pair <code> --gray <api origin> --dir <dir> [--key <relay-key.json>] [--force]   (the code from the relay's Integration page)",
-    "                        [--guardian <address>]   (your own wallet or Safe guards the relay's contract; else the kit makes guardian-key.json)",
     "                        [--registry-user <user> [--registry-expires-at <YYYY-MM-DDTHH:MM:SSZ>]]   (the pull token's user, and its expiry when it has one)",
     "       gray-assistant accounts [--config <config>]   (each account's panel id beside its source id)",
     "       gray-assistant deliver [--config <config>] [--no-wait] [--timeout <seconds>]   (phase 2: attest the VM, check the contract, seal the boot box and the accounts, restart when needed)",
@@ -259,8 +259,9 @@ function usage(): string {
     "       gray-assistant releases list [--from-block <n>] [--config <config>]   (phase 2: each release proposed on the relay's contract)",
     "       gray-assistant releases check <hash> [--kind compose|os_image] [--config <config>]   (its state on the contract, read from both RPCs, and its compose or OS image texts from Gray's signed list, checked here)",
     "       gray-assistant releases approve|reject <hash> [--kind compose|os_image] [--deadline <unix>] [--nonce <n>]",
-    "                                          [--submit --rpc <url>] [--config <config>]   (phase 2: the guardian's signed approval or veto)",
-    "       gray-assistant pause|unpause [--deadline <unix>] [--nonce <n>] [--submit --rpc <url>] [--config <config>]",
+    "                                          [--submit --rpc <url> | --print] [--config <config>]   (phase 2: the guardian's signed approval or veto;",
+    "                                          Gray's relayer sends it by default, --submit from the guardian key, --print only signs)",
+    "       gray-assistant pause|unpause [--deadline <unix>] [--nonce <n>] [--submit --rpc <url> | --print] [--config <config>]",
     "                                    (phase 2, a config with `chain`: the contract's off switch, signed by the guardian)",
     "       gray-assistant stack rollout <image> [--config <config>] [--no-wait] [--timeout <seconds>]   (one of stack.relay_images)",
     "       gray-assistant stack rollback|restart [--config <config>] [--no-wait] [--timeout <seconds>]",
@@ -837,7 +838,7 @@ function hostKitDir(value: string | undefined): string | null {
 
 /** `init --pair` (S57): pair a key with the relay's code on Gray's page and write the kit from Gray's answer. */
 async function initPairCommand(args: ParsedArgs, io: CliIo): Promise<number> {
-  assertFlags(args, ["pair", "gray", "dir", "key", "force", "registry-user", "registry-expires-at", "guardian"]);
+  assertFlags(args, ["pair", "gray", "dir", "key", "force", "registry-user", "registry-expires-at"]);
   assertPositionals(args, 1);
   const { pairSummary, pairWorkspace } = await import("./init.ts");
   const result = await pairWorkspace({
@@ -848,7 +849,6 @@ async function initPairCommand(args: ParsedArgs, io: CliIo): Promise<number> {
     ...(args.flags.has("force") ? { force: true } : {}),
     ...(args.flags.has("registry-user") ? { registryUser: args.flags.get("registry-user") as string } : {}),
     ...(args.flags.has("registry-expires-at") ? { registryExpiresAt: args.flags.get("registry-expires-at") as string } : {}),
-    ...(args.flags.has("guardian") ? { guardian: args.flags.get("guardian") as string } : {}),
     ...(io.env["GRAY_ASSISTANT_IMAGE"] === undefined ? {} : { composeImage: io.env["GRAY_ASSISTANT_IMAGE"] }),
   });
   if (!result.ok) {
@@ -863,15 +863,20 @@ async function initPairCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   io.stdout(`relay_id ${result.relayId}\n`);
   io.stdout(`fingerprint ${result.fingerprint} (compare it with the one on the relay's Integration page)\n`);
   for (const file of result.files) io.stdout(`wrote ${shown(file)} (mode ${file === result.composePath ? "0644" : "0600"})\n`);
-  if (result.guardian.keyPath === null) io.stdout(`guardian ${result.guardian.address} (your own wallet: it signs approvals, vetoes and pauses of the relay's contract)\n`);
-  else
-    io.stdout(
-      `guardian ${result.guardian.address} (${result.guardian.generated ? "new key" : "the kit's key"} in ${shown(result.guardian.keyPath)}: back it up with relay-key.json; it approves, vetoes and pauses the relay's contract)\n`,
-    );
+  io.stdout(
+    `guardian ${result.guardian.address} (${result.guardian.generated ? "new key" : "the kit's key"} in ${shown(result.guardian.keyPath)}: back it up with relay-key.json; it approves, vetoes and pauses the relay's contract)\n`,
+  );
   const phase2 = result.guardian.phase2;
   if (phase2 !== null) {
     io.stdout(`contract ${phase2.contract} on chain ${phase2.chainId} (your relay's app id; Gray deploys it at Deploy)\n`);
     io.stdout(`approved for it: compose hash ${phase2.composeHash}, OS image hash ${phase2.osImageHash} (signed by the guardian, submitted by Gray after Deploy)\n`);
+  }
+  const recovery = result.guardian.recovery;
+  if (recovery !== null) {
+    io.stdout(
+      `recovery ${recovery.address} (${recovery.generated ? "new key" : "the kit's key"} in ${shown(recovery.keyPath)}): the only key that can replace your guardian if it is lost or stolen. ` +
+        "Back this file up offline now (a USB stick or paper, not this machine) and remove it from here; Gray never receives it, and nobody can replace a lost one\n",
+    );
   }
   // Only what is still left: a token file already in the kit (the pairing command puts it there first) is not asked for.
   const left: string[] = [];
@@ -2115,6 +2120,12 @@ function submitOf(args: ParsedArgs): { readonly rpc: string } | null {
   return { rpc };
 }
 
+/** `--print`: sign only, send nothing (neither Gray's relayer nor `--submit`). */
+function printOf(args: ParsedArgs): boolean {
+  if (args.flags.has("print") && args.flags.has("submit")) throw new RelayKitError("usage", "--print signs only; --submit sends it: give one");
+  return args.flags.has("print");
+}
+
 async function chainReleasesCommand(args: ParsedArgs, io: CliIo, verb: "list" | "check" | "approve" | "reject", context: ChainContextValue): Promise<number> {
   const chain = await import("./chain.ts");
   if (verb === "list") {
@@ -2125,7 +2136,10 @@ async function chainReleasesCommand(args: ParsedArgs, io: CliIo, verb: "list" | 
     const listed = await chain.chainReleasesList(context, { nowMs: io.now(), ...(fromText === undefined ? {} : { fromBlock: BigInt(fromText) }) });
     io.stdout(`gray-assistant releases list: ${listed.releases.length} release(s) on ${context.chain.contract} at block ${listed.block} (both RPCs agree)\n`);
     const now = BigInt(Math.floor(io.now() / 1000));
-    for (const state of listed.releases) io.stdout(`${chain.releaseVerdict(state, now)}\n`);
+    for (const state of listed.releases) {
+      io.stdout(`${chain.releaseVerdict(state, now)}\n`);
+      if (state.kind === "implementation") io.stdout(`  ${chain.upgradeVerdict(state.hash).detail}\n`);
+    }
     printPlainJson(io, { command: "releases list", contract: context.chain.contract, chain_id: context.chain.chainId, block: listed.block.toString(), releases: listed.releases.map((state) => chain.releaseStateJson(state)) });
     return 0;
   }
@@ -2134,6 +2148,14 @@ async function chainReleasesCommand(args: ParsedArgs, io: CliIo, verb: "list" | 
     assertPositionals(args, 3);
     const checked = await chain.chainReleaseCheck(context, args.positionals[2] as string, args.flags.get("kind"), { nowMs: io.now() });
     io.stdout(`gray-assistant releases check: ${checked.verdict} (block ${checked.block}, both RPCs agree)\n`);
+    if (checked.state.kind === "implementation") {
+      // An upgrade of the contract: Gray's only when this kit's published list names it.
+      const upgrade = chain.upgradeVerdict(checked.state.hash);
+      if (upgrade.ok) io.stdout(`gray-assistant releases check: ${upgrade.detail}\n`);
+      else io.stderr(`gray-assistant releases check: ${upgrade.detail}\n`);
+      printPlainJson(io, { command: "releases check", contract: context.chain.contract, block: checked.block.toString(), release: chain.releaseStateJson(checked.state), verdict: checked.verdict, upgrade });
+      return upgrade.ok ? 0 : 1;
+    }
     // P6: the release's own content, from Gray's signed list, checked here (the compose's text and policy, or the OS image's texts).
     const { releaseContentForCheck, releaseContentJson } = await import("./release-content.ts");
     const content = await releaseContentForCheck(context, checked.state.kind, checked.state.hash, io.now());
@@ -2154,7 +2176,7 @@ async function chainReleasesCommand(args: ParsedArgs, io: CliIo, verb: "list" | 
     });
     return content === null || content.ok ? 0 : 1;
   }
-  assertFlags(args, ["config", "kind", "deadline", "nonce", "submit", "rpc"]);
+  assertFlags(args, ["config", "kind", "deadline", "nonce", "submit", "rpc", "print"]);
   assertPositionals(args, 3);
   return guardianActionOutput(io, verb === "approve" ? "approve" : "veto", context, await chain.chainGuardianAction(context, {
     action: verb === "approve" ? "approve" : "veto",
@@ -2163,11 +2185,12 @@ async function chainReleasesCommand(args: ParsedArgs, io: CliIo, verb: "list" | 
     ...(args.flags.has("deadline") ? { deadline: args.flags.get("deadline") as string } : {}),
     ...(args.flags.has("nonce") ? { nonce: args.flags.get("nonce") as string } : {}),
     submit: submitOf(args),
+    print: printOf(args),
   }, { nowMs: io.now() }));
 }
 
 async function chainSwitchCommand(args: ParsedArgs, io: CliIo, action: "pause" | "unpause", context: ChainContextValue): Promise<number> {
-  assertFlags(args, ["config", "deadline", "nonce", "submit", "rpc"]);
+  assertFlags(args, ["config", "deadline", "nonce", "submit", "rpc", "print"]);
   assertPositionals(args, 1);
   const chain = await import("./chain.ts");
   return guardianActionOutput(io, action, context, await chain.chainGuardianAction(context, {
@@ -2175,39 +2198,28 @@ async function chainSwitchCommand(args: ParsedArgs, io: CliIo, action: "pause" |
     ...(args.flags.has("deadline") ? { deadline: args.flags.get("deadline") as string } : {}),
     ...(args.flags.has("nonce") ? { nonce: args.flags.get("nonce") as string } : {}),
     submit: submitOf(args),
+    print: printOf(args),
   }, { nowMs: io.now() }));
 }
 
 function guardianActionOutput(io: CliIo, action: "approve" | "veto" | "pause" | "unpause", context: ChainContextValue, outcome: Awaited<ReturnType<(typeof import("./chain.ts"))["chainGuardianAction"]>>): number {
   const name = `gray-assistant ${action === "approve" ? "releases approve" : action === "veto" ? "releases reject" : action}`;
-  if (!outcome.signed) {
-    io.stdout(`${name}: the guardian ${context.chain.guardian} is your own wallet; sign this typed data with it (eth_signTypedData_v4), then submit the ...BySig call with its signature\n`);
-    if (outcome.note !== null) io.stdout(`note: ${outcome.note}\n`);
-    printPlainJson(io, {
-      command: name.slice("gray-assistant ".length),
-      signed: false,
-      contract: context.chain.contract,
-      version: outcome.context.version.toString(),
-      nonce: outcome.context.nonce.toString(),
-      deadline: outcome.context.deadline.toString(),
-      typed_data: outcome.typedData,
-    });
-    return 0;
-  }
   const what = action === "approve" ? "approval" : action === "veto" ? "veto" : action;
   io.stdout(
     `${name}: signed the guardian's ${what} for ${context.chain.contract} (version ${outcome.json["version"]}, nonce ${outcome.json["nonce"]}, valid until ${new Date(Number(outcome.json["deadline"]) * 1000).toISOString()})\n`,
   );
   if (outcome.note !== null) io.stdout(`note: ${outcome.note}\n`);
+  const by = outcome.via === "relayer" ? " through Gray's relayer" : "";
   if (outcome.transaction === null) {
-    io.stdout("not sent: give the JSON below to Gray's relayer (the Releases page), or send it yourself with --submit --rpc <url> from the guardian key (it pays the gas)\n");
+    io.stdout("not sent (--print): send it without --print (Gray's relayer), or yourself with --submit --rpc <url> from the guardian key (it pays the gas)\n");
     io.stdout(`      it decides version ${outcome.json["version"]} of ${action === "pause" || action === "unpause" ? "the off switch" : "the release"}: any later decision on it, by you or your recovery key, makes this signature void (the contract answers SupersededSignature)\n`);
   }
-  else if (outcome.transaction.block === null) io.stdout(`sent: transaction ${outcome.transaction.hash}, not mined within the wait; look it up on the chain's explorer\n`);
-  else io.stdout(`sent: transaction ${outcome.transaction.hash}, mined in block ${outcome.transaction.block}\n`);
+  else if (outcome.transaction.block === null) io.stdout(`sent${by}: transaction ${outcome.transaction.hash}, not mined within the wait; look it up on the chain's explorer\n`);
+  else io.stdout(`sent${by}: transaction ${outcome.transaction.hash}, mined in block ${outcome.transaction.block}\n`);
   printPlainJson(io, {
     command: name.slice("gray-assistant ".length),
     signed: true,
+    via: outcome.via,
     message: outcome.json,
     transaction: outcome.transaction === null ? null : outcome.transaction.hash,
     block: outcome.transaction?.block === null || outcome.transaction === null ? null : outcome.transaction.block.toString(),

@@ -10,8 +10,8 @@
  * again, directly or by another signature, the contract refuses it with `SupersededSignature(signed, current)`, so a
  * signature held back cannot undo a later decision. The caller reads the version just before signing.
  *
- * A signed action is what Gray's relayer submits (`approveBySig`, `vetoBySig`, ...); `bySigCalldata` is the call. For a
- * guardian the kit holds no key for (an own wallet or Safe), `walletTypedData` is the `eth_signTypedData_v4` document.
+ * A signed action is what Gray's relayer submits (`approveBySig`, `vetoBySig`, ...); `bySigCalldata` is the call. The
+ * guardian is the key gray-assistant holds (`guardian-key.json`); the contract checks plain ECDSA signatures.
  *
  * Pure: no network, no clock (the caller gives the deadline).
  */
@@ -44,9 +44,12 @@ export const APP_AUTH_TYPES = {
   Unpause: SWITCH_FIELDS,
 } as const;
 
-/** One guardian action: on a release (approve, veto, remove) or the off switch (pause, unpause). */
+/**
+ * One guardian action: on a release, an OS image or an upgrade (approve, veto) or the off switch (pause, unpause). The
+ * relay never removes: a veto can be undone, a removal cannot, so only Gray's proposer removes (proposer.ts).
+ */
 export type GuardianAction =
-  | { readonly action: "approve" | "veto" | "remove"; readonly kind: ReleaseKind; readonly hash: Hex }
+  | { readonly action: "approve" | "veto"; readonly kind: ReleaseKind; readonly hash: Hex }
   | { readonly action: "pause" | "unpause" };
 
 /**
@@ -70,8 +73,8 @@ function isSwitch(action: GuardianAction): action is SwitchAction {
   return action.action === "pause" || action.action === "unpause";
 }
 
-const PRIMARY_TYPE = { approve: "Approve", veto: "Veto", remove: "Remove", pause: "Pause", unpause: "Unpause" } as const;
-const BY_SIG = { approve: "approveBySig", veto: "vetoBySig", remove: "removeBySig", pause: "pauseBySig", unpause: "unpauseBySig" } as const;
+const PRIMARY_TYPE = { approve: "Approve", veto: "Veto", pause: "Pause", unpause: "Unpause" } as const;
+const BY_SIG = { approve: "approveBySig", veto: "vetoBySig", pause: "pauseBySig", unpause: "unpauseBySig" } as const;
 
 /** The typed data of one action, as viem signs and hashes it. */
 export function guardianTypedData(action: GuardianAction, context: GuardianMessageContext) {
@@ -112,7 +115,7 @@ export interface SignedGuardianAction {
   readonly signer: Address;
   readonly nonce: bigint;
   readonly deadline: bigint;
-  /** 65 bytes `r ‖ s ‖ v`, as OpenZeppelin's `SignatureChecker` takes it. */
+  /** 65 bytes `r ‖ s ‖ v`, as OpenZeppelin's `ECDSA.tryRecover` takes it. */
   readonly signature: Hex;
 }
 
@@ -178,50 +181,25 @@ export function signedActionJson(signed: SignedGuardianAction): Record<string, s
   };
 }
 
-/**
- * The `eth_signTypedData_v4` document of an action, for a guardian the kit holds no key for (`--guardian <address>`):
- * the relay's wallet signs it, and the signature goes with the same fields to Gray's relayer.
- */
-export function walletTypedData(action: GuardianAction, context: GuardianMessageContext): Record<string, unknown> {
-  const typed = guardianTypedData(action, context);
-  const message: Record<string, unknown> = {};
-  for (const [name, value] of Object.entries(typed.message)) message[name] = typeof value === "bigint" ? value.toString() : value;
-  return {
-    types: {
-      EIP712Domain: [
-        { name: "name", type: "string" },
-        { name: "version", type: "string" },
-        { name: "chainId", type: "uint256" },
-        { name: "verifyingContract", type: "address" },
-      ],
-      [typed.primaryType]: APP_AUTH_TYPES[typed.primaryType],
-    },
-    primaryType: typed.primaryType,
-    domain: typed.domain,
-    message,
-  };
-}
-
 /** How long the pairing's approvals hold: 30 days, time enough for Gray's Deploy after pairing (13.3). */
 export const PAIRING_APPROVAL_LIFETIME_SECONDS = 30n * 24n * 60n * 60n;
 
 /** One approval of the first release, in the pairing's guardian part. */
 export interface PairingApproval {
-  readonly kind: ReleaseKind;
+  readonly kind: "compose" | "os_image";
   readonly hash: Hex;
   /** 0: a release's version before its first decision, which is what Gray's deployment leaves. */
   readonly version: bigint;
   readonly nonce: bigint;
   readonly deadline: bigint;
-  /** Null when the guardian is a wallet the kit holds no key for; `typedData` is then what the wallet signs. */
-  readonly signature: Hex | null;
-  readonly typedData: Record<string, unknown>;
+  readonly signature: Hex;
 }
 
 /** What pairing tells Gray about the guardian (P5 adds it to the pairing request). */
 export interface PairingGuardianPart {
   readonly guardian: Address;
-  readonly recovery: Address | null;
+  /** The relay's recovery key's address (its key stays with the relay, offline; Gray never receives it). */
+  readonly recovery: Address;
   readonly chainId: number;
   /** The relay's contract, computed before it exists (C12). */
   readonly contract: Address;
@@ -234,19 +212,18 @@ export interface PairingGuardianPart {
  * and OS image hash of the first release, compose hashes first. A fresh contract's nonce for the guardian is 0, so the
  * approvals take nonces 0, 1, ...; the contract accepts each only at its nonce, so they are submitted in order. Each
  * release is at version 0 until its first decision, and a decision on one release leaves the others' versions alone,
- * so every approval names version 0.
- * With `privateKey` the kit signs; without, each approval carries the typed data for the guardian's wallet.
+ * so every approval names version 0. The kit signs them with the guardian key.
  */
 export async function pairingGuardianPart(input: {
   readonly deployment: AppAuthDeployment;
   readonly chainId: number;
   /** Unix seconds; every approval holds until then. */
   readonly deadline: bigint;
-  readonly privateKey: Hex | null;
+  readonly privateKey: Hex;
 }): Promise<PairingGuardianPart> {
   const contract = appAuthAddress(input.deployment);
   const guardian = getAddress(input.deployment.guardian);
-  const releases: { kind: ReleaseKind; hash: Hex }[] = [
+  const releases: { kind: "compose" | "os_image"; hash: Hex }[] = [
     ...input.deployment.composeHashes.map((hash) => ({ kind: "compose" as const, hash })),
     ...input.deployment.osImageHashes.map((hash) => ({ kind: "os_image" as const, hash })),
   ];
@@ -254,10 +231,10 @@ export async function pairingGuardianPart(input: {
   for (const [index, release] of releases.entries()) {
     const action: GuardianAction = { action: "approve", kind: release.kind, hash: release.hash };
     const context: GuardianMessageContext = { chainId: input.chainId, contract, version: 0n, signer: guardian, nonce: BigInt(index), deadline: input.deadline };
-    const signature = input.privateKey === null ? null : (await signGuardianAction(input.privateKey, action, context)).signature;
-    approvals.push({ kind: release.kind, hash: release.hash, version: 0n, nonce: BigInt(index), deadline: input.deadline, signature, typedData: walletTypedData(action, context) });
+    const { signature } = await signGuardianAction(input.privateKey, action, context);
+    approvals.push({ kind: release.kind, hash: release.hash, version: 0n, nonce: BigInt(index), deadline: input.deadline, signature });
   }
-  return { guardian, recovery: input.deployment.recovery === null ? null : getAddress(input.deployment.recovery), chainId: input.chainId, contract, approvals };
+  return { guardian, recovery: getAddress(input.deployment.recovery), chainId: input.chainId, contract, approvals };
 }
 
 /** The guardian part as JSON (the pairing's member, P5). */
@@ -274,7 +251,6 @@ export function pairingGuardianJson(part: PairingGuardianPart): Record<string, u
       nonce: approval.nonce.toString(),
       deadline: approval.deadline.toString(),
       signature: approval.signature,
-      ...(approval.signature === null ? { typed_data: approval.typedData } : {}),
     })),
   };
 }

@@ -9,7 +9,7 @@
  *     "rpc": ["https://<provider one>/...", "https://<provider two>/..."],   // two independent endpoints
  *     "proposer": "0x…",          // Gray's release proposer
  *     "guardian": "0x…",          // the relay's guardian
- *     "guardian_key": "guardian-key.json",   // absent: the guardian is a wallet the kit holds no key for
+ *     "guardian_key": "guardian-key.json",   // the guardian's key, which the kit holds
  *     "contract": "0x…",          // the relay's GrayRelayAppAuth (the app id)
  *     "dstack_kms": "0x…",        // default Base's DstackKms
  *     "from_block": 123           // where `releases list` starts reading events: the contract's deployment block
@@ -26,8 +26,8 @@ export interface ChainConfig {
   readonly rpc: readonly [string, string];
   readonly proposer: Address;
   readonly guardian: Address;
-  /** The guardian key file as written (relative to the config's directory), or null for an own wallet or Safe. */
-  readonly guardianKey: string | null;
+  /** The guardian key file as written (relative to the config's directory). */
+  readonly guardianKey: string;
   readonly contract: Address;
   readonly dstackKms: Address;
   readonly fromBlock: bigint | null;
@@ -41,7 +41,7 @@ export const chainConfigSchema = z
     rpc: z.array(z.string().max(2048)).length(2),
     proposer: addressSchema,
     guardian: addressSchema,
-    guardian_key: z.string().min(1).max(4096).optional(),
+    guardian_key: z.string().min(1).max(4096),
     contract: addressSchema,
     dstack_kms: addressSchema.optional(),
     from_block: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
@@ -63,7 +63,7 @@ export function parseChainConfig(value: unknown): ChainConfig {
     rpc,
     proposer: getAddress(data.proposer),
     guardian: getAddress(data.guardian),
-    guardianKey: data.guardian_key ?? null,
+    guardianKey: data.guardian_key,
     contract: getAddress(data.contract),
     dstackKms: getAddress(data.dstack_kms ?? BASE_DSTACK_KMS),
     fromBlock: data.from_block === undefined ? null : BigInt(data.from_block),

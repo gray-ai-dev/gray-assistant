@@ -7,9 +7,9 @@
  * For an OS image, the list's entry and its texts (S11b): dstack's own chain from the hash to `metadata.json`, and a
  * production image.
  *
- * Pure: no I/O, the same code for `releases check <hash>`, for `deliver`'s check of the compose the VM measured, and for
- * the console's Releases page in the relay's browser. Every line names a rule and never echoes the compose's values
- * beyond the public ones (`@gray/lane-compose` problems carry a code and a path only).
+ * Pure: no I/O, the same code for `releases check <hash>` and for `deliver`'s check of the compose the VM measured. Every
+ * line names a rule and never echoes the compose's values beyond the public ones (`@gray/lane-compose` problems carry a
+ * code and a path only).
  */
 import { get, isObject, parseStrict, type Json } from "@gray/json";
 import { checkSupplyAppCompose, supplyComposeFacts, type SupplyExpectation } from "@gray/lane-compose";

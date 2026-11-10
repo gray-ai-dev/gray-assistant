@@ -72,7 +72,7 @@ import { buildKeyFromText } from "./scheduler-load.ts";
 import { APP_ID_PATTERN, KMS_CA_PUBKEY_PATTERN } from "../lane-binding.ts";
 import { checkedAddress, releaseHash } from "../chain/app-auth.ts";
 import { PAIRING_APPROVAL_LIFETIME_SECONDS, pairingGuardianJson, pairingGuardianPart } from "../chain/guardian.ts";
-import { GUARDIAN_KEY_FILE, generateGuardianKey, type GuardianKeyFile } from "../chain/guardian-key.ts";
+import { GUARDIAN_KEY_FILE, RECOVERY_KEY_FILE, generateGuardianKey, type GuardianKeyFile } from "../chain/guardian-key.ts";
 import { checkedRpcUrl } from "../chain/rpc.ts";
 import { readGuardianKeyFile, writeGuardianKeyFile } from "./chain.ts";
 
@@ -259,27 +259,25 @@ export interface PairWorkspaceOptions {
    */
   readonly registryUser?: string;
   readonly registryExpiresAt?: string;
-  /**
-   * `--guardian <address>`: the relay's own wallet or Safe is the guardian of its contract (docs/design/
-   * relay-no-always-on-host.md 3.2, H10); the kit then holds no guardian key and gives the wallet typed data to sign.
-   * Without it the kit's `guardian-key.json` is the guardian: one already in the kit is kept (never replaced, not even
-   * with `--force`: a contract may already name it), else a new one is generated.
-   */
-  readonly guardian?: string;
 }
 
 /** The pairing's guardian: the address, and the kit's key file when the kit holds the key. */
 export interface PairingGuardian {
   readonly address: string;
-  /** `guardian-key.json` in the kit, or null for `--guardian <address>`. */
-  readonly keyPath: string | null;
-  /** Whether this pairing generated the key (false: kept the kit's, or an own wallet). */
+  /** `guardian-key.json` in the kit. */
+  readonly keyPath: string;
+  /** Whether this pairing generated the key (false: kept the kit's). */
   readonly generated: boolean;
   /**
    * Phase 2: the relay's contract this pairing approved the first release for (Gray deploys it at Deploy), with the
-   * release's hashes; null for a phase-1 pairing (Gray named no chain terms, or the guardian is an own wallet).
+   * release's hashes; null for a phase-1 pairing (Gray named no chain terms).
    */
   readonly phase2: { readonly contract: string; readonly chainId: number; readonly composeHash: string; readonly osImageHash: string } | null;
+  /**
+   * Phase 2: the relay's recovery key (`recovery-key.json`, the guardian key file's format), the only key that replaces
+   * the guardian or itself on the contract. Only its address goes to Gray; the relay keeps the file offline.
+   */
+  readonly recovery: { readonly address: string; readonly keyPath: string; readonly generated: boolean } | null;
 }
 
 /**
@@ -451,7 +449,9 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
   if (composeImage !== null) assertWritable(composePath, force);
   if (existsSync(directory) && !statSync(directory).isDirectory()) throw new RelayKitError("io", `${directory} is not a directory`);
   const guardianKeyPath = join(directory, GUARDIAN_KEY_FILE);
-  const pairingGuardian = guardianForPairing(options.guardian, guardianKeyPath);
+  const pairingGuardian = guardianForPairing(guardianKeyPath);
+  const recoveryKeyPath = join(directory, RECOVERY_KEY_FILE);
+  const pairingRecovery = guardianForPairing(recoveryKeyPath);
 
   const key: RelayKeyFile =
     keySource === null ? await generateRelayKey() : await buildKeyFromText(readPrivateFile(keySource, "relay key", 64 * 1024));
@@ -461,18 +461,16 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
   const nowMs = options.nowMs ?? Date.now();
   const timeoutMs = options.timeoutMs ?? PAIR_TIMEOUT_MS;
 
-  // Phase 2 (docs/design/relay-no-always-on-host.md 13.3): with a guardian key in the kit, ask Gray's chain terms for
-  // this code first; when Gray names some, compute the relay's contract and sign the guardian's approvals of the first
-  // release, which the pairing request then carries. An own wallet as guardian pairs as in phase 1.
+  // Phase 2 (docs/design/relay-no-always-on-host.md 13.3): ask Gray's chain terms for this code first; when Gray names
+  // some, compute the relay's contract and sign the guardian's approvals of the first release with the kit's guardian
+  // key, which the pairing request then carries.
   let phase2: Phase2Pairing | null = null;
-  if (pairingGuardian.keyPath !== null) {
-    const terms = await chainTerms(gray, code, timeoutMs);
-    if (!terms.ok) return terms.failure;
-    if (terms.chain !== null) {
-      const prepared = await phase2Part(terms.chain, pairingGuardian, nowMs, timeoutMs);
-      if (!prepared.ok) return prepared.failure;
-      phase2 = prepared.pairing;
-    }
+  const terms = await chainTerms(gray, code, timeoutMs);
+  if (!terms.ok) return terms.failure;
+  if (terms.chain !== null) {
+    const prepared = await phase2Part(terms.chain, pairingGuardian, pairingRecovery.address, nowMs, timeoutMs);
+    if (!prepared.ok) return prepared.failure;
+    phase2 = prepared.pairing;
   }
   const signature = bytesToLowerHex(await ed25519Sign(key.seed, pairMessage(code, publicKeyHex, phase2?.part ?? null)));
   // A new guardian key is on disk (0600, synced) before the request that carries its approvals: Gray may keep them even
@@ -482,6 +480,11 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
   if (pairingGuardian.generated !== null && phase2 !== null) {
     ensureDirectory(directory);
     writeGuardianKeyFile(guardianKeyPath, pairingGuardian.generated);
+  }
+  // The same for the recovery key, which only a phase-2 pairing names: its address is in the contract Gray deploys.
+  if (pairingRecovery.generated !== null && phase2 !== null) {
+    ensureDirectory(directory);
+    writeGuardianKeyFile(recoveryKeyPath, pairingRecovery.generated);
   }
 
   let status: number;
@@ -574,6 +577,7 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
     if (phase2 === null) writeGuardianKeyFile(guardianKeyPath, pairingGuardian.generated);
     files.push(guardianKeyPath);
   }
+  if (phase2 !== null && pairingRecovery.generated !== null) files.push(recoveryKeyPath);
   // Public: it names the image and the mounts, no secret, and `docker compose` reads it as the operator.
   if (composeImage !== null) {
     writePublicFile(composePath, pairedComposeText(composeImage, answer.relay_id), force);
@@ -597,6 +601,7 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
       keyPath: pairingGuardian.keyPath,
       generated: pairingGuardian.generated !== null,
       phase2: phase2 === null ? null : { contract: phase2.part.contract, chainId: phase2.terms.chain_id, composeHash: phase2.terms.compose_hash, osImageHash: phase2.terms.os_image_hash },
+      recovery: phase2 === null ? null : { address: pairingRecovery.address, keyPath: recoveryKeyPath, generated: pairingRecovery.generated !== null },
     },
   };
 }
@@ -667,12 +672,13 @@ const bareHash = (hash: string): string => hash.replace(/^0x/, "").toLowerCase()
 /**
  * The guardian part for Gray's terms: the release they name must be in Gray's signed release list (a compose release
  * with a commit and a production OS image, the ones pairing accepts) before the guardian approves it; then the contract's
- * address for this guardian (no recovery address) and the approvals, signed with the kit's guardian key and valid for
+ * address for this guardian and recovery address and the approvals, signed with the kit's guardian key and valid for
  * `PAIRING_APPROVAL_LIFETIME_SECONDS`.
  */
 async function phase2Part(
   terms: PairChainTerms,
-  guardian: { readonly address: string; readonly keyPath: string | null; readonly generated: GuardianKeyFile | null },
+  guardian: { readonly address: string; readonly keyPath: string; readonly generated: GuardianKeyFile | null },
+  recovery: string,
   nowMs: number,
   timeoutMs: number,
 ): Promise<{ readonly ok: true; readonly pairing: Phase2Pairing } | { readonly ok: false; readonly failure: PairFailure }> {
@@ -690,13 +696,14 @@ async function phase2Part(
     if (!accepted.has(`release:${bareHash(terms.compose_hash)}`)) return refused("The release Gray will deploy is not a release in its signed list, so the guardian does not approve it; tell Gray (the code is not spent)");
     if (!accepted.has(`os_image:${bareHash(terms.os_image_hash)}`)) return refused("The OS image Gray will deploy is not a production image its signed list proves, so the guardian does not approve it; tell Gray (the code is not spent)");
   }
-  const privateKey = guardian.generated?.privateKey ?? readGuardianKeyFile(guardian.keyPath!).privateKey;
+  const privateKey = guardian.generated?.privateKey ?? readGuardianKeyFile(guardian.keyPath).privateKey;
   const part = await pairingGuardianPart({
     deployment: {
       relayId: terms.relay_id,
       proposer: checkedAddress(terms.proposer, "Gray's proposer"),
+      proposerRecovery: checkedAddress(terms.proposer_recovery, "Gray's proposer recovery key"),
       guardian: checkedAddress(guardian.address, "the guardian"),
-      recovery: null,
+      recovery: checkedAddress(recovery, "the recovery address"),
       composeHashes: [releaseHash(terms.compose_hash, "the compose hash")],
       osImageHashes: [releaseHash(terms.os_image_hash, "the OS image hash")],
     },
@@ -709,14 +716,10 @@ async function phase2Part(
 }
 
 /**
- * The pairing's guardian, decided before any network: `--guardian <address>` (no key in the kit), the kit's
- * `guardian-key.json` when there is one (kept), or a new key (written once Gray pairs).
+ * The pairing's guardian, decided before any network: the kit's `guardian-key.json` when there is one (kept, never
+ * replaced, not even with `--force`: a contract may already name it), or a new key (written once Gray pairs).
  */
-function guardianForPairing(given: string | undefined, keyPath: string): { readonly address: string; readonly keyPath: string | null; readonly generated: GuardianKeyFile | null } {
-  if (given !== undefined) {
-    if (existsSync(keyPath)) throw new RelayKitError("usage", `--guardian names your own wallet, but the kit holds a guardian key (${keyPath}); move that file away first, or pair without --guardian`);
-    return { address: checkedAddress(given, "--guardian"), keyPath: null, generated: null };
-  }
+function guardianForPairing(keyPath: string): { readonly address: string; readonly keyPath: string; readonly generated: GuardianKeyFile | null } {
   let existing = false;
   try {
     lstatSync(keyPath);
@@ -744,6 +747,7 @@ export function pairSummary(result: Extract<PairWorkspaceResult, { ok: true }>):
     placeholders: [...result.placeholders],
     guardian: result.guardian.address,
     guardian_key_file: result.guardian.keyPath,
+    ...(result.guardian.recovery === null ? {} : { recovery: result.guardian.recovery.address, recovery_key_file: result.guardian.recovery.keyPath }),
     ...(result.guardian.phase2 === null
       ? {}
       : { contract: result.guardian.phase2.contract, chain_id: result.guardian.phase2.chainId, approved: { compose_hash: result.guardian.phase2.composeHash, os_image_hash: result.guardian.phase2.osImageHash } }),

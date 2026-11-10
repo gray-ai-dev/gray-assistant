@@ -209,12 +209,23 @@ export function phase2Vm(config: LoadedRelayConfig, chain: ChainContext): { read
   return { origin: vm.origin, instance };
 }
 
-/** The stack VM as `phase2Vm` names it, or null while `stack.instance` is "gray" and control.json has adopted none yet. */
+/**
+ * The stack VM as `phase2Vm` names it, or null while `stack.instance` is "gray" and control.json has adopted none yet,
+ * or holds one of another app than `chain.contract`'s. That one is the VM of a pairing before this one: a new pairing on
+ * another release has a new contract, so a new app (the contract's address covers its first release), and no delivery
+ * goes to the old one. `deliver` then takes Gray's answer as for a first delivery, of this contract's app only, and
+ * adopts it once its quote proves it (found 2026-11-10: a Delete, a new pairing and a Deploy left `deliver` refusing the
+ * old app with nothing the relay could do about it).
+ */
 function adoptedPhase2Vm(config: LoadedRelayConfig, chain: ChainContext): { readonly origin: string; readonly instance: LaneBinding } | null {
   const stack = config.daemon.stack;
   if (stack !== null && stack.instanceSource === "gray" && stack.laneOrigin === null) {
     const inspected = inspectControlFile(controlFileBeside(config.daemon.stateFile));
-    if (inspected.kind === "missing" || (inspected.kind === "ok" && (inspected.control.stackInstance ?? null) === null)) return null;
+    if (inspected.kind === "missing") return null;
+    if (inspected.kind === "ok") {
+      const adopted = inspected.control.stackInstance ?? null;
+      if (adopted === null || adopted.appId !== chain.chain.contract.slice(2).toLowerCase()) return null;
+    }
   }
   return phase2Vm(config, chain);
 }
@@ -565,7 +576,16 @@ export async function deliverCommand(options: DeliverOptions): Promise<number> {
     for (const skipped of accounts.skipped) {
       io.stderr(`gray-assistant ${name}: left out a ${skipped.vendor} account${skipped.panelId === null ? "" : ` (${skipped.panelId})`}: ${skipped.reason}\n`);
     }
-    if (accounts.accounts.length === 0 && accounts.listed > 0) io.stderr(`gray-assistant ${name}: no account of the source can be sealed; the VM keeps none\n`);
+    if (accounts.accounts.length === 0 && accounts.listed > 0) {
+      // Nothing is sent. A first delivery would start the relay's image with no account, which serves nothing while the
+      // VM attests and every view says it runs (gray-prod-test-1, 2026-11-10: a login store that was not in the new
+      // workspace); a push to a VM that serves would replace the accounts it has with none.
+      return refuse(
+        "no_account_sealed",
+        `none of the source's ${accounts.listed} account(s) can be sealed (each is named above), so nothing was sent${boot.running === null ? "" : " and the VM keeps the accounts it has"}: put the source right (\`gray-assistant doctor\`, \`gray-assistant login status\`), then run the command again`,
+        { accounts_listed: BigInt(accounts.listed), left_out: accounts.skipped.map((skipped) => ({ vendor: skipped.vendor, account: skipped.panelId, reason: skipped.reason })) },
+      );
+    }
   }
 
   // 4. Send, sealed to the attested boot, pinned to the TLS key it attested.
@@ -654,6 +674,8 @@ export async function deliverCommand(options: DeliverOptions): Promise<number> {
         seq: box === null ? null : BigInt(box.designation.seq),
         boot_version: receipt === null ? null : (get(receipt, "boot_version") ?? null),
         accounts: accounts === null ? null : BigInt(accounts.accounts.length),
+        // The source's accounts this delivery could not seal (each named on stderr): 0 when every one went.
+        accounts_left_out: accounts === null ? null : BigInt(accounts.skipped.length),
         ...extra,
       })}\n`,
     );
@@ -663,11 +685,30 @@ export async function deliverCommand(options: DeliverOptions): Promise<number> {
     io.stdout(`gray-assistant ${name}: no restart needed; the VM serves ${boot.running ?? target}\n`);
     return done({ restart: "not_needed" });
   }
-  const request = stackRestartRequest({ relayId, appId: vm.instance.appId, reason: action === "rollback" ? "rollback" : "rollout", image: box.designation.image, issuedMs: io.now(), random: io.random });
+  // P7 (13.4): this kit's version (Gray gates a rollout without downtime on it: no gray-relay reports it in phase 2) and
+  // the boot box version the receipt named (Gray waits for its copy before a second VM starts), both under the signature.
+  const bootVersion = receipt === null ? undefined : wholeNumber(get(receipt, "boot_version"));
+  const request = stackRestartRequest({
+    relayId,
+    appId: vm.instance.appId,
+    reason: action === "rollback" ? "rollback" : "rollout",
+    image: box.designation.image,
+    issuedMs: io.now(),
+    random: io.random,
+    kit: RELAY_KIT_VERSION,
+    ...(bootVersion === undefined ? {} : { bootVersion }),
+  });
   const url = `${stack.reportOrigin}${STACK_RESTART_REQUEST_PATH}`;
+  // Built before it is sent: a request this tool cannot build never left, whatever the network does.
+  let body: string;
+  try {
+    body = toJsonString(await signedStackRestartRequest(request, seed));
+  } catch {
+    return refuse("restart_request_invalid", "the VM keeps the boot box, but this tool could not build the restart request; update gray-assistant and run the command again (a restart of the VM by any other means takes the box too)", { request_id: request.request_id });
+  }
   let answer: { readonly status: number; readonly text: string };
   try {
-    answer = await (options.post ?? defaultPost)(url, toJsonString(await signedStackRestartRequest(request, seed)));
+    answer = await (options.post ?? defaultPost)(url, body);
   } catch {
     return refuse("restart_request_unsent", `the VM keeps the boot box, but the restart request did not reach ${url}; run the command again (a restart of the VM by any other means takes the box too)`, { request_id: request.request_id });
   }
@@ -708,6 +749,12 @@ export async function deliverCommand(options: DeliverOptions): Promise<number> {
       });
     }
   }
+}
+
+/** A receipt's whole number (the JSON reader's bigint or number), or undefined. */
+function wholeNumber(value: unknown): number | undefined {
+  if (typeof value === "bigint") return value <= BigInt(Number.MAX_SAFE_INTEGER) && value >= 0n ? Number(value) : undefined;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
 /** What tells one boot of the VM from the next: the keys it attested (a new boot makes new ones). */
@@ -759,9 +806,15 @@ async function phase2Restart(
   };
   const request = stackRestartRequest({ relayId, appId: vm.instance.appId, reason: "restart", image: null, issuedMs: io.now(), random: io.random });
   const url = `${stack.reportOrigin}${STACK_RESTART_REQUEST_PATH}`;
+  let body: string;
+  try {
+    body = toJsonString(await signedStackRestartRequest(request, seed));
+  } catch {
+    return refuse("restart_request_invalid", "this tool could not build the restart request; update gray-assistant and run the command again", { request_id: request.request_id });
+  }
   let answer: { readonly status: number; readonly text: string };
   try {
-    answer = await (options.post ?? defaultPost)(url, toJsonString(await signedStackRestartRequest(request, seed)));
+    answer = await (options.post ?? defaultPost)(url, body);
   } catch {
     return refuse("restart_request_unsent", `the restart request did not reach ${url}; run the command again`, { request_id: request.request_id });
   }

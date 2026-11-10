@@ -56,7 +56,11 @@ export interface StackCommandOptions {
   readonly sleep?: (ms: number) => Promise<void>;
 }
 
-/** The request a restart sends: a fresh id, the relay's app, why, and the image (null for a plain restart). */
+/**
+ * The request a restart sends: a fresh id, the relay's app, why, and the image (null for a plain restart). P7: a phase-2
+ * rollout adds this kit's version and the boot box version the VM's receipt named (docs/design/relay-no-always-on-host.md
+ * 13.4): Gray gates a rollout without downtime on the one and waits for its copy of the other.
+ */
 export function stackRestartRequest(input: {
   readonly relayId: string;
   readonly appId: string;
@@ -64,10 +68,21 @@ export function stackRestartRequest(input: {
   readonly image: string | null;
   readonly issuedMs: number;
   readonly random: (length: number) => Uint8Array;
+  readonly kit?: string;
+  readonly bootVersion?: number;
 }): StackRestartRequest {
   const requestId = `r${bytesToLowerHex(input.random(16))}`;
   if (!STACK_RESTART_REQUEST_ID_PATTERN.test(requestId)) throw new RelayKitError("usage", "the request id is not r and 32 hex digits");
-  return { relay_id: input.relayId, request_id: requestId, issued_ms: input.issuedMs, app_id: input.appId, reason: input.reason, image: input.image };
+  return {
+    relay_id: input.relayId,
+    request_id: requestId,
+    issued_ms: input.issuedMs,
+    app_id: input.appId,
+    reason: input.reason,
+    image: input.image,
+    ...(input.kit === undefined ? {} : { kit: input.kit }),
+    ...(input.bootVersion === undefined ? {} : { boot_version: input.bootVersion }),
+  };
 }
 
 /** The signed report body, checked against the console's own schema before it is sent. */
@@ -78,7 +93,7 @@ export async function signedStackRestartRequest(request: StackRestartRequest, se
   return { request: { ...request, issued_ms: BigInt(request.issued_ms) }, signature };
 }
 
-const defaultPost: StackPost = async (url, body) => {
+export const defaultPost: StackPost = async (url, body) => {
   const response = await fetch(url, {
     method: "POST",
     headers: { "content-type": "application/json", "user-agent": "gray-assistant" },

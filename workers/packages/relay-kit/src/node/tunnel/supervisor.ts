@@ -67,6 +67,18 @@ export interface OwnKey {
 }
 
 /** The seams the tests replace: the children, the admin API and the terminator's certificate. */
+/**
+ * The children whose spawn failed. A spawn that fails (a missing binary) emits `error` on the next tick, which is before
+ * `Child.launch` is back from awaiting its start to listen for it; with no listener Node ends the whole agent on that
+ * `error` (2026-11-10, a test relay's host: `spawn /usr/local/bin/caddy ENOENT` took down an agent that had its
+ * accounts to refresh). `watched` listens at once, so the agent stays up, logs the failure and tries the child again with its backoff.
+ */
+const spawnFailed = new WeakSet<ChildProcess>();
+function watched(child: ChildProcess): ChildProcess {
+  child.once("error", () => spawnFailed.add(child));
+  return child;
+}
+
 export interface TunnelSeams {
   readonly spawn?: (command: string, args: readonly string[], env: NodeJS.ProcessEnv) => ChildProcess;
   readonly fetch?: (url: string, init: RequestInit) => Promise<Response>;
@@ -154,6 +166,12 @@ class Child {
     try {
       child = await this.start();
     } catch {
+      this.log({ level: "error", event: "tunnel_child_start_failed", child: this.name });
+      this.schedule();
+      return;
+    }
+    // The spawn already failed (`spawnFailed`: its `error` came before this was back from the await).
+    if (spawnFailed.has(child)) {
       this.log({ level: "error", event: "tunnel_child_start_failed", child: this.name });
       this.schedule();
       return;
@@ -254,7 +272,8 @@ export async function startTunnel(options: {
   if (label === null) throw new Error("the relay id has no tunnel label");
   const paths = tunnelPaths(config);
   mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
-  const spawn = options.seams?.spawn ?? ((command, args, env) => nodeSpawn(command, [...args], { env, stdio: ["ignore", "pipe", "pipe"] }));
+  const spawnChild = options.seams?.spawn ?? ((command, args, env) => nodeSpawn(command, [...args], { env, stdio: ["ignore", "pipe", "pipe"] }));
+  const spawn: typeof spawnChild = (command, args, env) => watched(spawnChild(command, args, env));
   const fetchAdmin = options.seams?.fetch ?? ((url, init) => fetch(url, init));
   const probe = options.seams?.probeCertificate ?? probeServedCertificate;
   const adminPassword = randomBytes(24).toString("hex");
