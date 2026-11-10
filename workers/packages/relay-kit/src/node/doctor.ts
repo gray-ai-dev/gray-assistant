@@ -68,6 +68,8 @@ import { buildKeyFromText } from "./scheduler-load.ts";
 import type { RelayKeyFile } from "../keys.ts";
 import { osImageProvenance, type QuoteVerifier, type StackBootResult } from "@gray/lane-verify";
 import { createHash } from "node:crypto";
+import type { Hex } from "viem";
+import type { ChainCheckResult } from "../chain/checks.ts";
 import type { TunnelConfig } from "../daemon/config.ts";
 import type { LaneBinding } from "../lane-binding.ts";
 import type { DaemonStackInstance } from "../daemon/types.ts";
@@ -97,6 +99,11 @@ export interface DoctorOptions {
   readonly pccs?: string;
   /** A fixed clock, for the tests. Defaults to `Date.now`. */
   readonly nowMs?: number;
+  /**
+   * Phase 2: the relay's contract's answer for an attested compose and OS image hash (the check `deliver` makes).
+   * Defaults to reading the config's `chain` RPCs; the tests pass a fixed answer.
+   */
+  readonly chainCheck?: (composeHash: Hex, osImageHash: Hex | null) => Promise<ChainCheckResult>;
 }
 
 const DAY_MS = 86_400_000;
@@ -198,6 +205,7 @@ async function checkOrigin(
   origin: string,
   nowMs: number,
   ca: string | undefined,
+  chainCheck: ((composeHash: Hex, osImageHash: Hex | null) => Promise<ChainCheckResult>) | null = null,
 ): Promise<OriginCheck> {
   const nowSecs = BigInt(Math.floor(nowMs / 1000));
   if (release === null) {
@@ -250,6 +258,23 @@ async function checkOrigin(
       `${origin}: attested keyset ${(result.verification.keysetDigest ?? "missing").slice(0, 16)}…, compose ${composeHash ?? "missing"}; the signed release list does not name it`,
     );
     return { origin, ok: false, spkiSha256: result.spkiSha256, composeHash, tlsSpki: result.verification.tlsSpkiSha256 };
+  }
+  if (chainCheck !== null) {
+    // Phase 2: the relay's contract decides which releases run, not the host's first-sight delay (no agent here).
+    const osImage = result.verification.osImageHash === null ? null : (`0x${result.verification.osImageHash}` as Hex);
+    let chain: ChainCheckResult | null = null;
+    try {
+      chain = await chainCheck(`0x${composeHash}` as Hex, osImage);
+    } catch {
+      chain = null;
+    }
+    const verdict = chain === null
+      ? { status: "fail" as const, text: "the relay's contract could not be read" }
+      : chain.ok
+        ? { status: "ok" as const, text: `allowed by the relay's contract (block ${chain.block})` }
+        : { status: "fail" as const, text: `the relay's contract does not allow it (${chain.reason}: ${chain.detail})` };
+    doctor.add(`origin:${origin}`, verdict.status, `${origin}: attested, compose ${composeHash.slice(0, 16)}…, release ${verdict.text}`);
+    return { origin, ok: true, spkiSha256: result.spkiSha256, composeHash, tlsSpki: result.verification.tlsSpkiSha256 };
   }
   const accepted = await releasePendingText(
     config,
@@ -611,6 +636,18 @@ export function phase2Idle(config: LoadedRelayConfig, nowMs: number): string | n
   return `phase 2: no agent runs on this host${stale}`;
 }
 
+/** Phase 2's release check: the test seam, else the config's contract over its RPCs; null before phase 2. */
+function chainCheckOf(options: DoctorOptions, config: LoadedRelayConfig): ((composeHash: Hex, osImageHash: Hex | null) => Promise<ChainCheckResult>) | null {
+  if ((config.daemon.chain ?? null) === null) return null;
+  if (options.chainCheck !== undefined) return options.chainCheck;
+  return async (composeHash, osImageHash) => {
+    const { chainChecksFor, readChainContext } = await import("./chain.ts");
+    const context = readChainContext(options.configPath);
+    if (context === null) throw new RelayKitError("usage", "the config has no chain member");
+    return (await chainChecksFor(context, composeHash, osImageHash)).result;
+  };
+}
+
 /** Run every check. It never throws for a failed check; only a programming error would escape. */
 export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   const doctor = new Doctor();
@@ -898,7 +935,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
       if (tunnel !== null) doctor.add(`vm_pin:${origin}`, "skip", "not checked: the VM was not attested");
       continue;
     }
-    const checked = await checkOrigin(doctor, config, release, quoteVerifier, controlView, origin, nowMs, options.ca);
+    const checked = await checkOrigin(doctor, config, release, quoteVerifier, controlView, origin, nowMs, options.ca, chainCheckOf(options, config));
     const pinned = checked.ok ? await checkClock(doctor, origin, checked.spkiSha256, nowMs, options.ca) : null;
     if (tunnel === null) continue;
     if (!checked.ok) {

@@ -23,6 +23,7 @@ import { RelayKitError } from "../errors.ts";
 import { newAccountAliases, panelIdLookup, type AccountAliasStore } from "../daemon/account-aliases.ts";
 import { egressOf, isPerAccountSourceError } from "../daemon/daemon.ts";
 import { credentialParkReason, metadataParkReason, planAccount } from "../daemon/eligibility.ts";
+import type { DaemonSourceAccount } from "../daemon/types.ts";
 import type { SourceAdapter, SourceCredential } from "../source/types.ts";
 import type { LoadedRelayConfig } from "./config-file.ts";
 
@@ -41,6 +42,11 @@ export interface ReadAccounts {
   readonly skipped: readonly SkippedAccount[];
   /** How many accounts the source listed. */
   readonly listed: number;
+  /**
+   * What the source lists, by panel id, as the running agent reports it in its status (`sources`, the daemon's
+   * `status().sources`): metadata only, for the panel's Adopt. Absent from a reader that does not say.
+   */
+  readonly sources?: readonly DaemonSourceAccount[];
 }
 
 export interface ReadAccountsDeps {
@@ -111,5 +117,9 @@ export async function readAccountsOnce(config: LoadedRelayConfig, deps: ReadAcco
     accounts.push({ account_id: id, vendor: entry.vendor, credential: read.credential, ...(egress === undefined ? {} : { egress }) });
   }
   accounts.sort((left, right) => (left.account_id < right.account_id ? -1 : left.account_id > right.account_id ? 1 : 0));
-  return { accounts, skipped, listed: snapshot.accounts.length };
+  const sources = planned.flatMap((p) => {
+    const id = panelId(p.vendor, p.account.sourceId);
+    return id === null ? [] : [{ sourceId: id, vendor: p.vendor, credentialType: p.credentialType, login: p.account.login ?? null }];
+  });
+  return { accounts, skipped, listed: snapshot.accounts.length, sources };
 }

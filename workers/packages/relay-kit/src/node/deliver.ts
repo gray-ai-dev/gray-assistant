@@ -60,7 +60,7 @@ import type { ReleaseContentResult } from "../chain/release-compose.ts";
 import { AGENT_STATUS_PATH, agentStatusDocument, refreshGrayOf, signAgentStatus } from "../daemon/agent-status.ts";
 import { credentialFormatHint } from "../daemon/eligibility.ts";
 import { attestationMismatch } from "../daemon/stack-boot.ts";
-import { DaemonTransportError, type DaemonAttestResult, type DaemonFetch, type DaemonStackInstance } from "../daemon/types.ts";
+import { DaemonTransportError, type DaemonAttestResult, type DaemonFetch, type DaemonSourceAccount, type DaemonStackInstance } from "../daemon/types.ts";
 import { LANE_ENDPOINTS, RELAY_KIT_VERSION } from "../endpoints.ts";
 import { RelayKitError } from "../errors.ts";
 import { isLaneBinding, type LaneBinding } from "../lane-binding.ts";
@@ -137,6 +137,8 @@ export interface DeliverOptions {
    * when Gray names none (an older console). By default the same answer `stackInstance` reads, asked once.
    */
   readonly refreshGray?: () => Promise<ReadonlySet<string> | null>;
+  /** Gray's agent-status route (`stack.report_origin` + AGENT_STATUS_PATH): the signed statuses this command posts. */
+  readonly agentStatusPost?: StackPost;
 }
 
 /** What `designation.json` holds: the highest seq issued and the last designation, with its signature. */
@@ -280,10 +282,12 @@ export function phase2Candidate(answer: unknown, relayId: string, chain: ChainCo
 /**
  * Gray's answer to a signed agent status (S45): the relay's lane instance (`instance`, P12) and the accounts set to `gray`
  * (`refresh_gray`). The console answers them to a signed agent status only, so this posts one with nothing in it but the
- * relay and this kit's version (a host-less relay runs no agent, so no other status is overwritten; a running agent's
- * next status replaces it; `accepted_compose` null: no release registry here).
+ * relay, this kit's version and `sources` (a host-less relay runs no agent, so no other status is overwritten; a running
+ * agent's next status replaces it; `accepted_compose` null: no release registry here). `sources` is null until the
+ * command has read the source; it then posts again with what the source lists, as the agent does, so the panel offers
+ * Adopt for an account new to it.
  */
-async function cliAgentAnswer(config: LoadedRelayConfig, seed: Uint8Array, nowMs: number): Promise<unknown> {
+async function cliAgentAnswer(config: LoadedRelayConfig, seed: Uint8Array, nowMs: number, sources: readonly DaemonSourceAccount[] | null, post: StackPost): Promise<unknown> {
   const stack = config.daemon.stack;
   if (stack === null) throw new RelayKitError("usage", "the config has no `stack` section");
   const { status } = agentStatusDocument({
@@ -294,13 +298,13 @@ async function cliAgentAnswer(config: LoadedRelayConfig, seed: Uint8Array, nowMs
     logins: [],
     replicas: [],
     parked: [],
-    sources: null,
+    sources,
     acceptedCompose: null,
   });
   const url = `${stack.reportOrigin}${AGENT_STATUS_PATH}`;
   let answer: { readonly status: number; readonly text: string };
   try {
-    answer = await defaultPost(url, toJsonString(await signAgentStatus(status, seed)));
+    answer = await post(url, toJsonString(await signAgentStatus(status, seed)));
   } catch {
     throw new RelayKitError("io", `Gray did not answer at ${url}, so the relay's VM is not known yet; run the command again`);
   }
@@ -477,7 +481,11 @@ export async function deliverCommand(options: DeliverOptions): Promise<number> {
   let candidate: DaemonStackInstance | null = null;
   // Gray's answer to one signed agent status: the VM it deployed, and the accounts set to `gray`.
   let agentAnswer: Promise<unknown> | null = null;
-  const agentAnswerOnce = (): Promise<unknown> => (agentAnswer ??= cliAgentAnswer(config, seed, io.now()));
+  // Gray keeps only a status newer than the last (`issued_ms`), so the second of one run is a millisecond later at least.
+  let issuedMs = 0;
+  const nextIssuedMs = (): number => (issuedMs = Math.max(io.now(), issuedMs + 1));
+  const postStatus = options.agentStatusPost ?? defaultPost;
+  const agentAnswerOnce = (): Promise<unknown> => (agentAnswer ??= cliAgentAnswer(config, seed, nextIssuedMs(), null, postStatus));
   if (vm === null) {
     if (action !== "deliver") throw new RelayKitError("usage", "no stack VM adopted yet: `gray-assistant deliver` adopts the VM Gray deployed once its quote proves it");
     candidate = phase2Candidate(await (options.stackInstance ?? (async () => get((await agentAnswerOnce()) as Json, "instance")))(), relayId, options.chain);
@@ -654,6 +662,14 @@ export async function deliverCommand(options: DeliverOptions): Promise<number> {
     }
     const refreshed = boot.running === null ? [] : await vmRefreshedTokens(post, relayId, seed, io.now());
     accounts = await (options.readAccounts ?? ((extra: DeliverAccountsExtra) => cliAccounts(config, io.now(), extra)))({ refreshGray, refreshed });
+    // What the source lists, for the panel's Adopt (the agent's `sources`): a failure here sends the accounts all the same.
+    if (accounts.sources !== undefined) {
+      try {
+        await cliAgentAnswer(config, seed, nextIssuedMs(), accounts.sources, postStatus);
+      } catch {
+        io.stderr(`gray-assistant ${name}: Gray did not take the list of the source's accounts, so the panel shows no new account to adopt until the next run\n`);
+      }
+    }
     for (const skipped of accounts.skipped) {
       io.stderr(`gray-assistant ${name}: left out a ${skipped.vendor} account${skipped.panelId === null ? "" : ` (${skipped.panelId})`}: ${skipped.reason}${skipped.reason === "invalid_credential_format" ? ` (${credentialFormatHint(skipped.vendor, skipped.credentialType ?? "")})` : ""}\n`);
     }

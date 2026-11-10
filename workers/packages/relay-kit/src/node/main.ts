@@ -243,7 +243,7 @@ function usage(): string {
     "                        [--release-list <url>] [--release-public-key <64 hex>] [--release-freshness-public-key <64 hex>]",
     "                        [--app-id <40 hex>] [--kms-ca-pubkey <182 hex>] [--force]",
     "       gray-assistant init --pair <code> --gray <api origin> --dir <dir> [--key <relay-key.json>] [--force]   (the code from the relay's Integration page)",
-    "                        [--registry-user <user> [--registry-expires-at <YYYY-MM-DDTHH:MM:SSZ>]]   (the pull token's user, and its expiry when it has one)",
+    "                        [--registry-user <user> [--registry-expires-at <YYYY-MM-DDTHH:MM:SSZ>]] [--image <image@sha256:...>]   (the pull token's user, and its expiry when it has one; the image compose.yaml runs)",
     "       gray-assistant accounts [--config <config>]   (each account's panel id beside its source id)",
     "       gray-assistant deliver [--config <config>] [--no-wait] [--timeout <seconds>]   (phase 2: attest the VM, check the contract, seal the boot box and the accounts, restart when needed)",
     "       gray-assistant accounts push [--config <config>]   (phase 2: read the source once and seal the accounts to the VM)",
@@ -292,6 +292,30 @@ function usage(): string {
   ].join("\n");
 }
 
+const USAGE_ENTRY = /^(?:usage: | {7})gray-assistant (\S+)(?: (\S+))?/;
+
+/**
+ * `gray-assistant <command> [<sub>] --help`: only that command's entries of `usage()` (each with its continuation lines),
+ * narrowed to the subcommand when one matches, and the footer lines they need. Null for a command the list does not name.
+ */
+export function commandUsage(command: string, sub: string | undefined): string | null {
+  const lines = usage().split("\n");
+  const entries: { words: [string[], string[]]; lines: string[] }[] = [];
+  for (const line of lines) {
+    const start = USAGE_ENTRY.exec(line);
+    if (start) entries.push({ words: [start[1]!.split("|"), /^[a-z]/.test(start[2] ?? "") ? start[2]!.split("|") : []], lines: [line] });
+    else if (line.startsWith(" ") && entries.length > 0) entries[entries.length - 1]!.lines.push(line);
+    else if (line === "") break;
+  }
+  const ofCommand = entries.filter((e) => e.words[0].includes(command));
+  if (ofCommand.length === 0) return null;
+  const ofSub = sub === undefined ? [] : ofCommand.filter((e) => e.words[1].includes(sub));
+  const chosen = (ofSub.length > 0 ? ofSub : ofCommand).flatMap((e) => e.lines);
+  chosen[0] = `usage: ${chosen[0]!.slice(7)}`;
+  const footer = lines.filter((l) => l.startsWith("exit codes:") || (l.startsWith("--config defaults") && chosen.some((c) => c.includes("--config"))));
+  return [...chosen, "", ...footer, ""].join("\n");
+}
+
 /** Run one command line; returns the process exit code. */
 export async function runCli(argv: readonly string[], io: Partial<CliIo> = {}): Promise<number> {
   const out = { ...defaultIo(), ...io };
@@ -307,7 +331,8 @@ export async function runCli(argv: readonly string[], io: Partial<CliIo> = {}): 
     return 1;
   }
   if (args.help) {
-    out.stdout(usage());
+    const [command, sub] = args.positionals;
+    out.stdout((command === undefined ? null : commandUsage(command, sub)) ?? usage());
     return 0;
   }
   if (args.kitVersion) {
@@ -876,7 +901,7 @@ function hostKitDir(value: string | undefined): string | null {
 
 /** `init --pair` (S57): pair a key with the relay's code on Gray's page and write the kit from Gray's answer. */
 async function initPairCommand(args: ParsedArgs, io: CliIo): Promise<number> {
-  assertFlags(args, ["pair", "gray", "dir", "key", "force", "registry-user", "registry-expires-at"]);
+  assertFlags(args, ["pair", "gray", "dir", "key", "force", "registry-user", "registry-expires-at", "image"]);
   assertPositionals(args, 1);
   const { pairSummary, pairWorkspace } = await import("./init.ts");
   const result = await pairWorkspace({
@@ -887,7 +912,8 @@ async function initPairCommand(args: ParsedArgs, io: CliIo): Promise<number> {
     ...(args.flags.has("force") ? { force: true } : {}),
     ...(args.flags.has("registry-user") ? { registryUser: args.flags.get("registry-user") as string } : {}),
     ...(args.flags.has("registry-expires-at") ? { registryExpiresAt: args.flags.get("registry-expires-at") as string } : {}),
-    ...(io.env["GRAY_ASSISTANT_IMAGE"] === undefined ? {} : { composeImage: io.env["GRAY_ASSISTANT_IMAGE"] }),
+    // `--image` pins compose.yaml to a digest (the published image knows only its own tag), as `upgrade --image` does.
+    ...(composeImageOf(args, io) === null ? {} : { composeImage: composeImageOf(args, io) as string }),
   });
   if (!result.ok) {
     io.stderr(`gray-assistant init: ${result.text}\n`);
@@ -945,7 +971,7 @@ async function initPairCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   const then = left.length > 0 || placeholderNote !== null ? "then" : "next:";
   if (phase2 !== null) {
     // Phase 2 runs nothing on the host: the person's Delete and Deploy, then one delivery from the kit directory.
-    io.stdout(`${then} the person, in the panel: Delete the VM, then Deploy (the relay serves nothing from the Delete until deliver)\n`);
+    io.stdout(`${then} the person, in the panel: Delete the VM if there is one, then Deploy (the relay serves nothing from the Delete until deliver)\n`);
     io.stdout(`      stop the host's agent, if one runs: docker compose stop agent (phase 2 runs nothing on this host)\n`);
     io.stdout(`      once the VM waits for its delivery, from ${shown(result.directory)}: docker compose run --rm --no-deps agent deliver\n`);
   } else if (result.composePath === null) io.stdout(`${then} install it: deploy/relay/host/install.sh --host <ssh alias> --kit ${shown(result.directory)}\n`);
@@ -2125,6 +2151,12 @@ function toText(bytes: Uint8Array): string {
  * The config's `chain` member, or null for a config without one. With `routing` (choosing between a phase-1 command
  * and the contract's), a missing config is null too, so the phase-1 command says what is missing in its own words.
  */
+/** The image `init --pair` writes into compose.yaml: `--image`, else the published image's own `$GRAY_ASSISTANT_IMAGE`. */
+function composeImageOf(args: ParsedArgs, io: CliIo): string | null {
+  const image = (args.flags.get("image") ?? io.env["GRAY_ASSISTANT_IMAGE"] ?? "").trim();
+  return image === "" ? null : image;
+}
+
 async function chainContextOf(args: ParsedArgs, routing = false) {
   const { readChainContext } = await import("./chain.ts");
   const path = configPathOf(args);

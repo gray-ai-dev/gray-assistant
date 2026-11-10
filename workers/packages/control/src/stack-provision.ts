@@ -757,7 +757,8 @@ export function kitOutdatedWords(needed: string | null, published: PublishedKitR
 export const STEP_FAILURE_WORDS: Readonly<Record<string, FailureWords>> = {
   not_admitted: { title: "Your workspace is not an approved supplier yet.", fix: "Gray reviews supplier applications; Deploy works once yours is approved.", side: "gray" },
   no_quota: { title: "Your relay has no VM quota.", fix: "Ask Gray for a VM on the relay's VM page; Gray's operators decide it.", side: "gray" },
-  quota_used: { title: "Your relay's VM quota is used.", fix: "Delete the VM you have, or ask Gray for more quota.", side: "gray" },
+  // A relay has one VM: Deploy makes it, Restart and Delete act on it.
+  vm_exists: { title: "Your relay's VM is already running.", fix: "Restart it, or Delete it first to deploy anew.", side: "relay" },
   no_profile: { title: "Gray has no release published for relay VMs yet.", fix: "Gray's operators publish one; nothing to do on your side.", side: "gray" },
   // Relay standard v1.7 item 9: a wait, not a failure. The VM is not made until gray-assistant reports the release accepted.
   release_not_accepted: {
