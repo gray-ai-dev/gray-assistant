@@ -12,13 +12,14 @@
  *     "guardian_key": "guardian-key.json",   // the guardian's key, which the kit holds
  *     "contract": "0x…",          // the relay's GrayRelayAppAuth (the app id)
  *     "dstack_kms": "0x…",        // default Base's DstackKms
- *     "from_block": 123           // where `releases list` starts reading events: the contract's deployment block
+ *     "from_block": 123,          // where `releases list` starts reading events: the contract's deployment block
+ *     "release_delay_seconds": 86400   // the relay's release delay (13.13): pairing's choice, `releases delay` changes it
  *   }
  */
 import { getAddress, isAddress, type Address } from "viem";
 import { z } from "zod";
 import { RelayKitError } from "../errors.ts";
-import { BASE_DSTACK_KMS } from "./app-auth.ts";
+import { APP_AUTH_DELAY_SECONDS, BASE_DSTACK_KMS } from "./app-auth.ts";
 import { checkedRpcUrl } from "./rpc.ts";
 
 export interface ChainConfig {
@@ -31,6 +32,11 @@ export interface ChainConfig {
   readonly contract: Address;
   readonly dstackKms: Address;
   readonly fromBlock: bigint | null;
+  /**
+   * The relay's release delay as chosen at pairing or by `releases delay` (seconds, 0 to 7 days); null for a kit paired
+   * before the choice, whose contract answers 7 days (implementation 1, or one upgraded from it).
+   */
+  readonly releaseDelaySeconds: bigint | null;
 }
 
 const addressSchema = z.string().refine((value) => isAddress(value, { strict: false }) && !/^0x0{40}$/i.test(value), "an Ethereum address (0x and 40 hex digits), not zero");
@@ -45,6 +51,7 @@ export const chainConfigSchema = z
     contract: addressSchema,
     dstack_kms: addressSchema.optional(),
     from_block: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+    release_delay_seconds: z.number().int().min(0).max(Number(APP_AUTH_DELAY_SECONDS)).optional(),
   })
   .strict();
 
@@ -67,5 +74,6 @@ export function parseChainConfig(value: unknown): ChainConfig {
     contract: getAddress(data.contract),
     dstackKms: getAddress(data.dstack_kms ?? BASE_DSTACK_KMS),
     fromBlock: data.from_block === undefined ? null : BigInt(data.from_block),
+    releaseDelaySeconds: data.release_delay_seconds === undefined ? null : BigInt(data.release_delay_seconds),
   };
 }

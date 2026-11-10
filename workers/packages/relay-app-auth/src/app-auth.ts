@@ -26,7 +26,10 @@ export const CREATE2_PROXY: Address = "0x4e59b44847b379578588920cA78FbF26c0B4956
 export const BASE_CHAIN_ID = 8453;
 /** Phala's `DstackKms` on Base (13.2): `registeredApps(app)` must be true for the relay's contract. */
 export const BASE_DSTACK_KMS: Address = "0x2f83172A49584C017F2B256F0FB2Dca14126Ba9C";
-/** The contract's `DELAY()`: 7 days (owner 2026-10-29). */
+/**
+ * The contract's `MAX_DELAY()`, 7 days: the longest delay a relay may choose, the delay of a contract upgraded from
+ * implementation 1, and the delay `initialize` is given while pairing does not yet ask the relay (`delaySeconds`).
+ */
 export const APP_AUTH_DELAY_SECONDS = 7n * 24n * 60n * 60n;
 /** The salt's prefix; the relay id follows it, as UTF-8. Version 1 of the rule. */
 export const APP_AUTH_SALT_PREFIX = "gray-relay-app-auth/v1\n";
@@ -79,6 +82,11 @@ export interface AppAuthDeployment {
   readonly guardian: Address;
   /** The relay's recovery address: required, another key than the guardian. */
   readonly recovery: Address;
+  /**
+   * The relay's delay (0 to 7 days), part of the address. Omitted: 7 days, which the kit and the console both assume
+   * until pairing carries the relay's choice.
+   */
+  readonly delaySeconds?: bigint;
   /** The release current at pairing: proposed at deployment, approved by the guardian's pairing signatures. */
   readonly composeHashes: readonly Hex[];
   readonly osImageHashes: readonly Hex[];
@@ -157,10 +165,12 @@ export function appAuthInitData(deployment: AppAuthDeployment): Hex {
   if (new Set([proposer, proposerRecovery, guardian, recovery]).size !== 4) {
     throw new AppAuthError("usage", "Gray's two keys, the guardian and the recovery address are four different keys");
   }
+  const delay = deployment.delaySeconds ?? APP_AUTH_DELAY_SECONDS;
+  if (delay < 0n || delay > APP_AUTH_DELAY_SECONDS) throw new AppAuthError("usage", "the relay's delay is from 0 to 7 days");
   return encodeFunctionData({
     abi: APP_AUTH_ABI,
     functionName: "initialize",
-    args: [proposer, proposerRecovery, guardian, recovery, [...deployment.composeHashes], [...deployment.osImageHashes]],
+    args: [proposer, proposerRecovery, guardian, recovery, delay, [...deployment.composeHashes], [...deployment.osImageHashes]],
   });
 }
 

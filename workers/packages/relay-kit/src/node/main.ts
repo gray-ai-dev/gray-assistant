@@ -243,6 +243,7 @@ function usage(): string {
     "                        [--release-list <url>] [--release-public-key <64 hex>] [--release-freshness-public-key <64 hex>]",
     "                        [--app-id <40 hex>] [--kms-ca-pubkey <182 hex>] [--force]",
     "       gray-assistant init --pair <code> --gray <api origin> --dir <dir> [--key <relay-key.json>] [--force]   (the code from the relay's Integration page)",
+    "                        [--release-delay <hours>]   (phase 2: how long a Gray release waits for your veto, 0 to 168, default 24)",
     "                        [--registry-user <user> [--registry-expires-at <YYYY-MM-DDTHH:MM:SSZ>]] [--image <image@sha256:...>]   (the pull token's user, and its expiry when it has one; the image compose.yaml runs)",
     "       gray-assistant accounts [--config <config>]   (each account's panel id beside its source id)",
     "       gray-assistant deliver [--config <config>] [--no-wait] [--timeout <seconds>]   (phase 2: attest the VM, check the contract, seal the boot box and the accounts, restart when needed)",
@@ -261,6 +262,11 @@ function usage(): string {
     "       gray-assistant releases approve|reject <hash> [--kind compose|os_image] [--deadline <unix>] [--nonce <n>]",
     "                                          [--submit --rpc <url> | --print] [--config <config>]   (phase 2: the guardian's signed approval or veto;",
     "                                          Gray's relayer sends it by default, --submit from the guardian key, --print only signs)",
+    "       gray-assistant releases delay <hours> [--force] [--deadline <unix>] [--nonce <n>] [--submit --rpc <url> | --print] [--config <config>]",
+    "                                          (phase 2: your release delay, 0 to 168 h, signed by the guardian and sent as approve is; --force when",
+    "                                          lengthening it would stop a release that is effective by time alone)",
+    "       gray-assistant keys set-guardian|set-recovery <address> --key <recovery-key.json> [--deadline <unix>] [--nonce <n>]",
+    "                                          [--submit --rpc <url> | --print] [--config <config>]   (phase 2: the recovery key replaces a key)",
     "       gray-assistant pause|unpause [--deadline <unix>] [--nonce <n>] [--submit --rpc <url> | --print] [--config <config>]",
     "                                    (phase 2, a config with `chain`: the contract's off switch, signed by the guardian)",
     "       gray-assistant stack rollout <image> [--config <config>] [--no-wait] [--timeout <seconds>]   (one of stack.relay_images)",
@@ -389,6 +395,7 @@ async function dispatch(args: ParsedArgs, io: CliIo): Promise<number> {
   }
   if (command === "unpause") return chainSwitchCommand(args, io, "unpause", await requireChainContext(args, "unpause"));
   if (command === "releases") return releasesCommand(args, io);
+  if (command === "keys") return keysCommand(args, io);
   if (command === "stack") return stackCommand(args, io);
   if (command === "debug") return debugCommand(args, io);
   if (command === "login") return loginCommand(args, io);
@@ -901,7 +908,7 @@ function hostKitDir(value: string | undefined): string | null {
 
 /** `init --pair` (S57): pair a key with the relay's code on Gray's page and write the kit from Gray's answer. */
 async function initPairCommand(args: ParsedArgs, io: CliIo): Promise<number> {
-  assertFlags(args, ["pair", "gray", "dir", "key", "force", "registry-user", "registry-expires-at", "image"]);
+  assertFlags(args, ["pair", "gray", "dir", "key", "force", "registry-user", "registry-expires-at", "image", "release-delay"]);
   assertPositionals(args, 1);
   const { pairSummary, pairWorkspace } = await import("./init.ts");
   const result = await pairWorkspace({
@@ -912,6 +919,7 @@ async function initPairCommand(args: ParsedArgs, io: CliIo): Promise<number> {
     ...(args.flags.has("force") ? { force: true } : {}),
     ...(args.flags.has("registry-user") ? { registryUser: args.flags.get("registry-user") as string } : {}),
     ...(args.flags.has("registry-expires-at") ? { registryExpiresAt: args.flags.get("registry-expires-at") as string } : {}),
+    ...(args.flags.has("release-delay") ? { releaseDelayHours: args.flags.get("release-delay") as string } : {}),
     // `--image` pins compose.yaml to a digest (the published image knows only its own tag), as `upgrade --image` does.
     ...(composeImageOf(args, io) === null ? {} : { composeImage: composeImageOf(args, io) as string }),
   });
@@ -934,6 +942,9 @@ async function initPairCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   if (phase2 !== null) {
     io.stdout(`contract ${phase2.contract} on chain ${phase2.chainId} (your relay's app id; Gray deploys it at Deploy)\n`);
     io.stdout(`approved for it: compose hash ${phase2.composeHash}, OS image hash ${phase2.osImageHash} (signed by the guardian, submitted by Gray after Deploy)\n`);
+    io.stdout(
+      `release delay ${Number(phase2.releaseDelaySeconds) / 3600} h: each later Gray release takes effect that long after it is proposed unless you veto it (approve one to let it in sooner); an upgrade of the contract always waits 7 days. Change it with gray-assistant releases delay <hours>\n`,
+    );
   }
   const recovery = result.guardian.recovery;
   if (recovery !== null) {
@@ -1761,6 +1772,7 @@ async function releasesCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   if (verb === undefined) return releasesListCommand(args, io);
   // Phase 2: the releases on the relay's contract. `reject` is the contract's veto when the config has a `chain` member.
   if (verb === "list" || verb === "check" || verb === "approve") return chainReleasesCommand(args, io, verb, await requireChainContext(args, `releases ${verb}`));
+  if (verb === "delay") return releasesDelayCommand(args, io, await requireChainContext(args, "releases delay"));
   if (verb === "reject") {
     const chain = await chainContextOf(args, true);
     if (chain !== null) return chainReleasesCommand(args, io, "reject", chain);
@@ -2256,6 +2268,63 @@ async function chainReleasesCommand(args: ParsedArgs, io: CliIo, verb: "list" | 
   }, { nowMs: io.now() }));
 }
 
+/** `releases delay <hours>` (phase 2, 13.13): the relay's release delay on its contract, signed by the guardian. */
+async function releasesDelayCommand(args: ParsedArgs, io: CliIo, context: ChainContextValue): Promise<number> {
+  assertFlags(args, ["config", "deadline", "nonce", "submit", "rpc", "print", "force"]);
+  assertPositionals(args, 3);
+  const { releaseDelayFlag } = await import("./init.ts");
+  const seconds = releaseDelayFlag(args.positionals[2] as string, "releases delay");
+  const chain = await import("./chain.ts");
+  const result = await chain.chainSetDelay(context, {
+    seconds,
+    ...(args.flags.has("deadline") ? { deadline: args.flags.get("deadline") as string } : {}),
+    ...(args.flags.has("nonce") ? { nonce: args.flags.get("nonce") as string } : {}),
+    submit: submitOf(args),
+    print: printOf(args),
+    confirmed: args.flags.has("force"),
+  }, { nowMs: io.now() });
+  const hours = (s: bigint): string => `${Number(s) / 3600} h`;
+  if (result.stopped === null) io.stdout(`note: the releases effective by time alone could not be listed (no chain.from_block: set it to the contract's deployment block with gray-assistant config set chain.from_block <n> --json); lengthening the delay makes any of them wait again\n`);
+  for (const state of result.stopped ?? []) {
+    io.stdout(`stops: ${state.kind === "compose" ? "compose" : "OS image"} ${state.hash} is effective by time alone; at ${hours(seconds)} it waits until ${new Date(Number(state.proposedAt + seconds) * 1000).toISOString()}, and a VM running it loses its accounts at its next KMS re-check (within 10 minutes). Approve it first to keep it: gray-assistant releases approve ${state.hash}\n`);
+  }
+  if (result.outcome === null) {
+    io.stderr("gray-assistant releases delay: nothing signed; run it again with --force to lengthen the delay anyway\n");
+    return 1;
+  }
+  io.stdout(`gray-assistant releases delay: from ${hours(result.previous)} to ${hours(seconds)} for compose and OS image releases (an upgrade of the contract always waits 7 days)\n`);
+  return guardianActionOutput(io, "set_delay", context, result.outcome);
+}
+
+/** `keys set-guardian|set-recovery <address> --key <recovery-key.json>` (phase 2): the recovery key replaces a key. */
+async function keysCommand(args: ParsedArgs, io: CliIo): Promise<number> {
+  const verb = args.positionals[1];
+  if (verb !== "set-guardian" && verb !== "set-recovery") throw new RelayKitError("usage", "keys takes set-guardian <address> or set-recovery <address>, with --key <recovery-key.json>");
+  assertFlags(args, ["config", "key", "deadline", "nonce", "submit", "rpc", "print"]);
+  assertPositionals(args, 3);
+  const context = await requireChainContext(args, `keys ${verb}`);
+  const chain = await import("./chain.ts");
+  const which = verb === "set-guardian" ? "guardian" : "recovery";
+  const outcome = await chain.chainSetKey(context, {
+    which,
+    address: args.positionals[2] as string,
+    keyPath: requiredFlag(args, "key"),
+    ...(args.flags.has("deadline") ? { deadline: args.flags.get("deadline") as string } : {}),
+    ...(args.flags.has("nonce") ? { nonce: args.flags.get("nonce") as string } : {}),
+    submit: submitOf(args),
+    print: printOf(args),
+  }, { nowMs: io.now() });
+  const code = guardianActionOutput(io, which === "guardian" ? "set_guardian" : "set_recovery", context, outcome);
+  if (outcome.transaction?.block != null) {
+    io.stdout(
+      which === "guardian"
+        ? `chain.guardian is now ${outcome.json["new_address"]}: put its key file at chain.guardian_key (${context.chain.guardianKey}) before the next approve, veto or deliver\n`
+        : "keep the new recovery key's file offline, as the old one; the old key changes nothing any more\n",
+    );
+  }
+  return code;
+}
+
 async function chainSwitchCommand(args: ParsedArgs, io: CliIo, action: "pause" | "unpause", context: ChainContextValue): Promise<number> {
   assertFlags(args, ["config", "deadline", "nonce", "submit", "rpc", "print"]);
   assertPositionals(args, 1);
@@ -2269,17 +2338,20 @@ async function chainSwitchCommand(args: ParsedArgs, io: CliIo, action: "pause" |
   }, { nowMs: io.now() }));
 }
 
-function guardianActionOutput(io: CliIo, action: "approve" | "veto" | "pause" | "unpause", context: ChainContextValue, outcome: Awaited<ReturnType<(typeof import("./chain.ts"))["chainGuardianAction"]>>): number {
-  const name = `gray-assistant ${action === "approve" ? "releases approve" : action === "veto" ? "releases reject" : action}`;
-  const what = action === "approve" ? "approval" : action === "veto" ? "veto" : action;
+const ACTION_COMMAND = { approve: "releases approve", veto: "releases reject", pause: "pause", unpause: "unpause", set_delay: "releases delay", set_guardian: "keys set-guardian", set_recovery: "keys set-recovery" } as const;
+const ACTION_WORDS = { approve: "the guardian's approval", veto: "the guardian's veto", pause: "the guardian's pause", unpause: "the guardian's unpause", set_delay: "the guardian's new release delay", set_guardian: "the recovery key's new guardian", set_recovery: "the recovery key's new recovery address" } as const;
+const ACTION_STATE = { approve: "the release", veto: "the release", pause: "the off switch", unpause: "the off switch", set_delay: "the delay", set_guardian: "the keys", set_recovery: "the keys" } as const;
+
+function guardianActionOutput(io: CliIo, action: keyof typeof ACTION_COMMAND, context: ChainContextValue, outcome: Awaited<ReturnType<(typeof import("./chain.ts"))["chainGuardianAction"]>>): number {
+  const name = `gray-assistant ${ACTION_COMMAND[action]}`;
   io.stdout(
-    `${name}: signed the guardian's ${what} for ${context.chain.contract} (version ${outcome.json["version"]}, nonce ${outcome.json["nonce"]}, valid until ${new Date(Number(outcome.json["deadline"]) * 1000).toISOString()})\n`,
+    `${name}: signed ${ACTION_WORDS[action]} for ${context.chain.contract} (version ${outcome.json["version"]}, nonce ${outcome.json["nonce"]}, valid until ${new Date(Number(outcome.json["deadline"]) * 1000).toISOString()})\n`,
   );
   if (outcome.note !== null) io.stdout(`note: ${outcome.note}\n`);
   const by = outcome.via === "relayer" ? " through Gray's relayer" : "";
   if (outcome.transaction === null) {
-    io.stdout("not sent (--print): send it without --print (Gray's relayer), or yourself with --submit --rpc <url> from the guardian key (it pays the gas)\n");
-    io.stdout(`      it decides version ${outcome.json["version"]} of ${action === "pause" || action === "unpause" ? "the off switch" : "the release"}: any later decision on it, by you or your recovery key, makes this signature void (the contract answers SupersededSignature)\n`);
+    io.stdout("not sent (--print): send it without --print (Gray's relayer), or yourself with --submit --rpc <url> from the signing key (it pays the gas)\n");
+    io.stdout(`      it decides version ${outcome.json["version"]} of ${ACTION_STATE[action]}: any later decision on it, by you or your recovery key, makes this signature void (the contract answers SupersededSignature)\n`);
   }
   else if (outcome.transaction.block === null) io.stdout(`sent${by}: transaction ${outcome.transaction.hash}, not mined within the wait; look it up on the chain's explorer\n`);
   else io.stdout(`sent${by}: transaction ${outcome.transaction.hash}, mined in block ${outcome.transaction.block}\n`);

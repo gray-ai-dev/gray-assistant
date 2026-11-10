@@ -513,11 +513,11 @@ export const BOOT_FAILURE_WORDS: Readonly<Record<BootFailureClass, FailureWords>
   },
   relay_registry: {
     title: "Your VM could not pull your image from your registry.",
-    fix: "Check the registry token gray-assistant hands out (gray-assistant doctor) and that the image digest you chose exists, then retry the boot.",
+    fix: "Check your registry token (gray-assistant doctor) and that the image digest you chose exists, then retry the boot.",
     side: "relay",
   },
   relay_image: {
-    title: "Your VM refused the image your token service named.",
+    title: "Your VM refused the image your relay named.",
     fix: "Check gray-assistant stack status: the current image must be one of stack.relay_images, signed by your relay key, and declare no VOLUME (the integration standard, section 5). Roll out a fixed image, then retry the boot.",
     side: "relay",
   },
@@ -883,6 +883,7 @@ export const RELAY_ALERT_WORDS: Readonly<Record<RelayAlertKind, { readonly title
   relay_release_proposed: { title: "Gray proposed a release for your relay", resolved: "" },
   relay_release_reminder: { title: "A proposed Gray release takes effect in 2 days", resolved: "" },
   relay_release_effective: { title: "A Gray release took effect for your relay", resolved: "" },
+  relay_release_traffic: { title: "Your relay stops receiving traffic in a day", resolved: "" },
 };
 
 // ------------------------------------------------------------------------------------------------- the store's RPC (P3)
@@ -1096,6 +1097,8 @@ export interface ProvisionChain {
   readonly recovery: string | null;
   /** The relay's contract (CREATE2), the app id. */
   readonly contract: string;
+  /** The relay's release delay in seconds, decimal (13.13), part of the address; absent: 7 days. */
+  readonly delaySeconds?: string;
   /** The approved release, 64 lower hex each (the profile's compose hash and its OS image hash). */
   readonly composeHash: string;
   readonly osImageHash: string;
@@ -1176,13 +1179,17 @@ const uintText = z.string().regex(/^(0|[1-9][0-9]{0,77})$/);
  * gray-assistant prints for `releases approve|reject`, `pause` and `unpause` (relay-kit `signedActionJson`; its
  * `function` and `calldata` members may come along and are recomputed, never sent as given). `kind` and `hash` for an
  * approve or veto (of a compose, an OS image or an upgrade of the contract); null for a pause or unpause. The relay never
- * removes (a veto can be undone, a removal cannot). The signature is the guardian key's 65 bytes (ECDSA).
+ * removes (a veto can be undone, a removal cannot). The signature is the guardian key's 65 bytes (ECDSA). The relay's
+ * own settings (13.13): `set_delay` names `new_delay` (seconds, at most 7 days; the guardian or the recovery key signs),
+ * `set_guardian` and `set_recovery` name `new_address` (the recovery key signs); kind and hash are null for them.
  */
 export const relayerActionSchema = z
   .object({
-    action: z.enum(["approve", "veto", "pause", "unpause"]),
+    action: z.enum(["approve", "veto", "pause", "unpause", "set_delay", "set_guardian", "set_recovery"]),
     kind: z.enum(["compose", "os_image", "implementation"]).nullable(),
     hash: z.string().regex(/^0x[0-9a-f]{64}$/).nullable(),
+    new_delay: z.string().regex(/^(0|[1-9][0-9]{0,6})$/).refine((v) => Number(v) <= 604_800, "at most 7 days").optional(),
+    new_address: evmAddress.optional(),
     chain_id: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
     contract: evmAddress,
     version: uintText,
@@ -1194,10 +1201,16 @@ export const relayerActionSchema = z
     calldata: z.string().max(20_000).optional(),
   })
   .strict()
-  .refine((a) => (a.action === "pause" || a.action === "unpause" ? a.kind === null && a.hash === null : a.kind !== null && a.hash !== null), {
-    message: "an approve or veto names its kind and hash; a pause or unpause names neither",
-    path: ["kind"],
-  });
+  .refine(
+    (a) =>
+      (a.action === "approve" || a.action === "veto" ? a.kind !== null && a.hash !== null : a.kind === null && a.hash === null) &&
+      (a.new_delay !== undefined) === (a.action === "set_delay") &&
+      (a.new_address !== undefined) === (a.action === "set_guardian" || a.action === "set_recovery"),
+    {
+      message: "an approve or veto names its kind and hash; set_delay its new_delay, set_guardian and set_recovery their new_address; nothing else names any",
+      path: ["kind"],
+    },
+  );
 export type RelayerAction = z.infer<typeof relayerActionSchema>;
 
 /** The first line of a relayer request the relay key signs (the restart request's form, S53). */
@@ -1212,9 +1225,14 @@ export const relayerRequestSchema = z
   .strict();
 export type RelayerRequest = z.infer<typeof relayerRequestSchema>;
 
-/** The bytes the relay key signs: the domain, the relay id and each signed member of the decision, one a line. */
+/**
+ * The bytes the relay key signs: the domain, the relay id and each signed member of the decision, one a line; a
+ * `set_*` decision's new value last (the action, on line 3, says whether the line is there).
+ */
 export function relayerRequestMessage(relayId: string, d: RelayerAction): Uint8Array {
   const lines = [RELAYER_REQUEST_DOMAIN, relayId, d.action, d.kind ?? "", d.hash ?? "", String(d.chain_id), d.contract, d.version, d.signer, d.nonce, d.deadline, d.signature];
+  const value = d.new_delay ?? d.new_address;
+  if (value !== undefined) lines.push(value);
   return new TextEncoder().encode(lines.join("\n"));
 }
 

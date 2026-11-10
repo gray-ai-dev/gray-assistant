@@ -105,6 +105,24 @@ export async function signerNonce(chain: AgreedChain, contract: Address, signer:
   return readAgreed(chain, "nonces", (client) => client.readContract({ address: contract, abi: APP_AUTH_ABI, functionName: "nonces", args: [signer], blockNumber: chain.block }), String);
 }
 
+/** The relay's settings the kit signs changes of (13.13): `delay()`, `delayVersion()`, `keysVersion()`, `recovery()`. */
+export async function settingsState(chain: AgreedChain, contract: Address): Promise<{ readonly delay: bigint; readonly delayVersion: bigint; readonly keysVersion: bigint; readonly recovery: Address }> {
+  return readAgreed(
+    chain,
+    "delay(), delayVersion(), keysVersion() and recovery()",
+    async (client) => {
+      const [delay, delayVersion, keysVersion, recovery] = await Promise.all([
+        client.readContract({ address: contract, abi: APP_AUTH_ABI, functionName: "delay", blockNumber: chain.block }),
+        client.readContract({ address: contract, abi: APP_AUTH_ABI, functionName: "delayVersion", blockNumber: chain.block }),
+        client.readContract({ address: contract, abi: APP_AUTH_ABI, functionName: "keysVersion", blockNumber: chain.block }),
+        client.readContract({ address: contract, abi: APP_AUTH_ABI, functionName: "recovery", blockNumber: chain.block }),
+      ]);
+      return { delay: BigInt(delay), delayVersion: BigInt(delayVersion), keysVersion: BigInt(keysVersion), recovery: getAddress(recovery) };
+    },
+    (value) => `${value.delay}:${value.delayVersion}:${value.keysVersion}:${value.recovery}`,
+  );
+}
+
 /** Whether the contract is paused now, its pause version (what `Pause` and `Unpause` sign) and its guardian, agreed by both endpoints. */
 export async function switchState(chain: AgreedChain, contract: Address): Promise<{ readonly paused: boolean; readonly pauseVersion: bigint; readonly guardian: Address }> {
   return readAgreed(

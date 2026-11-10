@@ -228,6 +228,15 @@ export async function initWorkspace(options: InitWorkspaceOptions): Promise<Init
 
 // ---- init --pair (S57) ------------------------------------------------------------------------
 
+/** A new pairing's release delay (owner 2026-11-11, 13.13): a day to review each Gray release. */
+export const DEFAULT_RELEASE_DELAY_HOURS = 24;
+
+/** Hours as the commands take them (a whole number, 0 to 168), in seconds: the contract's bounds, 0 to 7 days. */
+export function releaseDelayFlag(hours: string, flag: string): bigint {
+  if (!/^(0|[1-9][0-9]{0,2})$/.test(hours) || Number(hours) > 168) throw new RelayKitError("usage", `${flag} is the release delay in whole hours, 0 to 168 (7 days)`);
+  return BigInt(hours) * 3600n;
+}
+
 /** The pairing route on Gray's API origin (`@gray/control/stack-pairing`). */
 export const PAIR_PATH = "/v1/lane-stack/pair";
 /** How long the pairing request may take: the agent status post's limit (agent-status-report.ts), the same route family. */
@@ -253,6 +262,11 @@ export interface PairWorkspaceOptions {
   /** The published image `init` runs from (`$GRAY_ASSISTANT_IMAGE`): then the kit gets a compose file that runs it. */
   readonly composeImage?: string;
   /**
+   * Phase 2: the relay's release delay in hours (`--release-delay`, 0 to 168; default 24, 13.13), which the contract is
+   * initialised with: how long a Gray release waits for the relay's veto before it takes effect without its approval.
+   */
+  readonly releaseDelayHours?: string;
+  /**
    * The registry's pull token's user and expiry (`--registry-user`, `--registry-expires-at`; the expiry only with the
    * user, and optional since relay standard v1.7: without it the token has no known expiry), written as
    * `stack.registry.username` and `expires_at` instead of the user's placeholder; the token itself is the kit file
@@ -273,7 +287,7 @@ export interface PairingGuardian {
    * Phase 2: the relay's contract this pairing approved the first release for (Gray deploys it at Deploy), with the
    * release's hashes; null for a phase-1 pairing (Gray named no chain terms).
    */
-  readonly phase2: { readonly contract: string; readonly chainId: number; readonly composeHash: string; readonly osImageHash: string } | null;
+  readonly phase2: { readonly contract: string; readonly chainId: number; readonly composeHash: string; readonly osImageHash: string; readonly releaseDelaySeconds: bigint } | null;
   /**
    * Phase 2: the relay's recovery key (`recovery-key.json`, the guardian key file's format), the only key that replaces
    * the guardian or itself on the contract. Only its address goes to Gray; the relay keeps the file offline.
@@ -445,6 +459,7 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
   const composeImage = options.composeImage === undefined || options.composeImage.trim() === "" ? null : options.composeImage.trim();
   const composePath = join(directory, PAIRED_COMPOSE_FILE);
   const registryLogin = pairRegistryLogin(options.registryUser, options.registryExpiresAt, options.nowMs ?? Date.now());
+  const releaseDelaySeconds = releaseDelayFlag(options.releaseDelayHours ?? String(DEFAULT_RELEASE_DELAY_HOURS), "--release-delay");
   if (copyKey) assertWritable(keyPath, force);
   assertWritable(configPath, force);
   if (composeImage !== null) assertWritable(composePath, force);
@@ -469,7 +484,7 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
   const terms = await chainTerms(gray, code, timeoutMs);
   if (!terms.ok) return terms.failure;
   if (terms.chain !== null) {
-    const prepared = await phase2Part(terms.chain, pairingGuardian, pairingRecovery.address, nowMs, timeoutMs);
+    const prepared = await phase2Part(terms.chain, pairingGuardian, pairingRecovery.address, releaseDelaySeconds, nowMs, timeoutMs);
     if (!prepared.ok) return prepared.failure;
     phase2 = prepared.pairing;
   }
@@ -561,6 +576,7 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
             guardianKey: GUARDIAN_KEY_FILE,
             contract: phase2.part.contract,
             dstackKms: phase2.terms.dstack_kms,
+            releaseDelaySeconds,
           },
   });
 
@@ -603,7 +619,7 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
       address: pairingGuardian.address,
       keyPath: pairingGuardian.keyPath,
       generated: pairingGuardian.generated !== null,
-      phase2: phase2 === null ? null : { contract: phase2.part.contract, chainId: phase2.terms.chain_id, composeHash: phase2.terms.compose_hash, osImageHash: phase2.terms.os_image_hash },
+      phase2: phase2 === null ? null : { contract: phase2.part.contract, chainId: phase2.terms.chain_id, composeHash: phase2.terms.compose_hash, osImageHash: phase2.terms.os_image_hash, releaseDelaySeconds },
       recovery: phase2 === null ? null : { address: pairingRecovery.address, keyPath: recoveryKeyPath, generated: pairingRecovery.generated !== null },
     },
   };
@@ -682,6 +698,7 @@ async function phase2Part(
   terms: PairChainTerms,
   guardian: { readonly address: string; readonly keyPath: string; readonly generated: GuardianKeyFile | null },
   recovery: string,
+  releaseDelaySeconds: bigint,
   nowMs: number,
   timeoutMs: number,
 ): Promise<{ readonly ok: true; readonly pairing: Phase2Pairing } | { readonly ok: false; readonly failure: PairFailure }> {
@@ -707,6 +724,7 @@ async function phase2Part(
       proposerRecovery: checkedAddress(terms.proposer_recovery, "Gray's proposer recovery key"),
       guardian: checkedAddress(guardian.address, "the guardian"),
       recovery: checkedAddress(recovery, "the recovery address"),
+      delaySeconds: releaseDelaySeconds,
       composeHashes: [releaseHash(terms.compose_hash, "the compose hash")],
       osImageHashes: [releaseHash(terms.os_image_hash, "the OS image hash")],
     },
@@ -753,7 +771,7 @@ export function pairSummary(result: Extract<PairWorkspaceResult, { ok: true }>):
     ...(result.guardian.recovery === null ? {} : { recovery: result.guardian.recovery.address, recovery_key_file: result.guardian.recovery.keyPath }),
     ...(result.guardian.phase2 === null
       ? {}
-      : { contract: result.guardian.phase2.contract, chain_id: result.guardian.phase2.chainId, approved: { compose_hash: result.guardian.phase2.composeHash, os_image_hash: result.guardian.phase2.osImageHash } }),
+      : { contract: result.guardian.phase2.contract, chain_id: result.guardian.phase2.chainId, release_delay_seconds: Number(result.guardian.phase2.releaseDelaySeconds), approved: { compose_hash: result.guardian.phase2.composeHash, os_image_hash: result.guardian.phase2.osImageHash } }),
     accepted_at_pairing: (result.releases?.accepted ?? []).map((entry) => ({ kind: entry.kind, hash: entry.hash, name: entry.name })),
     ...(result.releases === null || result.releases.listError === null ? {} : { release_list_error: result.releases.listError }),
   };

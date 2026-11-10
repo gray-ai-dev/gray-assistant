@@ -309,6 +309,8 @@ export interface PairedConfigOptions {
     readonly guardianKey: string;
     readonly contract: string;
     readonly dstackKms: string;
+    /** The relay's release delay in seconds, which the contract is initialised with. */
+    readonly releaseDelaySeconds: bigint;
   } | null;
 }
 
@@ -418,7 +420,10 @@ function pairedChainText(chain: PairedConfigOptions["chain"] | null): string {
     "guardian": ${j(chain.guardian)},
     "guardian_key": ${j(chain.guardianKey)},
     "contract": ${j(chain.contract)},
-    "dstack_kms": ${j(chain.dstackKms)}
+    "dstack_kms": ${j(chain.dstackKms)},
+    // Your release delay: how long a Gray release waits for your veto before it takes effect without your approval
+    // (an upgrade of the contract always waits 7 days). Change it with gray-assistant releases delay <hours>.
+    "release_delay_seconds": ${chain.releaseDelaySeconds.toString()}
   },
 `;
 }

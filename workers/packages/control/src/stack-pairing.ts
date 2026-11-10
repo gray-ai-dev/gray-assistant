@@ -150,6 +150,8 @@ export const pairGuardianSchema = z
     recovery: evmAddress.nullable(),
     chain_id: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
     contract: evmAddress,
+    /** The relay's release delay in seconds (13.13; `init --pair --release-delay`), part of the contract's address. */
+    delay_seconds: decimal.optional(),
     approvals: z
       .array(
         z

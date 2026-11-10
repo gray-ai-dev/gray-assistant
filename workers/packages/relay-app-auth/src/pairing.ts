@@ -13,7 +13,7 @@
  * Pure: no network; the caller gives the time.
  */
 import { getAddress, isAddress, zeroAddress, type Address, type Hex } from "viem";
-import { appAuthAddress, type ReleaseKind } from "./app-auth.ts";
+import { APP_AUTH_DELAY_SECONDS, appAuthAddress, type ReleaseKind } from "./app-auth.ts";
 import { signedActionSigner, type SignedGuardianAction } from "./guardian.ts";
 
 /** The pairing's guardian part as JSON (relay-kit `pairingGuardianJson`, signed approvals only). */
@@ -23,6 +23,8 @@ export interface PairingGuardianWire {
   readonly recovery: string | null;
   readonly chain_id: number;
   readonly contract: string;
+  /** The relay's release delay in seconds, 0 to 7 days (13.13), decimal; absent from a kit before it: 7 days. */
+  readonly delay_seconds?: string;
   readonly approvals: readonly {
     readonly kind: ReleaseKind;
     readonly hash: string;
@@ -46,7 +48,7 @@ export interface PairingTerms {
 }
 
 /** Why a guardian part is refused: one closed word each, for the audit (never a value from the part). */
-export type PairingGuardianProblem = "chain" | "guardian" | "recovery" | "contract" | "approvals" | "deadline" | "signature";
+export type PairingGuardianProblem = "chain" | "guardian" | "recovery" | "delay" | "contract" | "approvals" | "deadline" | "signature";
 
 export type PairingGuardianCheck =
   | {
@@ -54,6 +56,8 @@ export type PairingGuardianCheck =
       readonly guardian: Address;
       readonly recovery: Address;
       readonly contract: Address;
+      /** The relay's release delay in seconds, which the contract is initialised with. */
+      readonly delaySeconds: bigint;
       /** The approvals in submission order (nonce 0, 1), as the relayer submits them. */
       readonly approvals: readonly SignedGuardianAction[];
     }
@@ -77,12 +81,16 @@ export async function checkPairingGuardian(part: PairingGuardianWire, terms: Pai
   const proposerRecovery = getAddress(terms.proposerRecovery);
   if (guardian === proposerRecovery) return { ok: false, problem: "guardian" };
   if (recovery === null || recovery === proposer || recovery === proposerRecovery || recovery === guardian) return { ok: false, problem: "recovery" };
+  // The relay's choice; part of the address, so the contract recomputed below is refused for any other.
+  const delaySeconds = part.delay_seconds === undefined ? APP_AUTH_DELAY_SECONDS : /^(0|[1-9][0-9]{0,6})$/.test(part.delay_seconds) ? BigInt(part.delay_seconds) : null;
+  if (delaySeconds === null || delaySeconds > APP_AUTH_DELAY_SECONDS) return { ok: false, problem: "delay" };
   const contract = appAuthAddress({
     relayId: terms.relayId,
     proposer,
     proposerRecovery,
     guardian,
     recovery,
+    delaySeconds,
     composeHashes: [terms.composeHash],
     osImageHashes: [terms.osImageHash],
   });
@@ -119,5 +127,5 @@ export async function checkPairingGuardian(part: PairingGuardianWire, terms: Pai
     if (signer !== guardian) return { ok: false, problem: "signature" };
     approvals.push(signed);
   }
-  return { ok: true, guardian, recovery, contract, approvals };
+  return { ok: true, guardian, recovery, contract, delaySeconds, approvals };
 }

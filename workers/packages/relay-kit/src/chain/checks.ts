@@ -7,7 +7,8 @@
  * read. That block must be the chain as it is now (`freshCommonBlock`): the heads at most MAX_HEAD_LAG_BLOCKS apart and
  * the block at most MAX_BLOCK_AGE_SECONDS old, else one lagging endpoint could hold both to a state before a pause. Then the reading must show: the code at the app id is `ERC1967Proxy`'s, and the implementation its
  * ERC-1967 slot names is one Gray publishes, with its code hash (`app-auth.ts`); `proposer()` is Gray's proposer;
- * `guardian()` is the kit's guardian; `DELAY()` is 7 days; Base's `DstackKms` has the app registered; the given compose
+ * `guardian()` is the kit's guardian; `delay()` is the relay's choice the config keeps (`chain.release_delay_seconds`;
+ * 7 days for a kit paired before the choice, the delay of a contract upgraded from implementation 1); Base's `DstackKms` has the app registered; the given compose
  * hash and OS image hash are `effective`; `paused()` is false.
  */
 import { getAddress, keccak256, parseAbi, type Address, type Hex, type PublicClient } from "viem";
@@ -74,6 +75,8 @@ export interface ChainCheckInput {
   /** The kit's guardian. */
   readonly guardian: Address;
   readonly dstackKms: Address;
+  /** The relay's chosen release delay (seconds), null for a kit paired before the choice: then 7 days. */
+  readonly releaseDelaySeconds?: bigint | null;
   /** The compose hash and OS image hash that must be effective; null skips that check (none to check yet). */
   readonly composeHash: Hex | null;
   readonly osImageHash: Hex | null;
@@ -164,7 +167,7 @@ async function readAt(client: PublicClient, url: string, input: ChainCheckInput,
     const [proposer, guardian, delaySeconds, paused, composeEffective, osImageEffective] = await Promise.all([
       read<Address>("proposer"),
       read<Address>("guardian"),
-      read<bigint>("DELAY"),
+      read<bigint>("delay"),
       read<boolean>("paused"),
       input.composeHash === null ? Promise.resolve(null) : read<boolean>("effective", [RELEASE_KIND_NUMBER.compose, input.composeHash]),
       input.osImageHash === null ? Promise.resolve(null) : read<boolean>("effective", [RELEASE_KIND_NUMBER.os_image, input.osImageHash]),
@@ -205,10 +208,12 @@ function judge(reading: ChainReading, input: ChainCheckInput, expectedCodeHash: 
       ? { name: "guardian", ok: true, detail: `guardian() is ${input.guardian}` }
       : { name: "guardian", ok: false, detail: `guardian() is ${reading.guardian ?? "unreadable"}, not this kit's ${input.guardian}` },
   );
+  // The relay's own choice, never one Gray made: no key of Gray's can set it (13.13).
+  const delay = input.releaseDelaySeconds ?? APP_AUTH_DELAY_SECONDS;
   checks.push(
-    reading.delaySeconds === APP_AUTH_DELAY_SECONDS
-      ? { name: "delay", ok: true, detail: "DELAY() is 7 days" }
-      : { name: "delay", ok: false, detail: `DELAY() is ${reading.delaySeconds ?? "unreadable"} s, not 7 days` },
+    reading.delaySeconds === delay
+      ? { name: "delay", ok: true, detail: `delay() is ${delay} s, the relay's release delay` }
+      : { name: "delay", ok: false, detail: `delay() is ${reading.delaySeconds ?? "unreadable"} s, not the relay's ${delay} s (chain.release_delay_seconds)` },
   );
   checks.push(
     reading.registered

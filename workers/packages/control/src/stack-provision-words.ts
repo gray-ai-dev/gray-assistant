@@ -195,10 +195,11 @@ export type TokenServiceCode = (typeof TOKEN_SERVICE_CODES)[number];
 
 /**
  * Phase 2's release notices (docs/design/relay-no-always-on-host.md 3.2 "How the relay learns of a proposal", 13.11
- * P5b-2): a Gray release proposed on the relay's contract, a reminder on day 5 while it is still undecided, and the
- * release taking effect. Each is told once per release (lane_stack_relay_releases), not an open/resolved condition.
+ * P5b-2): a Gray release proposed on the relay's contract, a reminder two days before it takes effect while it is still undecided (for a wait of 3 days or more), and the
+ * release taking effect, and a day before the release's traffic window closes while the VM still serves an older one
+ * (`relay_release_traffic`, @gray/control release-traffic.ts). Each is told once per release (lane_stack_relay_releases), not an open/resolved condition.
  */
-export const RELAY_RELEASE_NOTICE_KINDS = ["relay_release_proposed", "relay_release_reminder", "relay_release_effective"] as const;
+export const RELAY_RELEASE_NOTICE_KINDS = ["relay_release_proposed", "relay_release_reminder", "relay_release_effective", "relay_release_traffic"] as const;
 export type RelayReleaseNoticeKind = (typeof RELAY_RELEASE_NOTICE_KINDS)[number];
 
 /**

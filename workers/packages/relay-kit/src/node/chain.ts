@@ -12,17 +12,18 @@ import { dirname, isAbsolute, resolve } from "node:path";
 import { get, isObject, parsePlain, type Json, type JsonObject } from "@gray/json";
 import { bytesToLowerHex, ed25519Sign } from "@gray/attest";
 import { relayerActionSchema, relayerRequestMessage } from "@gray/control/stack-provision";
-import { BaseError, createWalletClient, custom, decodeErrorResult, defineChain, type Address, type Hex, type PublicClient } from "viem";
+import { BaseError, createWalletClient, custom, decodeErrorResult, defineChain, getAddress, isAddress, type Address, type Hex, type PublicClient } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { APP_AUTH_ABI, APP_AUTH_DELAY_SECONDS, publishedUpgrade, releaseHash, type ReleaseKind } from "../chain/app-auth.ts";
 import { checkRelayContract, chainCheckJson, kitErrorIn } from "../chain/checks.ts";
 import { parseChainConfig, type ChainConfig } from "../chain/config.ts";
 import { bySigCalldata, signedActionJson, signedActionSigner, signGuardianAction, type GuardianAction, type GuardianMessageContext } from "../chain/guardian.ts";
 import { GUARDIAN_KEY_FILE, guardianKeyValue, parseGuardianKeyValue, type GuardianKeyFile } from "../chain/guardian-key.ts";
-import { agreedChain, hasCode, listReleases, releaseState, releaseStateJson, signerNonce, switchState, type AgreedChain, type ReleaseState } from "../chain/releases.ts";
+import { agreedChain, hasCode, listReleases, releaseState, releaseStateJson, settingsState, signerNonce, switchState, type AgreedChain, type ReleaseState } from "../chain/releases.ts";
 import { checkedRpcUrl, httpRequestFn, rpcClient, rpcLabel, type RpcOptions } from "../chain/rpc.ts";
 import { RelayKitError } from "../errors.ts";
 import { loadRelayConfigFile, parseJsoncText } from "./config-file.ts";
+import { editRelayConfig } from "./config-edit.ts";
 import { buildKeyFromText } from "./scheduler-load.ts";
 import { defaultPost, type StackPost } from "./stack.ts";
 import { readFileText, readPrivateFile, writePrivateFile } from "./files.ts";
@@ -180,7 +181,7 @@ export function releaseVerdict(state: ReleaseState, now: bigint): string {
   if (state.removed) return `${what} ${state.hash} was removed; it is never effective again`;
   if (state.vetoed) return `${what} ${state.hash} is vetoed by the relay; it is not effective until the guardian approves it`;
   if (state.approved) return `${what} ${state.hash} is approved by the relay and effective`;
-  if (state.effective) return `${what} ${state.hash} became effective after its 7 days; a veto still stops it`;
+  if (state.effective) return `${what} ${state.hash} became effective after its delay; a veto still stops it`;
   const left = state.effectiveAt - now;
   const days = Number(left) / 86_400;
   return `${what} ${state.hash} becomes effective at ${new Date(Number(state.effectiveAt) * 1000).toISOString()} (in ${days.toFixed(1)} days) unless the guardian vetoes it`;
@@ -232,18 +233,118 @@ export async function chainGuardianAction(
     version = state.version;
   }
   const nonce = givenNonce ?? (await signerNonce(chain, contract, guardian));
-  const messageContext: GuardianMessageContext = { chainId: context.chain.chainId, contract, version, signer: guardian, nonce, deadline };
+  return signAndSend(context, key, action, { version, nonce, deadline }, { submitUrl, print: request.print === true, note }, options);
+}
+
+/**
+ * Sign `action` with `key` (the guardian's or the recovery key's) at the version, nonce and deadline read for it, check
+ * the signature recovers to the key, then send it: `--submit` from the key itself, `--print` not at all, else through
+ * Gray's relayer (the default: Gray pays, the relay holds no Base ETH).
+ */
+async function signAndSend(
+  context: ChainContext,
+  key: GuardianKeyFile,
+  action: GuardianAction,
+  at: { readonly version: bigint; readonly nonce: bigint; readonly deadline: bigint },
+  how: { readonly submitUrl: string | null; readonly print: boolean; readonly note: string | null },
+  options: ChainCommandOptions & { readonly post?: StackPost },
+): Promise<GuardianActionOutcome> {
+  const contract = context.chain.contract;
+  const note = how.note;
+  const messageContext: GuardianMessageContext = { chainId: context.chain.chainId, contract, version: at.version, signer: key.address, nonce: at.nonce, deadline: at.deadline };
   const signed = await signGuardianAction(key.privateKey, action, messageContext);
-  if ((await signedActionSigner(signed)) !== guardian) throw new RelayKitError("invalid_key_file", "the signature does not recover to the guardian");
+  if ((await signedActionSigner(signed)) !== key.address) throw new RelayKitError("invalid_key_file", "the signature does not recover to the key");
   const json = signedActionJson(signed);
-  if (submitUrl !== null) return { json, transaction: await submitBySig(submitUrl, context.chain.chainId, key, contract, bySigCalldata(signed), options), via: "guardian", note };
-  if (request.print === true) return { json, transaction: null, via: null, note };
+  if (how.submitUrl !== null) return { json, transaction: await submitBySig(how.submitUrl, context.chain.chainId, key, contract, bySigCalldata(signed), options), via: "guardian", note };
+  if (how.print) return { json, transaction: null, via: null, note };
   // The default: Gray's relayer pays, the request signed with the relay key as a restart request is.
   const config = loadRelayConfigFile(context.configPath);
   if (config.daemon.stack === null) throw new RelayKitError("usage", "the config has no stack section (stack.report_origin, where Gray's relayer is): send it yourself with --submit --rpc <url>, or --print it");
   const relayKey = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "relay key", 64 * 1024));
   const hash = await postToRelayer({ origin: config.daemon.stack.reportOrigin, relayId: config.daemon.relayId, seed: relayKey.seed, decision: json, ...(options.post === undefined ? {} : { post: options.post }) });
   return { json, transaction: { hash, block: await minedBlock(rpcClient(context.chain.rpc[0] as string, options), hash, RECEIPT_TIMEOUT_MS) }, via: "relayer", note };
+}
+
+/**
+ * `releases delay <hours>` (13.13): the relay's release delay, signed by the guardian at the contract's `delayVersion`
+ * and sent as approve is. Lengthening it makes a compose or OS image that is effective by time alone (not approved)
+ * wait again: a VM running it loses its accounts at its next KMS re-check. The outcome names each such release (read
+ * from the contract's events since `chain.from_block`), or says they could not be listed, before anything is sent;
+ * `confirmed` false stops there. The config keeps the new delay once the change is sent.
+ */
+export async function chainSetDelay(
+  context: ChainContext,
+  request: { readonly seconds: bigint; readonly deadline?: string; readonly nonce?: string; readonly submit?: { readonly rpc: string } | null; readonly print?: boolean; readonly confirmed: boolean },
+  options: ChainCommandOptions & { readonly post?: StackPost },
+): Promise<{ readonly previous: bigint; readonly stopped: readonly ReleaseState[] | null; readonly outcome: GuardianActionOutcome | null }> {
+  const contract = context.chain.contract;
+  const guardian = context.chain.guardian;
+  const deadline = actionDeadline(request.deadline, options.nowMs);
+  const givenNonce = nonceFlag(request.nonce);
+  const key = readGuardianKeyFile(context.guardianKeyPath, guardian);
+  const submitUrl = request.submit ? checkedRpcUrl(request.submit.rpc, "--rpc") : null;
+  const chain = await openChain(context, options);
+  if (!(await hasCode(chain, contract))) throw new RelayKitError("chain_refused", `no contract at ${contract} yet (Gray deploys it at Deploy)`);
+  const switches = await switchState(chain, contract);
+  if (switches.guardian !== guardian) throw new RelayKitError("chain_refused", `the contract's guardian is ${switches.guardian}, not chain.guardian ${guardian}`);
+  const settings = await settingsState(chain, contract);
+  if (settings.delay === request.seconds) throw new RelayKitError("chain_refused", `the contract's delay is ${request.seconds} s already`);
+  let stopped: ReleaseState[] | null = [];
+  if (request.seconds > settings.delay) {
+    const now = nowSeconds(options.nowMs);
+    const fromBlock = context.chain.fromBlock;
+    stopped =
+      fromBlock === null
+        ? null
+        : (await listReleases(chain, contract, fromBlock)).filter((s) => s.kind !== "implementation" && s.effective && !s.approved && s.proposedAt + request.seconds > now);
+  }
+  if (!request.confirmed && (stopped === null || stopped.length > 0)) return { previous: settings.delay, stopped, outcome: null };
+  const nonce = givenNonce ?? (await signerNonce(chain, contract, guardian));
+  const outcome = await signAndSend(context, key, { action: "set_delay", delay: request.seconds }, { version: settings.delayVersion, nonce, deadline }, { submitUrl, print: request.print === true, note: null }, options);
+  // Kept once mined: deliver's chain check compares the contract's delay() with it.
+  const kept = outcome.transaction?.block == null ? null : keepInConfig(context, "chain.release_delay_seconds", Number(request.seconds));
+  return { previous: settings.delay, stopped, outcome: kept === null ? outcome : { ...outcome, note: kept } };
+}
+
+/**
+ * `keys set-guardian|set-recovery <address>` (13.13): a new guardian or recovery address, signed by the recovery key
+ * (`--key`, the file the relay keeps offline) at the contract's `keysVersion`, and sent as approve is. A new guardian
+ * is written to the config's `chain.guardian` once the change is sent; its key file is the relay's to put in place.
+ */
+export async function chainSetKey(
+  context: ChainContext,
+  request: { readonly which: "guardian" | "recovery"; readonly address: string; readonly keyPath: string; readonly deadline?: string; readonly nonce?: string; readonly submit?: { readonly rpc: string } | null; readonly print?: boolean },
+  options: ChainCommandOptions & { readonly post?: StackPost },
+): Promise<GuardianActionOutcome> {
+  const contract = context.chain.contract;
+  if (!isAddress(request.address, { strict: false }) || /^0x0{40}$/i.test(request.address)) throw new RelayKitError("usage", "the new key is an Ethereum address (0x and 40 hex digits), not zero");
+  const address = getAddress(request.address);
+  const deadline = actionDeadline(request.deadline, options.nowMs);
+  const givenNonce = nonceFlag(request.nonce);
+  const key = readGuardianKeyFile(request.keyPath);
+  const submitUrl = request.submit ? checkedRpcUrl(request.submit.rpc, "--rpc") : null;
+  const chain = await openChain(context, options);
+  if (!(await hasCode(chain, contract))) throw new RelayKitError("chain_refused", `no contract at ${contract} yet (Gray deploys it at Deploy)`);
+  const settings = await settingsState(chain, contract);
+  if (key.address !== settings.recovery) throw new RelayKitError("invalid_key_file", `${request.keyPath} is ${key.address}, not the contract's recovery address ${settings.recovery}: only the recovery key changes keys`);
+  const switches = await switchState(chain, contract);
+  const current = request.which === "guardian" ? switches.guardian : settings.recovery;
+  if (address === current) throw new RelayKitError("chain_refused", `${address} is the contract's ${request.which} already`);
+  const nonce = givenNonce ?? (await signerNonce(chain, contract, key.address));
+  const action: GuardianAction = { action: request.which === "guardian" ? "set_guardian" : "set_recovery", address };
+  const outcome = await signAndSend(context, key, action, { version: settings.keysVersion, nonce, deadline }, { submitUrl, print: request.print === true, note: null }, options);
+  const kept = outcome.transaction?.block == null || request.which !== "guardian" ? null : keepInConfig(context, "chain.guardian", address);
+  return kept === null ? outcome : { ...outcome, note: kept };
+}
+
+/** Write a changed setting to the config; null when written, else what to run (the change is on chain already). */
+function keepInConfig(context: ChainContext, member: string, value: string | number): string | null {
+  try {
+    editRelayConfig(context.configPath, member, value);
+    return null;
+  } catch {
+    return `the contract took it, but ${context.configPath} could not be written: run gray-assistant config set ${member} ${typeof value === "number" ? `${value} --json` : value} where the config is writable (the kit directory)`;
+  }
 }
 
 /** Gray's relayer for a decision the guardian signed, as gray-assistant sends it (the console's report.ts). */
@@ -358,7 +459,7 @@ function contractErrorName(error: unknown): string | null {
 export async function chainChecksFor(context: ChainContext, composeHash: Hex | null, osImageHash: Hex | null, options: RpcOptions & { readonly nowMs?: number } = {}) {
   const result = await checkRelayContract(
     context.chain.rpc,
-    { chainId: context.chain.chainId, contract: context.chain.contract, proposer: context.chain.proposer, guardian: context.chain.guardian, dstackKms: context.chain.dstackKms, composeHash, osImageHash },
+    { chainId: context.chain.chainId, contract: context.chain.contract, proposer: context.chain.proposer, guardian: context.chain.guardian, dstackKms: context.chain.dstackKms, releaseDelaySeconds: context.chain.releaseDelaySeconds, composeHash, osImageHash },
     options,
   );
   return { result, json: chainCheckJson(result) as JsonObject };
