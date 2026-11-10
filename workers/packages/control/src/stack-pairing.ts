@@ -279,6 +279,11 @@ export const PAIR_REFUSALS = {
     status: 409,
     text: "This relay is not on phase 2 now, so Gray takes no guardian at pairing. Run init --pair again with the same code: it asks Gray's chain terms first.",
   },
+  // LANE_STACK_PHASE2_MIN_KIT: an older kit cannot finish a phase-2 delivery (its restart request fails its own check).
+  lane_stack_pairing_kit_outdated: {
+    status: 409,
+    text: "This gray-assistant is too old for phase 2: it cannot finish delivering your accounts to the VM. Update gray-assistant to the kit Gray publishes, then run init --pair again with the same code (it is not spent).",
+  },
   lane_stack_pairing_guardian_invalid: {
     status: 422,
     text: "The guardian part does not match Gray's chain terms (the contract address, the release or a signature). Run init --pair again with the same code; if it repeats, tell Gray.",

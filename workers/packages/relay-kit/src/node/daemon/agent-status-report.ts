@@ -28,7 +28,7 @@
 import { statSync } from "node:fs";
 import { stackInstanceAnswerSchema, type StackInstanceAnswer } from "@gray/control/stack-provision";
 import { get, isObject, parseStrict, toJsonString, type JsonObject } from "@gray/json";
-import { AGENT_STATUS_PATH, agentStatusChangeKey, signAgentStatus, type AgentLogin } from "../../daemon/agent-status.ts";
+import { AGENT_STATUS_PATH, agentStatusChangeKey, refreshGrayOf, signAgentStatus, type AgentLogin } from "../../daemon/agent-status.ts";
 import type { DaemonLog } from "../../daemon/types.ts";
 import { readPrivateFile } from "../files.ts";
 import { loginAgentView, type LoginRecord, type LoginSettings } from "../login/record.ts";
@@ -52,7 +52,7 @@ export const AGENT_STATUS_URGENT_MS = 10_000;
 const FIRST_RETRY_MS = 1000;
 const MAX_RETRY_MS = 600_000;
 
-/** One POST: Gray's status and up to 4 KiB of its answer. Rejects on a transport failure. */
+/** One POST: Gray's status and up to 128 KiB of its answer. Rejects on a transport failure. */
 export type AgentStatusPost = (url: string, body: string) => Promise<{ readonly status: number; readonly body: string }>;
 
 /** What the agent last reported, for `gray-assistant status` and `doctor` (the status snapshot's `agent_status`). */
@@ -84,6 +84,8 @@ export interface AgentStatusReporterOptions {
   readonly log: DaemonLog;
   /** P12: each well-formed `instance` of a 2xx answer, awaited before the send resolves (`RelayDaemon.onStackInstance`). */
   readonly onInstance?: (instance: StackInstanceAnswer) => Promise<void>;
+  /** The accounts whose Token refresh is `gray` (`refreshGrayOf`), from each 2xx answer that names them. */
+  readonly onRefreshGray?: (accountIds: ReadonlySet<string>) => void;
   /** A timer seam for tests; returns a cancel function. */
   readonly setTimer?: (run: () => void, ms: number) => () => void;
 }
@@ -108,7 +110,8 @@ const defaultPost: AgentStatusPost = async (url, body) => {
     signal: AbortSignal.timeout(20_000),
   });
   const text = await response.text().catch(() => "");
-  return { status: response.status, body: text.slice(0, 4096) };
+  // Room for `refresh_gray`'s account ids beside the instance.
+  return { status: response.status, body: text.slice(0, 128 * 1024) };
 };
 
 const defaultTimer = (run: () => void, ms: number): (() => void) => {
@@ -255,6 +258,12 @@ export function createAgentStatusReporter(options: AgentStatusReporterOptions): 
       failing = false;
       retryMs = FIRST_RETRY_MS;
       options.log({ level: "info", event: "agent_status_reported", recorded: recorded ?? false });
+      try {
+        const gray = refreshGrayOf(parseStrict(answer.body));
+        if (gray !== null) options.onRefreshGray?.(gray);
+      } catch {
+        // Not JSON: `instanceOf` below names nothing either.
+      }
       const named = instanceOf(answer.body);
       if (named === "malformed") {
         options.log({ level: "warn", event: "agent_instance_malformed" });

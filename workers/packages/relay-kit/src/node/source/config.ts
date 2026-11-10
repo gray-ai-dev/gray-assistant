@@ -44,7 +44,7 @@
  * token controls the relay's panel, and `accounts.json` holds the account credentials — so a file
  * another local account can read is refused in the daemon and in `credentials seal` alike.
  */
-import { RESOURCE_ID, VENDORS } from "@gray/relay-connector";
+import { RESOURCE_ID, VENDORS, type Credential } from "@gray/relay-connector";
 import { z } from "zod";
 import { RelayKitError } from "../../errors.ts";
 import { SOURCE_KINDS, type SourceAdapter } from "../../source/types.ts";
@@ -56,7 +56,7 @@ import {
   DEFAULT_LOGIN_SERVE_MARGIN_SECONDS,
   type LoginSettings,
 } from "../login/record.ts";
-import { readLoginRecord } from "../login/store.ts";
+import { markLoginHandedToVm, readLoginRecord, writeBackLoginToken } from "../login/store.ts";
 import type { ResolvedSourceConfig, SourceCommonConfig, SourceDeps, SourceSelection } from "./config-types.ts";
 import { checkHttpSource, type SourceCheckReport } from "./check.ts";
 import { cliproxyAdapter } from "./cliproxyapi.ts";
@@ -285,7 +285,16 @@ export function createSourceAdapter(config: ResolvedSourceConfig, deps: SourceDe
     case "file": {
       const dir = config.logins.dir;
       const readLogin = deps.readLogin ?? (dir === null ? undefined : (name: string) => readLoginRecord(dir, name));
-      return fileAdapter(config, { readAccountsFile, now, ...(readLogin === undefined ? {} : { readLogin }) });
+      const inVm = deps.refreshInVm;
+      const handOver =
+        dir === null || inVm === undefined
+          ? undefined
+          : {
+              inVm,
+              mark: (name: string) => markLoginHandedToVm(dir, name, Math.floor(now() / 1000)),
+              write: (name: string, credential: Credential) => writeBackLoginToken(dir, name, credential, Math.floor(now() / 1000)),
+            };
+      return fileAdapter(config, { readAccountsFile, now, ...(readLogin === undefined ? {} : { readLogin }), ...(handOver === undefined ? {} : { handOver }) });
     }
     case "http":
       return httpAdapter(config, { fetch: fetchImpl, readTokenFile, now });

@@ -225,7 +225,9 @@ export function createLoginRefresher(options: LoginRefresherOptions): LoginRefre
       return;
     }
     const record = await current(name, stored);
-    if (stored === null || record === null || record.failed !== null) return;
+    // A login handed to the VM (`handedToVmAt`) is refreshed by Gray's egress there: refreshing it here too would spend
+    // the refresh token the VM holds.
+    if (stored === null || record === null || record.failed !== null || record.handedToVmAt !== undefined) return;
     const now = nowSecs();
     if (!loginUsable(record, now, settings.serveMarginSeconds)) {
       const key = `${record.family}:${record.generation}`;

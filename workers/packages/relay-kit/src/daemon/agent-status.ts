@@ -64,7 +64,7 @@ import {
   type StackAgentUiMode,
 } from "@gray/control/stack-agent";
 import type { TunnelState } from "@gray/control/tunnel";
-import { toJsonString, type JsonObject } from "@gray/json";
+import { isObject, toJsonString, type JsonObject } from "@gray/json";
 import type { Vendor } from "@gray/relay-connector";
 import type { PullTokenBoot } from "./pull-token.ts";
 import type { DaemonParkedAccount, DaemonReplicaStatus, DaemonSourceAccount } from "./types.ts";
@@ -289,4 +289,15 @@ export function agentStatusChangeKey(status: JsonObject): string {
 /** The report body: the status and the relay key's signature over `stackAgentStatusMessage(status)`. */
 export async function signAgentStatus(status: JsonObject, seed: Uint8Array): Promise<JsonObject> {
   return { status, signature: bytesToLowerHex(await ed25519Sign(seed, stackAgentStatusMessage(status))) };
+}
+
+/**
+ * The answer's `refresh_gray`: the panel's account ids whose Token refresh is `gray` (egress refreshes them in the VM),
+ * whose relay login gray-assistant hands to the VM. Null when the answer has none (an older console) or it is not a
+ * list of panel ids.
+ */
+export function refreshGrayOf(answer: unknown): ReadonlySet<string> | null {
+  const value = isObject(answer as never) ? (answer as Record<string, unknown>)["refresh_gray"] : undefined;
+  if (!Array.isArray(value) || !value.every((id) => typeof id === "string" && STACK_ID_PATTERN.test(id))) return null;
+  return new Set(value as string[]);
 }

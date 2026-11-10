@@ -36,9 +36,10 @@
  *    `/v1/aci/relay-boot-box`, then the accounts to `/v1/aci/relay-credentials`, each pinned to the TLS key the VM
  *    attested (Gray's entry carries ciphertext only), and print the VM's receipts.
  * 5. **Restart** when the receipt says so (the empty slot, or another image): the relay-signed restart request (S53) to
- *    Gray, which the provisioner runs; the relay signs it, Gray only carries it out. Meanwhile the VM restarts (about
- *    95 s, S53): the entry routes nothing to it, and the panel shows it restarting. Unless `--no-wait`, the command then
- *    attests the VM again until it runs the designated image.
+ *    Gray, which the provisioner runs; the relay signs it, Gray only carries it out (`RESTART_WORDS`, measured
+ *    2026-11-10: a first delivery about 3 minutes, an image change about 4 when Gray boots a second VM, a plain restart
+ *    about 90 s), and the panel shows it. Unless `--no-wait`, the command then attests the VM again until it runs the
+ *    designated image.
  *
  * Exit codes: 0 done, 1 refused (an unattested VM, the contract, the VM's refusal, a restart Gray refused, a timeout),
  * 2 usage or I/O. stdout gets sentences and one JSON line; nothing secret is printed (the registry password, the
@@ -50,13 +51,13 @@ import { bytesToLowerHex, ed25519PublicKey, ed25519Sign } from "@gray/attest";
 import { stackInstanceAnswerSchema } from "@gray/control/stack-provision";
 import { get, isObject, parseStrict, parseStrictBytes, toJsonString, type Json, type JsonObject } from "@gray/json";
 import { isRelayDesignationClaim, type StackBootFacts } from "@gray/lane-verify";
-import { sealBootBoxDelivery, sealCredentialBundle, type CredentialBundle } from "@gray/relay-connector";
+import { openRefreshedAnswer, refreshedReplyKey, refreshedRequestValue, sealBootBoxDelivery, sealCredentialBundle, type CredentialBundle, type RefreshedToken } from "@gray/relay-connector";
 import { BOOT_BOX_DELIVERY_PATH, imageRegistry, type BootBox } from "@gray/relay-connector/boot-box";
 import { designationMessage, type Designation } from "@gray/relay-connector/vault";
 import type { Hex } from "viem";
 import type { ChainCheckResult } from "../chain/checks.ts";
 import type { ReleaseContentResult } from "../chain/release-compose.ts";
-import { AGENT_STATUS_PATH, agentStatusDocument, signAgentStatus } from "../daemon/agent-status.ts";
+import { AGENT_STATUS_PATH, agentStatusDocument, refreshGrayOf, signAgentStatus } from "../daemon/agent-status.ts";
 import { attestationMismatch } from "../daemon/stack-boot.ts";
 import { DaemonTransportError, type DaemonAttestResult, type DaemonFetch, type DaemonStackInstance } from "../daemon/types.ts";
 import { LANE_ENDPOINTS, RELAY_KIT_VERSION } from "../endpoints.ts";
@@ -78,7 +79,17 @@ export type DeliverAction = "deliver" | "accounts" | "registry" | "rollout" | "r
 
 /** The relay's own record of the designations it issued, beside the state file (0600, not secret). */
 export const DESIGNATION_STATE_FILE = "designation.json";
-/** How long a restart is waited for by default: one restart (~95 s, S53) and an image pull, with room. */
+/**
+ * What the commands say a restart takes, as measured on 2026-11-10: a first delivery's (Gray boots a second VM for the
+ * empty slot) 2 min 42 s, an image rollout's 3 min 44 s, a plain restart's about 90 s.
+ */
+const RESTART_WORDS = {
+  first: "about 3 minutes; it serves nothing until then",
+  image: "about 4 minutes when Gray boots a second VM, which takes over once it serves; about 90 s when Gray restarts this one, which serves nothing meanwhile",
+  restart: "about 90 s; the entry routes nothing to it meanwhile",
+} as const;
+
+/** How long a restart is waited for by default: a second VM's boot (~4 minutes measured) and an image pull, with room. */
 export const DELIVER_WAIT_DEFAULT_MS = 15 * 60_000;
 const DELIVER_WAIT_POLL_MS = 10_000;
 /** The largest answer the VM gives (a receipt, a refusal). */
@@ -113,13 +124,18 @@ export interface DeliverOptions {
   readonly chainCheck?: (composeHash: Hex | null, osImageHash: Hex | null) => Promise<ChainCheckResult>;
   /** P6: the check of the measured compose's published text (bare hex hash); by default from Gray's signed list. */
   readonly releaseContent?: (composeHash: string) => Promise<ReleaseContentResult>;
-  readonly readAccounts?: () => Promise<ReadAccounts>;
+  readonly readAccounts?: (extra: DeliverAccountsExtra) => Promise<ReadAccounts>;
   readonly registryPassword?: () => string;
   /**
    * The first delivery with `stack.instance: "gray"` and no adopted VM: Gray's answer naming the relay's lane instance
    * (`instance` of its answer to a signed agent status), by default posted to `stack.report_origin`.
    */
   readonly stackInstance?: () => Promise<unknown>;
+  /**
+   * The panel's accounts whose Token refresh is `gray` (`refresh_gray` of Gray's answer to a signed agent status), null
+   * when Gray names none (an older console). By default the same answer `stackInstance` reads, asked once.
+   */
+  readonly refreshGray?: () => Promise<ReadonlySet<string> | null>;
 }
 
 /** What `designation.json` holds: the highest seq issued and the last designation, with its signature. */
@@ -261,11 +277,12 @@ export function phase2Candidate(answer: unknown, relayId: string, chain: ChainCo
 }
 
 /**
- * Gray's answer naming the relay's lane instance: the console answers it to a signed agent status only (S45, P12), so
- * this posts one with nothing in it but the relay and this kit's version (a host-less relay runs no agent, so no
- * other status is overwritten; `accepted_compose` null: no release registry here).
+ * Gray's answer to a signed agent status (S45): the relay's lane instance (`instance`, P12) and the accounts set to `gray`
+ * (`refresh_gray`). The console answers them to a signed agent status only, so this posts one with nothing in it but the
+ * relay and this kit's version (a host-less relay runs no agent, so no other status is overwritten; a running agent's
+ * next status replaces it; `accepted_compose` null: no release registry here).
  */
-async function cliStackInstance(config: LoadedRelayConfig, seed: Uint8Array, nowMs: number): Promise<unknown> {
+async function cliAgentAnswer(config: LoadedRelayConfig, seed: Uint8Array, nowMs: number): Promise<unknown> {
   const stack = config.daemon.stack;
   if (stack === null) throw new RelayKitError("usage", "the config has no `stack` section");
   const { status } = agentStatusDocument({
@@ -288,7 +305,7 @@ async function cliStackInstance(config: LoadedRelayConfig, seed: Uint8Array, now
   }
   if (answer.status < 200 || answer.status > 299) throw new RelayKitError("io", `Gray refused the status that asks for the relay's VM (HTTP ${answer.status})`);
   try {
-    return get(parseStrict(answer.text), "instance");
+    return parseStrict(answer.text);
   } catch {
     throw new RelayKitError("io", "Gray's answer naming the relay's VM is not JSON");
   }
@@ -360,16 +377,49 @@ const CONTENT_CODES: Readonly<Record<string, string>> = {
   compose_refused: "compose_refused",
 };
 
-async function cliAccounts(config: LoadedRelayConfig, nowMs: number): Promise<ReadAccounts> {
+/** What a delivery learned before it reads the accounts (see `readAccountsOnce`). */
+export interface DeliverAccountsExtra {
+  readonly refreshGray: ReadonlySet<string> | null;
+  readonly refreshed: readonly RefreshedToken[] | "unavailable";
+}
+
+async function cliAccounts(config: LoadedRelayConfig, nowMs: number, extra: DeliverAccountsExtra): Promise<ReadAccounts> {
   const { createSourceAdapter } = await import("./source/config.ts");
   const { accountAliasesPath, createFileAccountAliasStore } = await import("./daemon/account-aliases-file.ts");
+  const { panelIdLookup } = await import("../daemon/account-aliases.ts");
   const { readAccountsOnce } = await import("./deliver-accounts.ts");
+  const aliases = createFileAccountAliasStore(accountAliasesPath(config.daemon.stateFile));
+  // A relay login serves only ChatGPT Codex accounts; an account new to the aliases has no panel id the panel could set.
+  const panelId = panelIdLookup((await aliases.read()) ?? []);
+  const gray = extra.refreshGray;
   return readAccountsOnce(config, {
-    adapter: createSourceAdapter(config.source),
-    aliases: createFileAccountAliasStore(accountAliasesPath(config.daemon.stateFile)),
+    adapter: createSourceAdapter(config.source, gray === null ? {} : { refreshInVm: (sourceId) => gray.has(panelId("chatgpt_codex", sourceId) ?? "") }),
+    aliases,
     nowMs,
     signal: AbortSignal.timeout(config.source.requestTimeoutMs),
+    refreshed: extra.refreshed,
   });
+}
+
+/**
+ * The tokens the VM's egress refreshed (`POST /v1/aci/relay-credentials/refreshed`, the daemon's write-back ask), or
+ * `unavailable` when the VM did not answer them. Nothing is acknowledged: the bundle this delivery seals replaces them.
+ */
+async function vmRefreshedTokens(
+  post: (path: string, body: JsonObject) => Promise<{ readonly status: number; readonly body: Uint8Array } | { readonly transport: string }>,
+  relayId: string,
+  seed: Uint8Array,
+  nowMs: number,
+): Promise<readonly RefreshedToken[] | "unavailable"> {
+  try {
+    const reply = await refreshedReplyKey();
+    const ask = await refreshedRequestValue({ relayId, signingKey: seed, replyPublicKey: reply.publicKey, acked: {}, issuedAt: Math.floor(nowMs / 1000) });
+    const answer = await post(LANE_ENDPOINTS.refreshed, ask);
+    if ("transport" in answer || answer.status !== 200) return "unavailable";
+    return await openRefreshedAnswer(parseStrictBytes(answer.body), reply.privateKey, relayId);
+  } catch {
+    return "unavailable";
+  }
 }
 
 const defaultPost: StackPost = async (url, body) => {
@@ -424,9 +474,12 @@ export async function deliverCommand(options: DeliverOptions): Promise<number> {
   // phase 1; a phase-2 boot asks for no token).
   let vm = adoptedPhase2Vm(config, options.chain);
   let candidate: DaemonStackInstance | null = null;
+  // Gray's answer to one signed agent status: the VM it deployed, and the accounts set to `gray`.
+  let agentAnswer: Promise<unknown> | null = null;
+  const agentAnswerOnce = (): Promise<unknown> => (agentAnswer ??= cliAgentAnswer(config, seed, io.now()));
   if (vm === null) {
     if (action !== "deliver") throw new RelayKitError("usage", "no stack VM adopted yet: `gray-assistant deliver` adopts the VM Gray deployed once its quote proves it");
-    candidate = phase2Candidate(await (options.stackInstance ?? (() => cliStackInstance(config, seed, io.now())))(), relayId, options.chain);
+    candidate = phase2Candidate(await (options.stackInstance ?? (async () => get((await agentAnswerOnce()) as Json, "instance")))(), relayId, options.chain);
     vm = { origin: candidate.laneOrigin, instance: { appId: candidate.appId, kmsCaPubkey: candidate.kmsCaPubkey } };
     io.stdout(`gray-assistant ${name}: Gray names app ${candidate.appId} at ${candidate.laneOrigin}; it is adopted once its quote proves it\n`);
   }
@@ -570,24 +623,6 @@ export async function deliverCommand(options: DeliverOptions): Promise<number> {
     box = { registry: { host, username: stack.registry.username, password, expiresAt: stack.registry.expiresAt }, designation, designationSig: signature };
   }
 
-  let accounts: ReadAccounts | null = null;
-  if (sendAccounts) {
-    accounts = await (options.readAccounts ?? (() => cliAccounts(config, io.now())))();
-    for (const skipped of accounts.skipped) {
-      io.stderr(`gray-assistant ${name}: left out a ${skipped.vendor} account${skipped.panelId === null ? "" : ` (${skipped.panelId})`}: ${skipped.reason}\n`);
-    }
-    if (accounts.accounts.length === 0 && accounts.listed > 0) {
-      // Nothing is sent. A first delivery would start the relay's image with no account, which serves nothing while the
-      // VM attests and every view says it runs (gray-prod-test-1, 2026-11-10: a login store that was not in the new
-      // workspace); a push to a VM that serves would replace the accounts it has with none.
-      return refuse(
-        "no_account_sealed",
-        `none of the source's ${accounts.listed} account(s) can be sealed (each is named above), so nothing was sent${boot.running === null ? "" : " and the VM keeps the accounts it has"}: put the source right (\`gray-assistant doctor\`, \`gray-assistant login status\`), then run the command again`,
-        { accounts_listed: BigInt(accounts.listed), left_out: accounts.skipped.map((skipped) => ({ vendor: skipped.vendor, account: skipped.panelId, reason: skipped.reason })) },
-      );
-    }
-  }
-
   // 4. Send, sealed to the attested boot, pinned to the TLS key it attested.
   const fetch = options.fetch ?? (await import("./daemon/fetch.ts")).createPinnedDaemonFetch({ maxResponseBytes: ANSWER_MAX_BYTES });
   const tunnel = tunnelOriginOf(vm.origin) !== null;
@@ -606,6 +641,33 @@ export async function deliverCommand(options: DeliverOptions): Promise<number> {
       return { transport: error instanceof DaemonTransportError || error instanceof RelayKitError ? error.code : "io" };
     }
   };
+  let accounts: ReadAccounts | null = null;
+  if (sendAccounts) {
+    // In-VM refresh: the accounts set to `gray` (their relay login is handed to the VM), and the tokens the VM's egress
+    // refreshed, written back before the source is read (a running VM only; the empty slot holds none).
+    let refreshGray: ReadonlySet<string> | null = null;
+    try {
+      refreshGray = await (options.refreshGray ?? (async () => refreshGrayOf(await agentAnswerOnce())))();
+    } catch {
+      io.stderr(`gray-assistant ${name}: Gray did not say which accounts are set to gray; no relay login is handed to the VM this time\n`);
+    }
+    const refreshed = boot.running === null ? [] : await vmRefreshedTokens(post, relayId, seed, io.now());
+    accounts = await (options.readAccounts ?? ((extra: DeliverAccountsExtra) => cliAccounts(config, io.now(), extra)))({ refreshGray, refreshed });
+    for (const skipped of accounts.skipped) {
+      io.stderr(`gray-assistant ${name}: left out a ${skipped.vendor} account${skipped.panelId === null ? "" : ` (${skipped.panelId})`}: ${skipped.reason}\n`);
+    }
+    if (accounts.accounts.length === 0 && accounts.listed > 0) {
+      // Nothing is sent. A first delivery would start the relay's image with no account, which serves nothing while the
+      // VM attests and every view says it runs (gray-prod-test-1, 2026-11-10: a login store that was not in the new
+      // workspace); a push to a VM that serves would replace the accounts it has with none.
+      return refuse(
+        "no_account_sealed",
+        `none of the source's ${accounts.listed} account(s) can be sealed (each is named above), so nothing was sent${boot.running === null ? "" : " and the VM keeps the accounts it has"}: put the source right (\`gray-assistant doctor\`, \`gray-assistant login status\`), then run the command again`,
+        { accounts_listed: BigInt(accounts.listed), left_out: accounts.skipped.map((skipped) => ({ vendor: skipped.vendor, account: skipped.panelId, reason: skipped.reason })) },
+      );
+    }
+  }
+
   const report = attested.checked.report;
   const nonce = attested.checked.file.nonce;
   const sealNowSecs = BigInt(Math.floor(io.now() / 1000));
@@ -721,7 +783,7 @@ export async function deliverCommand(options: DeliverOptions): Promise<number> {
     }
     return refuse(code ?? `http_${answer.status}`, `the VM keeps the boot box, but Gray refused the restart request (${answer.status}${code === null ? "" : ` ${code}`})`, { request_id: request.request_id });
   }
-  io.stdout(`gray-assistant ${name}: restart request ${request.request_id} recorded by Gray; the VM restarts onto ${box.designation.image} (about 95 s; the entry routes nothing to it meanwhile)\n`);
+  io.stdout(`gray-assistant ${name}: restart request ${request.request_id} recorded by Gray; the VM restarts onto ${box.designation.image} (${boot.running === null ? RESTART_WORDS.first : RESTART_WORDS.image})\n`);
   if (!options.wait) return done({ restart: "requested", request_id: request.request_id, waited: false });
 
   // 6. Wait for the VM to attest the designated image.
@@ -822,7 +884,7 @@ async function phase2Restart(
     const code = errorCodeOf(new TextEncoder().encode(answer.text));
     return refuse(code ?? `http_${answer.status}`, `Gray refused the restart request (${answer.status}${code === null ? "" : ` ${code}`})`, { request_id: request.request_id });
   }
-  io.stdout(`gray-assistant ${name}: restart request ${request.request_id} recorded by Gray; the VM restarts (about 95 s; the entry routes nothing to it meanwhile)\n`);
+  io.stdout(`gray-assistant ${name}: restart request ${request.request_id} recorded by Gray; the VM restarts (${RESTART_WORDS.restart})\n`);
   if (!options.wait) return done({ restart: "requested", request_id: request.request_id, waited: false });
   if (before === null) {
     io.stdout(`gray-assistant ${name}: the boot before the restart did not attest, so the new one cannot be told from it; \`gray-assistant doctor\` and the panel show where it stands\n`);

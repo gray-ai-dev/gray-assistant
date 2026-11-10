@@ -30,8 +30,8 @@ import { readControlView, setStackImageState } from "./control.ts";
 
 export const STACK_RESTART_REQUEST_PATH = "/v1/lane-stack/restart-requests";
 /**
- * How long `rollout` waits by default: a second VM's boot, its token, its attestation and sealing (or one restart, ~95 s
- * measured, where Gray restarts), with room for a slow image pull.
+ * How long `rollout` waits by default: a second VM's boot, its token, its attestation and sealing (3 min 44 s measured on
+ * 2026-11-10; or one restart, about 90 s, where Gray restarts), with room for a slow image pull.
  */
 export const STACK_WAIT_DEFAULT_MS = 15 * 60_000;
 const STACK_WAIT_POLL_MS = 5_000;

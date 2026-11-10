@@ -10,10 +10,15 @@
  * - its secret is read and held to the TEE's own format rule (`credentialParkReason`), its proxy to the connector's
  *   (`egressOf`); a per-account read failure skips that account, a source-wide one fails the read.
  *
+ * Tokens the VM's egress refreshed (`refreshed`, asked of the VM first) are written back to the source before its
+ * secrets are read: a full bundle replaces the VM's refreshed token, so sealing the source's older one would undo the
+ * refresh (OpenAI rotated its refresh token). When the VM could not be asked, a credential that carries a refresh token
+ * (one Gray refreshes in the VM) refuses the whole read.
+ *
  * A skipped account is named by its panel id when it has one, else only by its vendor (a source id may be an e-mail
  * address), with a closed reason. Nothing here prints or logs a secret.
  */
-import type { Account, Vendor } from "@gray/relay-connector";
+import type { Account, RefreshedToken, Vendor } from "@gray/relay-connector";
 import { RelayKitError } from "../errors.ts";
 import { newAccountAliases, panelIdLookup, type AccountAliasStore } from "../daemon/account-aliases.ts";
 import { egressOf, isPerAccountSourceError } from "../daemon/daemon.ts";
@@ -41,6 +46,8 @@ export interface ReadAccountsDeps {
   readonly aliases: AccountAliasStore;
   readonly nowMs: number;
   readonly signal: AbortSignal;
+  /** The tokens the VM's egress refreshed, by panel id; `unavailable` when the VM could not be asked. Absent: none. */
+  readonly refreshed?: readonly RefreshedToken[] | "unavailable";
 }
 
 /** Read the source once (see the module comment). Throws RelayKitError on a source-wide failure. */
@@ -75,6 +82,8 @@ export async function readAccountsOnce(config: LoadedRelayConfig, deps: ReadAcco
     }
     let read: SourceCredential;
     try {
+      const newer = deps.refreshed === "unavailable" ? undefined : deps.refreshed?.find((token) => token.account_id === id);
+      if (newer !== undefined && adapter.writeCredential !== undefined) await adapter.writeCredential(entry.account.sourceId, newer.credential, signal);
       read = await adapter.credential(entry.account.sourceId, signal);
     } catch (error) {
       if (isPerAccountSourceError(error)) {
@@ -82,6 +91,9 @@ export async function readAccountsOnce(config: LoadedRelayConfig, deps: ReadAcco
         continue;
       }
       throw error;
+    }
+    if (deps.refreshed === "unavailable" && read.credential.refresh_token !== undefined) {
+      throw new RelayKitError("io", `the VM's refreshed tokens could not be read, and ${id} is refreshed in the VM: sealing this host's copy would undo its refresh; nothing was sent, run the command again`);
     }
     const reason = credentialParkReason(entry.vendor, read.credential);
     if (reason !== null) {

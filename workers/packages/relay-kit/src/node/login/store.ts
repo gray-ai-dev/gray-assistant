@@ -19,7 +19,9 @@ import { RelayKitError } from "../../errors.ts";
 import { acquireControlLock, type ControlLockOptions } from "../control-lock.ts";
 import { writeAtomicPrivateFile } from "../daemon/atomic-file.ts";
 import { isGroupOrOtherReadable, readPrivateFile } from "../files.ts";
+import type { Credential } from "@gray/relay-connector";
 import { LOGIN_NAME, MAX_LOGIN_RECORD_BYTES, loginRecordText, parseLoginRecordText, type LoginRecord } from "./record.ts";
+import { refreshedRecord } from "./refresher.ts";
 
 /** Refuse a name that is not a plain file name under the logins directory. */
 export function assertLoginName(name: string): string {
@@ -92,4 +94,33 @@ export async function withLoginLock<T>(dir: string, name: string, body: () => T 
   } finally {
     lock.release();
   }
+}
+
+/**
+ * Mark the login handed to the relay's VM (`handed_to_vm_at`, `./record.ts`): its refresh token is sealed for an
+ * account whose Token refresh is `gray`, so the host refresher leaves it to the VM's egress from now on. A login
+ * already marked keeps its first mark; one never signed in is refused.
+ */
+export async function markLoginHandedToVm(dir: string, name: string, nowSecs: number): Promise<void> {
+  await withLoginLock(dir, name, () => {
+    const record = readLoginRecord(dir, name);
+    if (record === null) throw new RelayKitError("source_not_found", "login");
+    if (record.handedToVmAt === undefined) writeLoginRecord(dir, { ...record, handedToVmAt: nowSecs });
+  });
+}
+
+/**
+ * Take a token the VM's egress refreshed for a login handed to it (the daemon's or `deliver`'s write-back): the next
+ * generation of the same family, with the new access token and, when the issuer rotated it, the new refresh token. A
+ * token of another ChatGPT account, or one without a usable expiry, is refused and nothing is written.
+ */
+export async function writeBackLoginToken(dir: string, name: string, credential: Credential, nowSecs: number): Promise<void> {
+  await withLoginLock(dir, name, () => {
+    const record = readLoginRecord(dir, name);
+    if (record === null) throw new RelayKitError("source_not_found", "login");
+    const expiresIn = credential.expires_at === undefined ? null : Number(credential.expires_at) - nowSecs;
+    const next = refreshedRecord(record, { accessToken: credential.value, refreshToken: credential.refresh_token ?? null, expiresInSeconds: expiresIn }, nowSecs);
+    if (typeof next === "string") throw new RelayKitError("invalid_login", next);
+    writeLoginRecord(dir, { ...next, failed: null, failedAt: null, handedToVmAt: record.handedToVmAt ?? nowSecs });
+  });
 }

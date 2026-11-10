@@ -1364,22 +1364,26 @@ async function loginCommand(args: ParsedArgs, io: CliIo): Promise<number> {
         if (record === null) continue;
         const usable = loginUsable(record, nowSecs, logins.serveMarginSeconds);
         const due = refreshDueAtSeconds(record, logins.refreshLeadSeconds);
+        // Handed to the VM: Gray's egress refreshes it there, and this host's copy is only as new as the last write-back.
+        const inVm = record.handedToVmAt !== undefined && record.failed === null;
         row = {
           login: name,
-          state: record.failed !== null ? "failed" : usable ? "ok" : "expired",
+          state: record.failed !== null ? "failed" : inVm ? "refreshed_in_vm" : usable ? "ok" : "expired",
           failed: record.failed,
+          handed_to_vm_at: record.handedToVmAt === undefined ? null : BigInt(record.handedToVmAt),
           access_expires_at: BigInt(record.accessExpiresAt),
           refreshed_at: record.refreshedAt === null ? null : BigInt(record.refreshedAt),
           next_refresh_at: due === null ? null : BigInt(due),
           failures: BigInt(record.failures),
         };
         // A failed login can still be usable (`unsupported_region` serves its access token until it expires).
-        if (!usable || record.failed !== null) healthy = false;
+        if ((!usable && !inVm) || record.failed !== null) healthy = false;
       } catch (error) {
         healthy = false;
         row = { login: name, state: "unreadable", code: error instanceof RelayKitError ? error.code : "io" };
       }
-      io.stdout(`login ${name}: ${String(row["state"])}${row["failed"] === null || row["failed"] === undefined ? "" : ` (${String(row["failed"])}; run gray-assistant login codex --name ${name} --force)`}\n`);
+      const vmNote = row["state"] === "refreshed_in_vm" ? " (its Token refresh is gray: Gray's egress refreshes it in the VM, this host no longer does; to refresh it here again set the account to source and run gray-assistant login codex --name " + name + " --force)" : "";
+      io.stdout(`login ${name}: ${String(row["state"])}${vmNote}${row["failed"] === null || row["failed"] === undefined ? "" : ` (${String(row["failed"])}; run gray-assistant login codex --name ${name} --force)`}\n`);
       rows.push(row);
     }
     printJson(io, { command: "login status", relay_id: logins.relayId, logins_dir: logins.dir, logins: rows });

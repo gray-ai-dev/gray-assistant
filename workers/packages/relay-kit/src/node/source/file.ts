@@ -23,6 +23,11 @@
  * family, generation and failure, so every rotation is pushed. While the login is missing, broken,
  * failed, or within `logins.serve_margin` of its access token's expiry, the account is `disabled`
  * and `credential` refuses it (`source_not_found`), so an expired token is never sealed or picked.
+ *
+ * In-VM refresh (`FileAdapterDeps.handOver`): a login account whose Token refresh in Gray's panel is `gray`, or whose
+ * login was handed to the VM before, is read with the login's `refresh_token`, and the login is marked handed over
+ * (`../login/record.ts` `handed_to_vm_at`) before the token leaves this process, so this host stops refreshing it.
+ * `writeCredential` takes the tokens the VM's egress refreshed back into the login record.
  */
 import { jcsBytes, sha256BareHex } from "@gray/attest";
 import { parseStrict, type Json } from "@gray/json";
@@ -114,6 +119,8 @@ export interface ParsedAccountsFile {
   readonly relayId: string;
   readonly accounts: readonly SourceAccount[];
   credentialOf(sourceId: string): SourceCredential | null;
+  /** The login an `oauth_login` account names, null for any other account. */
+  loginOf(sourceId: string): LoginEntry | null;
 }
 
 export interface ParseAccountsOptions {
@@ -127,6 +134,16 @@ export interface ParseAccountsOptions {
   readonly nowMs?: number;
   /** `logins.serve_margin`: an access token this close to its expiry is not served. */
   readonly loginServeMarginSeconds?: number;
+  /** Whether the account's Token refresh is `gray` (`FileAdapterDeps.handOver.inVm`); absent: none is. */
+  readonly inVm?: (sourceId: string) => boolean;
+}
+
+/** A login account's login and refresh token, for `credential` to seal with the access token when it is refreshed in the VM. */
+interface LoginEntry {
+  readonly login: string;
+  readonly refreshToken: string | null;
+  /** The account's Token refresh is `gray`, or the login was handed to the VM before. */
+  readonly inVm: boolean;
 }
 
 /** What one login-backed entry resolves to: its usable credential (or none) and its mark. */
@@ -134,23 +151,25 @@ interface LoginResolution {
   readonly credential: Credential | null;
   readonly expiresAtMs: number | undefined;
   readonly mark: string;
+  readonly record: LoginRecord | null;
 }
 
 function resolveLogin(name: string, options: ParseAccountsOptions): LoginResolution {
-  if (options.readLogin === undefined) return { credential: null, expiresAtMs: undefined, mark: "unconfigured" };
+  if (options.readLogin === undefined) return { credential: null, expiresAtMs: undefined, mark: "unconfigured", record: null };
   let record: LoginRecord | null;
   try {
     record = options.readLogin(name);
   } catch {
-    return { credential: null, expiresAtMs: undefined, mark: "unreadable" };
+    return { credential: null, expiresAtMs: undefined, mark: "unreadable", record: null };
   }
-  if (record === null) return { credential: null, expiresAtMs: undefined, mark: "missing" };
+  if (record === null) return { credential: null, expiresAtMs: undefined, mark: "missing", record: null };
   const nowSecs = Math.floor((options.nowMs ?? 0) / 1000);
   const usable = loginUsable(record, nowSecs, options.loginServeMarginSeconds ?? 0);
   return {
     credential: usable ? { type: "oauth_access_token", value: record.accessToken, expires_at: BigInt(record.accessExpiresAt) } : null,
     expiresAtMs: record.accessExpiresAt * 1000,
     mark: loginMark(record),
+    record,
   };
 }
 
@@ -180,6 +199,7 @@ export function parseAccountsSourceValue(value: unknown, options: ParseAccountsO
     throw new RelayKitError("source_shape_changed", "accounts");
   }
   const credentials = new Map<string, SourceCredential>();
+  const logins = new Map<string, LoginEntry>();
   const accounts: SourceAccount[] = [];
   const seen = new Set<string>();
   for (let index = 0; index < parsed.data.accounts.length; index += 1) {
@@ -204,7 +224,10 @@ export function parseAccountsSourceValue(value: unknown, options: ParseAccountsO
       credential = login.credential;
       expires = login.expiresAtMs;
       if (credential === null) status = "disabled";
-      changeMark = sha256BareHex(jcsBytes({ entry: canonicalValue(raw), login: login.mark }));
+      const inVm = login.record?.handedToVmAt !== undefined || options.inVm?.(data.account_id) === true;
+      logins.set(data.account_id, { login: data.credential.login, refreshToken: login.record?.refreshToken ?? null, inVm });
+      // The mark moves when the account is set to `gray`, so the next poll seals it again with its refresh token.
+      changeMark = sha256BareHex(jcsBytes({ entry: canonicalValue(raw), login: login.mark, ...(inVm ? { in_vm: true } : {}) }));
     } else if (data.credential.type === "password") {
       if (credentialClass(vendor, "password") === null) throw new RelayKitError("source_shape_changed", `accounts.${index}.credential.type`);
       const secret = data.credential.totp_secret === undefined ? undefined : normalizeTotpSecret(data.credential.totp_secret);
@@ -252,6 +275,9 @@ export function parseAccountsSourceValue(value: unknown, options: ParseAccountsO
     accounts,
     credentialOf(sourceId: string): SourceCredential | null {
       return credentials.get(sourceId) ?? null;
+    },
+    loginOf(sourceId: string): LoginEntry | null {
+      return logins.get(sourceId) ?? null;
     },
   };
 }
@@ -313,6 +339,16 @@ export interface FileAdapterDeps {
   /** Reads a relay login record; see `ParseAccountsOptions.readLogin`. */
   readonly readLogin?: (name: string) => LoginRecord | null;
   readonly now?: () => number;
+  /**
+   * In-VM refresh of relay logins: `inVm` says whether an account's Token refresh in Gray's panel is `gray`; `mark`
+   * records that a login's refresh token goes to the VM (under the login's lock); `write` takes a token the VM's egress
+   * refreshed into the login record. Absent: no login account is refreshed in the VM, and nothing is written back.
+   */
+  readonly handOver?: {
+    readonly inVm: (sourceId: string) => boolean;
+    readonly mark: (login: string) => Promise<void>;
+    readonly write: (login: string, credential: Credential) => Promise<void>;
+  };
 }
 
 /** The `file` adapter. `refresh` is always `unknown`: the file does not say who refreshes it. */
@@ -324,7 +360,9 @@ export function fileAdapter(config: SourceFileConfig, deps: FileAdapterDeps): So
       ...(deps.readLogin === undefined ? {} : { readLogin: deps.readLogin }),
       nowMs: now(),
       loginServeMarginSeconds: config.logins.serveMarginSeconds,
+      ...(deps.handOver === undefined ? {} : { inVm: deps.handOver.inVm }),
     });
+  const handOver = deps.handOver;
   return {
     kind: "file",
     async probe(signal: AbortSignal): Promise<{ software: string; version: string | null; credentialReadable: boolean }> {
@@ -341,8 +379,23 @@ export function fileAdapter(config: SourceFileConfig, deps: FileAdapterDeps): So
       const parsed = parse();
       const credential = parsed.credentialOf(sourceId);
       if (credential === null) throw new RelayKitError("source_not_found", "credential");
-      return credential;
+      const login = parsed.loginOf(sourceId);
+      if (handOver === undefined || login === null || !login.inVm || login.refreshToken === null) return credential;
+      // Marked before the refresh token leaves this process: from here on only the VM's egress refreshes the login.
+      await handOver.mark(login.login);
+      return { ...credential, credential: { ...credential.credential, refresh_token: login.refreshToken } };
     },
+    ...(handOver === undefined
+      ? {}
+      : {
+          async writeCredential(sourceId: string, credential: Credential, signal: AbortSignal): Promise<void> {
+            throwIfAborted(signal);
+            const login = parse().loginOf(sourceId);
+            // Only a relay login takes a token back; the other entries' tokens are the relay's own to write.
+            if (login === null || credential.type !== "oauth_access_token") throw new RelayKitError("source_not_found", "credential");
+            await handOver.write(login.login, credential);
+          },
+        }),
   };
 }
 

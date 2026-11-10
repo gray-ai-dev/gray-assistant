@@ -776,6 +776,12 @@ export const STEP_FAILURE_WORDS: Readonly<Record<string, FailureWords>> = {
   // docs/design/relay-outbound-only.md decision R10: a VM of this release has no public address, and only a gray-assistant
   // with the tunnel transport reaches it; an older one could not renew the VM's lease and its accounts would stop.
   kit_outdated: kitOutdatedWords(null, null),
+  // LANE_STACK_PHASE2_MIN_KIT: the kit the relay paired with (or reports) cannot finish a phase-2 delivery.
+  phase2_kit_outdated: {
+    title: "Your gray-assistant is too old for phase 2.",
+    fix: "It cannot finish delivering your accounts to a phase-2 VM. Update gray-assistant to the kit Gray publishes, pair it again with a new code from the relay's Integration page, then Deploy.",
+    side: "relay",
+  },
   // Phase 2 (docs/design/relay-no-always-on-host.md 13.11 P5a-2): Deploy's `contract` step on Base.
   chain_unconfigured: { title: "Gray cannot deploy relay contracts in this environment yet.", fix: "Gray's operators have been told; nothing was deployed. Retry later.", side: "gray" },
   chain_unavailable: { title: "Base did not answer Gray's requests.", fix: "Retry in a few minutes; a step done before is not repeated.", side: "gray" },
@@ -869,6 +875,7 @@ export const RELAY_ALERT_WORDS: Readonly<Record<RelayAlertKind, { readonly title
   container_crash_loop: { title: "A container in your relay VM keeps restarting", resolved: "The containers in your relay VM are running" },
   account_health: { title: "Accounts in your relay need attention", resolved: "Your relay's accounts are healthy again" },
   lease_expiring: { title: "Your VM's credential lease hasn't been renewed", resolved: "gray-assistant renewed your VM's credential lease" },
+  relay_failing: { title: "Most requests to your relay are failing", resolved: "Requests to your relay are completing again" },
   relay_ejected: { title: "Gray took your relay out of routing", resolved: "Gray put your relay back into routing" },
   relay_violation: { title: "Gray found your relay changing a request or an answer", resolved: "Gray closed its report of a change by your relay" },
   // Phase 2's release notices (P5b-2): told once each, never resolved; `resolved` is not sent.

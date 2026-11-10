@@ -304,8 +304,16 @@ export async function startRelay(options: RunRelayOptions): Promise<RunningRelay
   // The source's clock is the daemon's wall clock: a login's serve margin and a `limited` account's
   // end are judged at the same instant the daemon seals and picks. A login is read through the
   // refresher, so a rotated token whose write is still failing is served from its memory.
+  // In-VM refresh: the panel's accounts set to `gray`, as Gray's last answer to the agent status named them; a relay
+  // login account among them is handed to the VM. The daemon is made below, so its panel ids are reached through this.
+  let refreshGray: ReadonlySet<string> = new Set();
+  let panelIdOf: ((sourceId: string) => string | null) | null = null;
   const source = createSourceAdapter(config.source, {
     now: () => options.io.now(),
+    refreshInVm: (sourceId) => {
+      const id = panelIdOf?.(sourceId) ?? null;
+      return id !== null && refreshGray.has(id);
+    },
     ...(refresher === null || loginsDir === null ? {} : { readLogin: (name: string) => refresher.view(name, readLoginRecord(loginsDir, name)) }),
   });
   const pinned = createPinnedDaemonFetch({ ...(options.ca === undefined ? {} : { ca: options.ca }) });
@@ -437,7 +445,12 @@ export async function startRelay(options: RunRelayOptions): Promise<RunningRelay
           },
           log: (event) => logLine(options.io, event),
           onInstance: (instance) => daemon.onStackInstance(instance),
+          onRefreshGray: (ids) => {
+            refreshGray = ids;
+          },
         });
+  // A relay login serves only ChatGPT Codex accounts.
+  panelIdOf = (sourceId) => daemon.panelAccountId("chatgpt_codex", sourceId);
   const pullToken =
     stack === null || registryPassword === null || reporter === null || writeIssue === null
       ? null

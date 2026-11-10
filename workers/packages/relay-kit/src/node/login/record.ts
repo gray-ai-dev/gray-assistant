@@ -14,6 +14,11 @@
  *  "failures":0,"next_attempt_at":null,"failed":null,"failed_at":null}
  * ```
  *
+ * `handed_to_vm_at` (optional, unix seconds) says the login's refresh token was sealed to the relay's VM for an
+ * account whose Token refresh is `gray`: Gray's egress refreshes it there from then on, so this host never refreshes it
+ * again (OpenAI rotates a refresh token on use; two refreshers break the login). Its tokens here are updated only from
+ * the VM's write-back (`../source/file.ts`); a new sign-in clears the mark.
+ *
  * `family` and `generation` are the record's identity: a sign-in starts a new family at generation
  * 1, every rotation adds one. A writer re-reads the record under the login's lock and writes only if
  * both are still what it started from, so a refresh that raced a new sign-in never overwrites it
@@ -73,6 +78,7 @@ const recordSchema = z
     next_attempt_at: unixSeconds.nullable(),
     failed: z.enum(LOGIN_FAILURES).nullable(),
     failed_at: unixSeconds.nullable(),
+    handed_to_vm_at: unixSeconds.optional(),
   })
   .strict();
 
@@ -94,6 +100,8 @@ export interface LoginRecord {
   readonly nextAttemptAt: number | null;
   readonly failed: LoginFailure | null;
   readonly failedAt: number | null;
+  /** When the refresh token was sealed to the VM for a `gray` account; absent while this host refreshes the login. */
+  readonly handedToVmAt?: number;
 }
 
 /** Parse a record's text. Errors name a member, never a value (the record holds two tokens). */
@@ -127,6 +135,7 @@ export function parseLoginRecordText(text: string): LoginRecord {
     nextAttemptAt: data.next_attempt_at,
     failed: data.failed,
     failedAt: data.failed_at,
+    ...(data.handed_to_vm_at === undefined ? {} : { handedToVmAt: data.handed_to_vm_at }),
   };
 }
 
@@ -150,6 +159,7 @@ export function loginRecordText(record: LoginRecord): string {
     next_attempt_at: record.nextAttemptAt === null ? null : BigInt(record.nextAttemptAt),
     failed: record.failed,
     failed_at: record.failedAt === null ? null : BigInt(record.failedAt),
+    ...(record.handedToVmAt === undefined ? {} : { handed_to_vm_at: BigInt(record.handedToVmAt) }),
   };
   return `${toJsonString(value)}\n`;
 }
@@ -201,10 +211,11 @@ export function loginUsable(record: LoginRecord, nowSecs: number, serveMarginSec
 /**
  * When the next refresh is due: `refreshLeadSeconds` before the access token expires, but never
  * earlier than half the token's life (from the last refresh or the sign-in), and never before the
- * backoff's `next_attempt_at`. Null for a failed login, which waits for a new sign-in.
+ * backoff's `next_attempt_at`. Null for a failed login, which waits for a new sign-in, and for one handed to the VM,
+ * which egress refreshes there.
  */
 export function refreshDueAtSeconds(record: LoginRecord, refreshLeadSeconds: number): number | null {
-  if (record.failed !== null) return null;
+  if (record.failed !== null || record.handedToVmAt !== undefined) return null;
   const issuedAt = record.refreshedAt ?? record.signedInAt;
   const lifetime = Math.max(0, record.accessExpiresAt - issuedAt);
   const lead = Math.min(refreshLeadSeconds, Math.floor(lifetime / 2));
@@ -234,6 +245,8 @@ export function loginAgentView(
   const state =
     record.failed !== null
       ? "failed"
+      : record.handedToVmAt !== undefined
+        ? "ok" // egress refreshes it in the VM; this host's copy expiring says nothing about the account
       : !loginUsable(record, nowSecs, settings.serveMarginSeconds)
         ? "expired"
         : due !== null && nowSecs >= due && record.failures > 0
