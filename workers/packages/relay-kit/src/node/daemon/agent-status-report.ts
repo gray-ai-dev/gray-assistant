@@ -21,20 +21,11 @@
  *   `@gray/control/stack-provision` `stackInstanceAnswerSchema`): it is handed to `onInstance` (the daemon adopts it
  *   only once a boot's quote proves it) before `send` resolves, and the last one is kept in `state()`. A malformed one
  *   is ignored with `agent_instance_malformed`; an older console's answer has none.
- *
- * `createAgentLoginReader` reads the relay's logins for the status: the records in the logins directory (as `doctor`
- * lists them) through the refresher's view, and which accounts of `accounts.json` name each.
  */
-import { statSync } from "node:fs";
 import { stackInstanceAnswerSchema, type StackInstanceAnswer } from "@gray/control/stack-provision";
 import { get, isObject, parseStrict, toJsonString, type JsonObject } from "@gray/json";
-import { AGENT_STATUS_PATH, agentStatusChangeKey, refreshGrayOf, signAgentStatus, type AgentLogin } from "../../daemon/agent-status.ts";
+import { AGENT_STATUS_PATH, agentStatusChangeKey, signAgentStatus } from "../../daemon/agent-status.ts";
 import type { DaemonLog } from "../../daemon/types.ts";
-import { readPrivateFile } from "../files.ts";
-import { loginAgentView, type LoginRecord, type LoginSettings } from "../login/record.ts";
-import { listLoginNames, readLoginRecord } from "../login/store.ts";
-import { loginAccountIds } from "../source/file.ts";
-import { MAX_SOURCE_FILE_BYTES } from "../source/limits.ts";
 
 /** S45: a change is sent at most once a minute, and a status at least every 15 minutes. */
 export const AGENT_STATUS_MIN_INTERVAL_MS = 60_000;
@@ -84,8 +75,6 @@ export interface AgentStatusReporterOptions {
   readonly log: DaemonLog;
   /** P12: each well-formed `instance` of a 2xx answer, awaited before the send resolves (`RelayDaemon.onStackInstance`). */
   readonly onInstance?: (instance: StackInstanceAnswer) => Promise<void>;
-  /** The accounts whose Token refresh is `gray` (`refreshGrayOf`), from each 2xx answer that names them. */
-  readonly onRefreshGray?: (accountIds: ReadonlySet<string>) => void;
   /** A timer seam for tests; returns a cancel function. */
   readonly setTimer?: (run: () => void, ms: number) => () => void;
 }
@@ -110,7 +99,6 @@ const defaultPost: AgentStatusPost = async (url, body) => {
     signal: AbortSignal.timeout(20_000),
   });
   const text = await response.text().catch(() => "");
-  // Room for `refresh_gray`'s account ids beside the instance.
   return { status: response.status, body: text.slice(0, 128 * 1024) };
 };
 
@@ -258,12 +246,6 @@ export function createAgentStatusReporter(options: AgentStatusReporterOptions): 
       failing = false;
       retryMs = FIRST_RETRY_MS;
       options.log({ level: "info", event: "agent_status_reported", recorded: recorded ?? false });
-      try {
-        const gray = refreshGrayOf(parseStrict(answer.body));
-        if (gray !== null) options.onRefreshGray?.(gray);
-      } catch {
-        // Not JSON: `instanceOf` below names nothing either.
-      }
       const named = instanceOf(answer.body);
       if (named === "malformed") {
         options.log({ level: "warn", event: "agent_instance_malformed" });
@@ -372,56 +354,4 @@ export function agentStatusVerdict(value: JsonObject | null, nowMs: number): { r
   if (nowMs - accepted > AGENT_STATUS_CURRENT_MS) return { status: "fail", message: `${taken}, longer than a heartbeat (15 min); is gray-assistant run running?` };
   const recorded = value === null ? null : get(value, "recorded");
   return { status: "ok", message: `reported; ${taken}${recorded === false ? " (it kept a newer one)" : ""}` };
-}
-
-/**
- * The relay's logins for the status: each record in `loginsDir` (sorted, as `doctor` lists them) through `view` (the
- * refresher's, so a rotation it could not write yet is what is reported), its state at `nowMs`
- * (`loginAgentView`), and the accounts of `accountsPath` that name it. `accounts.json` is read again only when its
- * size or time changed. A record that cannot be read is `unreadable`; one that went away meanwhile is left out.
- */
-export function createAgentLoginReader(options: {
-  readonly loginsDir: string;
-  readonly accountsPath: string;
-  readonly settings: Pick<LoginSettings, "refreshLeadSeconds" | "serveMarginSeconds">;
-  readonly view?: (name: string, stored: LoginRecord | null) => LoginRecord | null;
-}): (nowMs: number) => AgentLogin[] {
-  let cached: { readonly key: string; readonly ids: Map<string, string[]> } | null = null;
-  const accounts = (): Map<string, string[]> => {
-    let key: string;
-    try {
-      const stat = statSync(options.accountsPath);
-      key = `${stat.ino}:${stat.size}:${stat.mtimeMs}`;
-    } catch {
-      return new Map();
-    }
-    if (cached?.key === key) return cached.ids;
-    let ids = new Map<string, string[]>();
-    try {
-      ids = loginAccountIds(parseStrict(readPrivateFile(options.accountsPath, "source accounts file", MAX_SOURCE_FILE_BYTES)));
-    } catch {
-      // The source's own read reports a broken file; the logins are still reported, with no accounts.
-    }
-    cached = { key, ids };
-    return ids;
-  };
-  return (nowMs) => {
-    const ids = accounts();
-    const nowSecs = Math.floor(nowMs / 1000);
-    const out: AgentLogin[] = [];
-    for (const name of listLoginNames(options.loginsDir)) {
-      const accountIds = ids.get(name) ?? [];
-      let record: LoginRecord | null;
-      try {
-        const stored = readLoginRecord(options.loginsDir, name);
-        record = options.view === undefined ? stored : options.view(name, stored);
-      } catch {
-        out.push({ login: name, state: "unreadable", failed: null, accessExpiresAtS: null, refreshedAtS: null, nextRefreshAtS: null, failures: null, accountIds });
-        continue;
-      }
-      if (record === null) continue;
-      out.push({ login: name, ...loginAgentView(record, nowSecs, options.settings), accountIds });
-    }
-    return out;
-  };
 }

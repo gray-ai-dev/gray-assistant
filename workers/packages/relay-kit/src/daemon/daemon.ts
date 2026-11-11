@@ -29,9 +29,6 @@ import {
   SCHEDULER_MAX_SKEW_MS,
   egressSchema,
   hexBytes,
-  openRefreshedAnswer,
-  refreshedReplyKey,
-  refreshedRequestValue,
   type Credential,
   type CredentialBundle,
   type CredentialRevoke,
@@ -259,12 +256,6 @@ class RelayDaemonImpl implements RelayDaemon {
   /** The canonical text last read from `control.json`, so an unchanged file is not re-applied. */
   #lastControlText: string | null;
   #planned = new Map<string, PlannedAccount>();
-  /**
-   * The write-back of in-VM refresh (docs/relay-changes-v2.md §6): per replica origin, the highest token `seq`
-   * written to the source, by lane account id; and when the last round ran (monotonic).
-   */
-  readonly #writtenBack = new Map<string, Map<string, number>>();
-  #writeBackLastMono = Number.NEGATIVE_INFINITY;
   /** Accounts refused on the relay-stack origin (`#laneAccountId`), by lane id, with the change mark last logged. */
   readonly #stackRefused = new Map<string, string>();
   #sourceHealthy = false;
@@ -688,7 +679,7 @@ class RelayDaemonImpl implements RelayDaemon {
       parked: this.#parked.list(),
       sources: this.#sourceHealthy
         ? [...this.#planned.values()]
-            .map((planned) => ({ sourceId: planned.account.sourceId, vendor: planned.vendor, credentialType: planned.credentialType, login: planned.account.login ?? null }))
+            .map((planned) => ({ sourceId: planned.account.sourceId, vendor: planned.vendor, credentialType: planned.credentialType }))
             .sort((left, right) => (left.sourceId < right.sourceId ? -1 : left.sourceId > right.sourceId ? 1 : 0))
         : null,
       releases: this.#releases.status(atMs),
@@ -770,53 +761,6 @@ class RelayDaemonImpl implements RelayDaemon {
         })),
     );
     this.#refreshKeys();
-    await this.#writeBackRefreshed();
-  }
-
-  /**
-   * In-VM refresh's write-back (docs/relay-changes-v2.md §6): once per source poll, ask each serving replica for the
-   * tokens egress refreshed (signed with the relay key, answered sealed to a fresh reply key), write each to the
-   * account source's `PUT …/credential`, and acknowledge it in the next ask. The source then moves the account's
-   * change mark, and the next poll seals the same token as a newer version, which replaces egress's in the VM. A
-   * source without the route writes nothing back; tokens stay held in the VM until it can.
-   */
-  async #writeBackRefreshed(): Promise<void> {
-    const write = this.#options.source.writeCredential?.bind(this.#options.source);
-    const mono = this.#options.clock.monoMs();
-    if (write === undefined || mono - this.#writeBackLastMono < this.#config.sourcePollMs) return;
-    this.#writeBackLastMono = mono;
-    const wall = this.#options.clock.wallMs();
-    for (const replica of this.#replicas.values()) {
-      if (replica.retired || !this.#isUsableServing(replica, wall)) continue;
-      const acked = this.#writtenBack.get(replica.origin) ?? new Map<string, number>();
-      this.#writtenBack.set(replica.origin, acked);
-      try {
-        const reply = await refreshedReplyKey();
-        const ask = await refreshedRequestValue({
-          relayId: this.#config.relayId,
-          signingKey: this.#options.signingKey,
-          replyPublicKey: reply.publicKey,
-          acked: Object.fromEntries(acked),
-          issuedAt: Math.floor(wall / 1000),
-        });
-        const response = await this.#post(replica, LANE_ENDPOINTS.refreshed, toJsonString(ask));
-        if (response.status !== 200) {
-          this.#log({ level: "warn", event: "write_back_refused", origin: replica.origin, status: response.status });
-          continue;
-        }
-        const answer = decodeJson(response.body);
-        if (answer === null) throw new RelayKitError("source_bad_response", "refreshed");
-        for (const token of await openRefreshedAnswer(answer, reply.privateKey, this.#config.relayId)) {
-          const planned = this.#planned.get(token.account_id);
-          if (planned === undefined || planned.credentialType !== "oauth_access_token") continue;
-          await write(planned.account.sourceId, token.credential, this.#sourceSignal());
-          acked.set(token.account_id, token.seq);
-          this.#log({ level: "info", event: "credential_written_back", account_id: token.account_id });
-        }
-      } catch (error) {
-        this.#log({ level: "warn", event: "write_back_failed", origin: replica.origin, code: this.#errorCode(error) });
-      }
-    }
   }
 
   async #supervise(replica: ReplicaRuntime): Promise<void> {

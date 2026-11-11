@@ -7,7 +7,7 @@
  * written only when the whole new document passes the same validation `run` applies (`parseRelayConfigText`): a value
  * the agent would refuse never reaches the file. The new text goes to a temporary file in the same directory with the
  * old file's mode (and owner, when running as root), then replaces it by rename. Nothing prints the value: a member
- * such as `source.logins.proxy` can hold a password.
+ * such as `source.url` can hold a secret.
  *
  * The agent reads its config when it starts: the change takes effect when the agent is restarted.
  */
@@ -25,7 +25,7 @@ const MAX_SEGMENTS = 8;
 export function parseMemberPath(text: string): JSONPath {
   const segments = text.split(".");
   if (segments.length === 0 || segments.length > MAX_SEGMENTS || segments.some((segment) => !SEGMENT.test(segment))) {
-    throw new RelayKitError("usage", "the member is a path of names joined by dots, e.g. source.logins.proxy");
+    throw new RelayKitError("usage", "the member is a path of names joined by dots, e.g. scheduler.admin_token_file");
   }
   return segments.map((segment) => (/^(0|[1-9][0-9]{0,5})$/u.test(segment) ? Number(segment) : segment));
 }

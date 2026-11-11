@@ -54,7 +54,6 @@ const NEXT_STEPS: Readonly<Record<string, string>> = {
   stack_account: "Give this account its account ID from Gray's panel in your source.",
   lane_registration: "Ask Gray to check this relay's registration; gray-assistant tries again every 5 minutes.",
   agent_status: "Do what the line names: register the relay key, create the relay stack, sync the clock, or start gray-assistant run.",
-  login: "Sign the login in again on the Logins page. If it keeps expiring, check this machine's HTTPS access to auth.openai.com.",
 };
 
 export function nextStepFor(line: Pick<DoctorLine, "id" | "status">): string | null {

@@ -14,6 +14,7 @@
  * GET {url}/accounts/{id}/credential
  * Authorization: Bearer <token_file>
  * -> {"type":"oauth_access_token","value":"sk-ant-oat01-…","expires_at_ms":1790003600000,"egress_password":"…"}
+ *    or {"type":"sign_in"} for an account the relay's software signs in inside the VM (no token)
  * ```
  *
  * The list is metadata only and is read on every poll; the credential answer is the one secret, read only when the
@@ -102,7 +103,20 @@ const credentialSchema = z
   .refine((c) => c.refresh_token === undefined || c.type === "oauth_access_token", { message: "only an access token has a refresh token", path: ["refresh_token"] })
   .refine((c) => (c.type === "password") === (c.username !== undefined), { message: "a password, and only a password, has a username", path: ["username"] })
   .refine((c) => c.totp_secret === undefined || c.type === "password", { message: "only a password has a TOTP secret", path: ["totp_secret"] })
-  .refine((c) => c.type !== "password" || c.expires_at_ms === undefined, { message: "a password has no expiry", path: ["expires_at_ms"] });
+  .refine((c) => c.type !== "password" || c.expires_at_ms === undefined, { message: "a password has no expiry", path: ["expires_at_ms"] })
+  .refine((c) => c.type !== "sign_in", { message: "a sign_in account has no value", path: ["type"] });
+
+/**
+ * A subscription account with no token at all (docs/design/relay-sign-in-in-vm.md §1), as the file source takes it:
+ * sealed as it is, then signed in inside the VM by the relay's own software. The list's `credential_type` check is the
+ * vendor's (`credentialClass`: Claude and ChatGPT), and @gray/relay-connector refuses it under any other when sealed.
+ */
+const signInCredentialSchema = z
+  .object({
+    type: z.literal("sign_in"),
+    egress_password: z.string().min(1).max(255).optional(),
+  })
+  .strict();
 
 export interface ParsedHttpAccounts {
   readonly accounts: readonly SourceAccount[];
@@ -166,6 +180,11 @@ export interface ParsedHttpCredential extends SourceCredential {
 
 /** Validate one `GET /accounts/{id}/credential` answer. */
 export function parseHttpCredential(value: unknown): ParsedHttpCredential {
+  const signIn = signInCredentialSchema.safeParse(value);
+  if (signIn.success) {
+    const egressPassword = signIn.data.egress_password;
+    return { credential: { type: "sign_in", value: "" }, ...(egressPassword === undefined ? {} : { egressPassword }) };
+  }
   const parsed = credentialSchema.safeParse(value);
   if (!parsed.success) throw new RelayKitError("source_shape_changed", memberPath(parsed.error.issues, "credential"));
   const { type, value: secret, expires_at_ms: expiresAtMs, egress_password: egressPassword, refresh_token: refreshToken, username, totp_secret: totp } = parsed.data;
@@ -250,34 +269,6 @@ export function httpAdapter(config: HttpSourceConfig, deps: HttpAdapterDeps): So
       });
       const { credential, egressPassword } = parseHttpCredential(value);
       return { credential, ...(egressPassword === undefined ? {} : { egressPassword }) };
-    },
-    /**
-     * `PUT {url}/accounts/{id}/credential` (standard "Account source", optional): a token Gray refreshed inside the
-     * VM, as `{type, value, expires_at_ms?, refresh_token?}`. 2xx is written; 404 or 405 says the source has no such
-     * route; anything else is a failed write the daemon tries again.
-     */
-    async writeCredential(sourceId: string, credential: Credential, signal: AbortSignal): Promise<void> {
-      if (!HTTP_ACCOUNT_ID.test(sourceId)) throw new RelayKitError("source_not_found", "credential_write");
-      const token = readHttpSourceToken(deps.readTokenFile, config.tokenFile);
-      const body = JSON.stringify({
-        type: credential.type,
-        value: credential.value,
-        ...(credential.expires_at === undefined ? {} : { expires_at_ms: Number(credential.expires_at) * 1000 }),
-        ...(credential.refresh_token === undefined ? {} : { refresh_token: credential.refresh_token }),
-      });
-      const response = await fetchText(routes.credential(sourceId), {
-        fetch: deps.fetch,
-        signal,
-        timeoutMs: config.requestTimeoutMs,
-        maxBytes: 64 * 1024,
-        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-        label: "credential_write",
-        method: "PUT",
-        body,
-      });
-      if (response.status === 401 || response.status === 403) throw new RelayKitError("source_unauthorized", "credential_write");
-      if (response.status === 404 || response.status === 405) throw new RelayKitError("source_not_found", "credential_write");
-      if (response.status < 200 || response.status > 299) throw new RelayKitError("source_bad_response", "credential_write");
     },
   };
 }

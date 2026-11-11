@@ -23,10 +23,7 @@ export interface FetchTextOptions {
   readonly headers?: Readonly<Record<string, string>>;
   /** A fixed operation name for errors, never a URL or a query. */
   readonly label: string;
-  /**
-   * `GET` unless given; the relay's own login (`../login/codex-oauth.ts`) POSTs to the issuer, and the write-back of
-   * an in-VM refresh PUTs to the account source (`http.ts` writeCredential).
-   */
+  /** `GET` unless given. */
   readonly method?: "GET" | "POST" | "PUT";
   /** The request body of a `POST`; never part of an error. */
   readonly body?: string;

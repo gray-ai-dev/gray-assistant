@@ -457,8 +457,8 @@ export function pairedComposeText(image: string, relayId: string, keep: { readon
 # image's command reads it. Every kit file is owned by 10001:10001 (the agent's uid) with mode 0600 or 0400, as
 # \`init\` wrote it; add registry-password the same way. The agent's state is the ${volume} volume.
 #
-# Change a config member with the agent's own writer, not an editor (e.g. the login proxy):
-#   docker compose run --rm --no-deps -v "$PWD:/work" agent config set --config /work/gray-assistant.jsonc source.logins.proxy http://proxy.example:3128
+# Change a config member with the agent's own writer, not an editor (e.g. the source poll):
+#   docker compose run --rm --no-deps -v "$PWD:/work" agent config set --json --config /work/gray-assistant.jsonc source_poll 60
 #   docker compose up -d --force-recreate agent
 # Add to this file (another network, TZ, ...) in compose.override.yaml beside it, which docker compose merges; this
 # file is rewritten by the next init --pair --force, the override is not.

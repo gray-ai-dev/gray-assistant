@@ -735,48 +735,6 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     }
   }
 
-  // The relay's own logins (`file` source): each record's state, from the agent's state volume.
-  if (config.source.kind === "file" && config.source.logins.dir !== null) {
-    const logins = config.source.logins;
-    const loginsDir = logins.dir as string;
-    const { listLoginNames, readLoginRecord } = await import("./login/store.ts");
-    const { loginUsable, refreshDueAtSeconds } = await import("./login/record.ts");
-    const { UNSUPPORTED_REGION_TEXT } = await import("./login/codex-oauth.ts");
-    const { createLoginRoutes, loginProxyDisplay, loginViaText } = await import("./login/proxy.ts");
-    const proxy = logins.proxy === null ? null : loginProxyDisplay(logins.proxy);
-    if (proxy !== null) doctor.add("login_proxy", "ok", `a login whose account has no proxy of its own signs in and refreshes through ${proxy} (source.logins.proxy)`);
-    // Where each login's refreshes leave from: its account's own proxy, else the default.
-    const routes = createLoginRoutes({ accountsPath: config.source.path, defaultProxy: logins.proxy });
-    const pathOf = (name: string): string => {
-      try {
-        return `refreshes through ${loginViaText(routes.route(name).via)}`;
-      } catch (error) {
-        return `refreshes wait: accounts.json can't be read (${error instanceof RelayKitError ? error.code : "io"})`;
-      }
-    };
-    // With a proxy set, the failure came from before it, or the proxy's own exit is in a refused region.
-    const regionAdvice = proxy === null ? UNSUPPORTED_REGION_TEXT : `${UNSUPPORTED_REGION_TEXT} source.logins.proxy is ${proxy}: if it was set after this failure, sign in again through it; else its exit is refused too.`;
-    const nowSecs = Math.floor(nowMs / 1000);
-    for (const name of listLoginNames(loginsDir)) {
-      try {
-        const record = readLoginRecord(loginsDir, name);
-        if (record === null) continue;
-        if (record.failed === "unsupported_region") {
-          doctor.add(`login:${name}`, "fail", `login ${name}: refresh failed for good (unsupported_region): ${regionAdvice} Its access token is served until ${new Date(record.accessExpiresAt * 1000).toISOString()}; sign in again from there before then: gray-assistant login codex --name ${name} --force`);
-        } else if (record.failed !== null) {
-          doctor.add(`login:${name}`, "fail", `login ${name}: refresh failed for good (${record.failed}); sign in again: gray-assistant login codex --name ${name} --force`);
-        } else if (!loginUsable(record, nowSecs, logins.serveMarginSeconds)) {
-          doctor.add(`login:${name}`, "fail", `login ${name}: access token expired or within ${logins.serveMarginSeconds} s of expiry; ${record.failures} refresh failure(s), retrying; ${pathOf(name)}`);
-        } else {
-          const due = refreshDueAtSeconds(record, logins.refreshLeadSeconds) ?? nowSecs;
-          doctor.add(`login:${name}`, "ok", `login ${name}: access token valid ${Math.floor((record.accessExpiresAt - nowSecs) / 3600)} h more, next refresh in ${Math.max(0, Math.ceil((due - nowSecs) / 3600))} h; ${pathOf(name)}`);
-        }
-      } catch (error) {
-        doctor.add(`login:${name}`, "fail", `login ${name}: unreadable record (${error instanceof RelayKitError ? error.code : "io"})`);
-      }
-    }
-  }
-
   // The source: software, one live credential, and the parked list.
   const { createSourceAdapter } = await import("./source/config.ts");
   const source = createSourceAdapter(config.source);
@@ -1077,7 +1035,7 @@ async function checkTunnel(doctor: Doctor, config: LoadedRelayConfig, nowMs: num
 
 /**
  * S45: what the running agent last reported to Gray's console (its status file's `agent_status`), which the panel's
- * "needs re-login" list reads. Only a relay stack reports one (`stack.report_origin`).
+ * credentials list reads. Only a relay stack reports one (`stack.report_origin`).
  */
 function checkAgentStatus(doctor: Doctor, config: LoadedRelayConfig, nowMs: number): void {
   const stack = config.daemon.stack;

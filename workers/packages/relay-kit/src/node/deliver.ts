@@ -51,13 +51,13 @@ import { bytesToLowerHex, ed25519PublicKey, ed25519Sign } from "@gray/attest";
 import { stackInstanceAnswerSchema } from "@gray/control/stack-provision";
 import { get, isObject, parseStrict, parseStrictBytes, toJsonString, type Json, type JsonObject } from "@gray/json";
 import { isRelayDesignationClaim, type StackBootFacts } from "@gray/lane-verify";
-import { openRefreshedAnswer, refreshedReplyKey, refreshedRequestValue, sealBootBoxDelivery, sealCredentialBundle, type CredentialBundle, type RefreshedToken } from "@gray/relay-connector";
+import { sealBootBoxDelivery, sealCredentialBundle, type CredentialBundle } from "@gray/relay-connector";
 import { BOOT_BOX_DELIVERY_PATH, imageRegistry, type BootBox } from "@gray/relay-connector/boot-box";
 import { designationMessage, type Designation } from "@gray/relay-connector/vault";
 import type { Hex } from "viem";
 import type { ChainCheckResult } from "../chain/checks.ts";
 import type { ReleaseContentResult } from "../chain/release-compose.ts";
-import { AGENT_STATUS_PATH, agentStatusDocument, refreshGrayOf, signAgentStatus } from "../daemon/agent-status.ts";
+import { AGENT_STATUS_PATH, agentStatusDocument, signAgentStatus } from "../daemon/agent-status.ts";
 import { credentialFormatHint } from "../daemon/eligibility.ts";
 import { attestationMismatch } from "../daemon/stack-boot.ts";
 import { DaemonTransportError, type DaemonAttestResult, type DaemonFetch, type DaemonSourceAccount, type DaemonStackInstance } from "../daemon/types.ts";
@@ -125,18 +125,13 @@ export interface DeliverOptions {
   readonly chainCheck?: (composeHash: Hex | null, osImageHash: Hex | null) => Promise<ChainCheckResult>;
   /** P6: the check of the measured compose's published text (bare hex hash); by default from Gray's signed list. */
   readonly releaseContent?: (composeHash: string) => Promise<ReleaseContentResult>;
-  readonly readAccounts?: (extra: DeliverAccountsExtra) => Promise<ReadAccounts>;
+  readonly readAccounts?: () => Promise<ReadAccounts>;
   readonly registryPassword?: () => string;
   /**
    * The first delivery with `stack.instance: "gray"` and no adopted VM: Gray's answer naming the relay's lane instance
    * (`instance` of its answer to a signed agent status), by default posted to `stack.report_origin`.
    */
   readonly stackInstance?: () => Promise<unknown>;
-  /**
-   * The panel's accounts whose Token refresh is `gray` (`refresh_gray` of Gray's answer to a signed agent status), null
-   * when Gray names none (an older console). By default the same answer `stackInstance` reads, asked once.
-   */
-  readonly refreshGray?: () => Promise<ReadonlySet<string> | null>;
   /** Gray's agent-status route (`stack.report_origin` + AGENT_STATUS_PATH): the signed statuses this command posts. */
   readonly agentStatusPost?: StackPost;
 }
@@ -280,8 +275,7 @@ export function phase2Candidate(answer: unknown, relayId: string, chain: ChainCo
 }
 
 /**
- * Gray's answer to a signed agent status (S45): the relay's lane instance (`instance`, P12) and the accounts set to `gray`
- * (`refresh_gray`). The console answers them to a signed agent status only, so this posts one with nothing in it but the
+ * Gray's answer to a signed agent status (S45): the relay's lane instance (`instance`, P12). The console answers it to a signed agent status only, so this posts one with nothing in it but the
  * relay, this kit's version and `sources` (a host-less relay runs no agent, so no other status is overwritten; a running
  * agent's next status replaces it; `accepted_compose` null: no release registry here). `sources` is null until the
  * command has read the source; it then posts again with what the source lists, as the agent does, so the panel offers
@@ -295,7 +289,6 @@ async function cliAgentAnswer(config: LoadedRelayConfig, seed: Uint8Array, nowMs
     issuedMs: nowMs,
     agentVersion: RELAY_KIT_VERSION,
     stackOrigin: "",
-    logins: [],
     replicas: [],
     parked: [],
     sources,
@@ -382,49 +375,17 @@ const CONTENT_CODES: Readonly<Record<string, string>> = {
   compose_refused: "compose_refused",
 };
 
-/** What a delivery learned before it reads the accounts (see `readAccountsOnce`). */
-export interface DeliverAccountsExtra {
-  readonly refreshGray: ReadonlySet<string> | null;
-  readonly refreshed: readonly RefreshedToken[] | "unavailable";
-}
-
-async function cliAccounts(config: LoadedRelayConfig, nowMs: number, extra: DeliverAccountsExtra): Promise<ReadAccounts> {
+async function cliAccounts(config: LoadedRelayConfig, nowMs: number): Promise<ReadAccounts> {
   const { createSourceAdapter } = await import("./source/config.ts");
   const { accountAliasesPath, createFileAccountAliasStore } = await import("./daemon/account-aliases-file.ts");
-  const { panelIdLookup } = await import("../daemon/account-aliases.ts");
   const { readAccountsOnce } = await import("./deliver-accounts.ts");
   const aliases = createFileAccountAliasStore(accountAliasesPath(config.daemon.stateFile));
-  // A relay login serves only ChatGPT Codex accounts; an account new to the aliases has no panel id the panel could set.
-  const panelId = panelIdLookup((await aliases.read()) ?? []);
-  const gray = extra.refreshGray;
   return readAccountsOnce(config, {
-    adapter: createSourceAdapter(config.source, gray === null ? {} : { refreshInVm: (sourceId) => gray.has(panelId("chatgpt_codex", sourceId) ?? "") }),
+    adapter: createSourceAdapter(config.source),
     aliases,
     nowMs,
     signal: AbortSignal.timeout(config.source.requestTimeoutMs),
-    refreshed: extra.refreshed,
   });
-}
-
-/**
- * The tokens the VM's egress refreshed (`POST /v1/aci/relay-credentials/refreshed`, the daemon's write-back ask), or
- * `unavailable` when the VM did not answer them. Nothing is acknowledged: the bundle this delivery seals replaces them.
- */
-async function vmRefreshedTokens(
-  post: (path: string, body: JsonObject) => Promise<{ readonly status: number; readonly body: Uint8Array } | { readonly transport: string }>,
-  relayId: string,
-  seed: Uint8Array,
-  nowMs: number,
-): Promise<readonly RefreshedToken[] | "unavailable"> {
-  try {
-    const reply = await refreshedReplyKey();
-    const ask = await refreshedRequestValue({ relayId, signingKey: seed, replyPublicKey: reply.publicKey, acked: {}, issuedAt: Math.floor(nowMs / 1000) });
-    const answer = await post(LANE_ENDPOINTS.refreshed, ask);
-    if ("transport" in answer || answer.status !== 200) return "unavailable";
-    return await openRefreshedAnswer(parseStrictBytes(answer.body), reply.privateKey, relayId);
-  } catch {
-    return "unavailable";
-  }
 }
 
 const defaultPost: StackPost = async (url, body) => {
@@ -479,7 +440,7 @@ export async function deliverCommand(options: DeliverOptions): Promise<number> {
   // phase 1; a phase-2 boot asks for no token).
   let vm = adoptedPhase2Vm(config, options.chain);
   let candidate: DaemonStackInstance | null = null;
-  // Gray's answer to one signed agent status: the VM it deployed, and the accounts set to `gray`.
+  // Gray's answer to one signed agent status: the VM it deployed.
   let agentAnswer: Promise<unknown> | null = null;
   // Gray keeps only a status newer than the last (`issued_ms`), so the second of one run is a millisecond later at least.
   let issuedMs = 0;
@@ -652,16 +613,7 @@ export async function deliverCommand(options: DeliverOptions): Promise<number> {
   };
   let accounts: ReadAccounts | null = null;
   if (sendAccounts) {
-    // In-VM refresh: the accounts set to `gray` (their relay login is handed to the VM), and the tokens the VM's egress
-    // refreshed, written back before the source is read (a running VM only; the empty slot holds none).
-    let refreshGray: ReadonlySet<string> | null = null;
-    try {
-      refreshGray = await (options.refreshGray ?? (async () => refreshGrayOf(await agentAnswerOnce())))();
-    } catch {
-      io.stderr(`gray-assistant ${name}: Gray did not say which accounts are set to gray; no relay login is handed to the VM this time\n`);
-    }
-    const refreshed = boot.running === null ? [] : await vmRefreshedTokens(post, relayId, seed, io.now());
-    accounts = await (options.readAccounts ?? ((extra: DeliverAccountsExtra) => cliAccounts(config, io.now(), extra)))({ refreshGray, refreshed });
+    accounts = await (options.readAccounts ?? (() => cliAccounts(config, io.now())))();
     // What the source lists, for the panel's Adopt (the agent's `sources`): a failure here sends the accounts all the same.
     if (accounts.sources !== undefined) {
       try {
@@ -672,14 +624,6 @@ export async function deliverCommand(options: DeliverOptions): Promise<number> {
     }
     for (const skipped of accounts.skipped) {
       io.stderr(`gray-assistant ${name}: left out a ${skipped.vendor} account${skipped.panelId === null ? "" : ` (${skipped.panelId})`}: ${skipped.reason}${skipped.reason === "invalid_credential_format" ? ` (${credentialFormatHint(skipped.vendor, skipped.credentialType ?? "")})` : ""}\n`);
-    }
-    // Token refresh `gray` works only with the refresh token sealed beside the access token (a `login codex` login, or a
-    // source whose credential answer carries `refresh_token`); without one the VM cannot refresh it (`refresh_failing`).
-    for (const account of accounts.accounts) {
-      if (refreshGray?.has(account.account_id) !== true || account.credential.type !== "oauth_access_token" || account.credential.refresh_token !== undefined) continue;
-      io.stderr(
-        `gray-assistant ${name}: warning: ${account.account_id} is set to Token refresh gray, but its source gives no refresh token, so the VM cannot refresh it and it stops at its access token's expiry; sign it in with gray-assistant login codex, have the source answer refresh_token, or set it back to source and keep a host refreshing it\n`,
-      );
     }
     if (accounts.accounts.length === 0 && accounts.listed > 0) {
       // Nothing is sent. A first delivery would start the relay's image with no account, which serves nothing while the

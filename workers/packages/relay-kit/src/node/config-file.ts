@@ -9,7 +9,7 @@
  * secret's location).
  */
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { isObject, type JsonObject } from "@gray/json";
 import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
 import { parseRelayDaemonConfig, type RelayDaemonConfig } from "../daemon/config.ts";
@@ -79,8 +79,6 @@ export function resolveConfigPaths(raw: JsonObject, directory: string): JsonObje
   resolveMember(out, "status_file", directory);
   resolveNested(out, "source", directory, ["path", "token_file"]);
   resolveNested(out, "scheduler", directory, ["admin_token_file"]);
-  const source = out["source"];
-  if (isObject(source)) resolveNested(source, "logins", directory, ["dir"]);
   resolveNested(out, "stack", directory, ["issue_log"]);
   const stack = out["stack"];
   if (isObject(stack)) resolveNested(stack, "registry", directory, ["password_file"]);
@@ -118,8 +116,7 @@ export function parseRelayConfigText(text: string, absolute: string): LoadedRela
   const directory = dirname(absolute);
   const raw = resolveConfigPaths(value as JsonObject, directory);
   const daemon = parseRelayDaemonConfig(raw);
-  // The relay's logins live in the agent's state volume, beside state.json, unless the config says otherwise.
-  const source = parseSourceConfig((raw as { source?: unknown }).source, { defaultLoginsDir: join(dirname(daemon.stateFile), "logins") });
+  const source = parseSourceConfig((raw as { source?: unknown }).source);
   return { path: absolute, directory, raw, daemon, source };
 }
 

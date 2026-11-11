@@ -64,11 +64,6 @@ export interface SourceAccount {
    */
   readonly changeMark: string;
   readonly egress?: SourceEgress;
-  /**
-   * The relay login (`gray-assistant login codex --name <login>`) the account's credential comes from, when the source
-   * names one (the `file` source's `oauth_login` credential). A name, never a token; the agent status reports it.
-   */
-  readonly login?: string;
 }
 
 /** How the source's software refreshes subscription tokens (critique R13). */
@@ -105,9 +100,4 @@ export interface SourceAdapter {
   probe(signal: AbortSignal): Promise<SourceProbe>;
   list(signal: AbortSignal): Promise<SourceSnapshot>;
   credential(sourceId: string, signal: AbortSignal): Promise<SourceCredential>;
-  /**
-   * The account interface's optional third route (`PUT …/accounts/{id}/credential`, standard "Account source"): write
-   * back a token egress refreshed inside the VM for a `refresh: "gray"` account. Absent: the source takes none.
-   */
-  writeCredential?(sourceId: string, credential: Credential, signal: AbortSignal): Promise<void>;
 }

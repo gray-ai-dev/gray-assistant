@@ -17,23 +17,6 @@
  * }}
  * ```
  *
- * The `file` kind also takes `logins`, the relay's own ChatGPT/Codex logins that an `oauth_login`
- * credential names (`../login/record.ts` has each default's source):
- *
- * ```jsonc
- * "logins": {"dir": "/var/lib/gray-assistant/logins",   // default: "logins" beside state_file
- *            "refresh_lead": 345600, "serve_margin": 300, "retry_after": 300,
- *            "request_timeout_ms": 30000,
- *            "proxy": "http://user:password@proxy.example:3128"}  // optional; `../login/proxy.ts`
- * ```
- *
- * `logins.proxy` is the default http(s) proxy the relay's own login exchanges go through (the sign-in and the agent's
- * refreshes), for a host in a region OpenAI refuses: a login whose account has a proxy of its own (`egress`) takes
- * that one instead (`../login/proxy.ts`). Its userinfo is optional, but a user without a password (or a
- * password without a user) is refused, since undici's `ProxyAgent` would send neither; a path, a query or a fragment
- * is refused, not stripped. An `http:` proxy anywhere is allowed: the issuer is `https:` and reached through a
- * `CONNECT` tunnel, so only the proxy's own userinfo crosses in clear text.
- *
  * Every default and bound is here rather than in `@gray/config`: the daemon's config is one file
  * validated at start (design v2 §A.1), and these values change per relay, not per deployment region.
  * The parser refuses an unknown member, a missing kind-specific member, a credential-bearing URL, a
@@ -44,19 +27,11 @@
  * token controls the relay's panel, and `accounts.json` holds the account credentials — so a file
  * another local account can read is refused in the daemon and in `credentials seal` alike.
  */
-import { RESOURCE_ID, VENDORS, type Credential } from "@gray/relay-connector";
+import { RESOURCE_ID, VENDORS } from "@gray/relay-connector";
 import { z } from "zod";
 import { RelayKitError } from "../../errors.ts";
 import { SOURCE_KINDS, type SourceAdapter } from "../../source/types.ts";
 import { readPrivateFile } from "../files.ts";
-import {
-  DEFAULT_LOGIN_REFRESH_LEAD_SECONDS,
-  DEFAULT_LOGIN_REQUEST_TIMEOUT_MS,
-  DEFAULT_LOGIN_RETRY_AFTER_SECONDS,
-  DEFAULT_LOGIN_SERVE_MARGIN_SECONDS,
-  type LoginSettings,
-} from "../login/record.ts";
-import { markLoginHandedToVm, readLoginRecord, writeBackLoginToken } from "../login/store.ts";
 import type { ResolvedSourceConfig, SourceCommonConfig, SourceDeps, SourceSelection } from "./config-types.ts";
 import { checkHttpSource, type SourceCheckReport } from "./check.ts";
 import { cliproxyAdapter } from "./cliproxyapi.ts";
@@ -98,19 +73,6 @@ export const sourceSelectSchema = z
   })
   .strict();
 
-/** The raw `logins` member of a `file` source; every tunable is bounded and defaulted. */
-export const sourceLoginsSchema = z
-  .object({
-    dir: z.string().min(1).max(MAX_PATH_LENGTH).optional(),
-    // At most 10 days: the nominal Codex access-token life CLIProxyAPI's lead is measured against.
-    refresh_lead: z.number().int().min(60).max(864_000).optional(),
-    serve_margin: z.number().int().min(0).max(3600).optional(),
-    retry_after: z.number().int().min(10).max(86_400).optional(),
-    request_timeout_ms: boundedInt(1000, 120_000).optional(),
-    proxy: z.string().min(1).max(MAX_URL_LENGTH).optional(),
-  })
-  .strict();
-
 /** The raw `source` section, exactly as the daemon's config file carries it. */
 export const sourceConfigSchema = z
   .object({
@@ -125,7 +87,6 @@ export const sourceConfigSchema = z
     max_credential_bytes: boundedInt(MIN_MAX_CREDENTIAL_BYTES, MAX_MAX_CREDENTIAL_BYTES).optional(),
     max_accounts: boundedInt(1, MAX_SOURCE_ACCOUNTS).optional(),
     select: sourceSelectSchema.optional(),
-    logins: sourceLoginsSchema.optional(),
   })
   .strict();
 
@@ -163,22 +124,6 @@ function baseUrl(raw: string, allowPlainHttp: boolean): string {
   return `${url.origin}${path === "" || path === "/" ? "" : path}`;
 }
 
-/** Validate `logins.proxy`: an http(s) origin with optional userinfo (both parts or neither). Refusals never echo it. */
-function loginProxyUrl(raw: string): string {
-  const detail = "logins.proxy (an http:// or https:// proxy URL: [user:password@]host[:port])";
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    throw new RelayKitError("invalid_source_config", detail);
-  }
-  if (url.protocol !== "https:" && url.protocol !== "http:") throw new RelayKitError("invalid_source_config", detail);
-  if ((url.username === "") !== (url.password === "")) throw new RelayKitError("invalid_source_config", detail);
-  if (url.search !== "" || url.hash !== "" || (url.pathname !== "" && url.pathname !== "/")) throw new RelayKitError("invalid_source_config", detail);
-  if (url.hostname === "" || url.port === "0") throw new RelayKitError("invalid_source_config", detail);
-  return url.href;
-}
-
 function unique<T>(values: readonly T[]): T[] {
   return [...new Set(values)];
 }
@@ -207,24 +152,8 @@ function selectionOf(raw: z.infer<typeof sourceSelectSchema> | undefined, kind: 
   return { vendors: unique(raw.vendors ?? raw.platforms ?? []), tags, ids };
 }
 
-export interface ParseSourceConfigOptions {
-  /** Where `logins.dir` points when the config does not say: `loadRelayConfigFile` passes the state directory's `logins`. */
-  readonly defaultLoginsDir?: string;
-}
-
-function loginSettings(raw: z.infer<typeof sourceLoginsSchema> | undefined, options: ParseSourceConfigOptions): LoginSettings {
-  return {
-    dir: raw?.dir === undefined ? (options.defaultLoginsDir ?? null) : pathMember(raw.dir, "logins.dir"),
-    refreshLeadSeconds: raw?.refresh_lead ?? DEFAULT_LOGIN_REFRESH_LEAD_SECONDS,
-    serveMarginSeconds: raw?.serve_margin ?? DEFAULT_LOGIN_SERVE_MARGIN_SECONDS,
-    retryAfterSeconds: raw?.retry_after ?? DEFAULT_LOGIN_RETRY_AFTER_SECONDS,
-    requestTimeoutMs: raw?.request_timeout_ms ?? DEFAULT_LOGIN_REQUEST_TIMEOUT_MS,
-    proxy: raw?.proxy === undefined ? null : loginProxyUrl(raw.proxy),
-  };
-}
-
 /** Parse and resolve the `source` section. Refusals name a member path, never a value. */
-export function parseSourceConfig(value: unknown, options: ParseSourceConfigOptions = {}): ResolvedSourceConfig {
+export function parseSourceConfig(value: unknown): ResolvedSourceConfig {
   const parsed = sourceConfigSchema.safeParse(value);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
@@ -254,9 +183,8 @@ export function parseSourceConfig(value: unknown, options: ParseSourceConfigOpti
     if (data.path === undefined) throw new RelayKitError("invalid_source_config", "path");
     if (data.url !== undefined) throw new RelayKitError("invalid_source_config", "url is not used by kind file");
     if (data.token_file !== undefined) throw new RelayKitError("invalid_source_config", "token_file is not used by kind file");
-    return { ...common, kind: "file", path: pathMember(data.path, "path"), url: null, tokenFile: null, logins: loginSettings(data.logins, options) };
+    return { ...common, kind: "file", path: pathMember(data.path, "path"), url: null, tokenFile: null };
   }
-  if (data.logins !== undefined) throw new RelayKitError("invalid_source_config", "logins is only used by kind file");
   if (data.url === undefined) throw new RelayKitError("invalid_source_config", "url");
   if (data.token_file === undefined) throw new RelayKitError("invalid_source_config", "token_file");
   if (data.path !== undefined) throw new RelayKitError("invalid_source_config", "path is not used by a remote kind");
@@ -282,20 +210,8 @@ export function createSourceAdapter(config: ResolvedSourceConfig, deps: SourceDe
   const readAccountsFile =
     deps.readAccountsFile ?? ((path: string): string => readPrivateFile(path, "source accounts file", MAX_SOURCE_FILE_BYTES));
   switch (config.kind) {
-    case "file": {
-      const dir = config.logins.dir;
-      const readLogin = deps.readLogin ?? (dir === null ? undefined : (name: string) => readLoginRecord(dir, name));
-      const inVm = deps.refreshInVm;
-      const handOver =
-        dir === null || inVm === undefined
-          ? undefined
-          : {
-              inVm,
-              mark: (name: string) => markLoginHandedToVm(dir, name, Math.floor(now() / 1000)),
-              write: (name: string, credential: Credential) => writeBackLoginToken(dir, name, credential, Math.floor(now() / 1000)),
-            };
-      return fileAdapter(config, { readAccountsFile, now, ...(readLogin === undefined ? {} : { readLogin }), ...(handOver === undefined ? {} : { handOver }) });
-    }
+    case "file":
+      return fileAdapter(config, { readAccountsFile });
     case "http":
       return httpAdapter(config, { fetch: fetchImpl, readTokenFile, now });
     case "cliproxyapi":

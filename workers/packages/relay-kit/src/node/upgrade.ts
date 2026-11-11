@@ -110,7 +110,7 @@ function regularFile(path: string): { uid: number; gid: number } | null {
 /**
  * The project name and state volume key of a compose file an `init --pair` of any kit wrote, or null for any other file.
  * `upgrade` and `init --pair --force` keep both, so a project started by an older kit keeps its volume (the agent's
- * state: logins, designation.json, account aliases) and its network.
+ * state: designation.json, account aliases) and its network.
  */
 export function pairedComposeKeep(composeText: string): { readonly name: string; readonly stateVolume: string } | null {
   if (!OWN_COMPOSE.test(composeText)) return null;

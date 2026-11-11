@@ -25,7 +25,7 @@ export function checkTitle(id: string): string {
     admin_token_permissions: 'Admin token file', policy_bundle: 'Policy bundle', state_permissions: 'State folder', release_key: 'Gray’s published values', source_detected: 'Account source',
     source_credential: 'Reading a key', source_accounts: 'Selected accounts', release_list: 'Gray’s release list', release_freshness: 'Release list freshness', scheduler_tls: 'Scheduler certificate',
     scheduler_echo: 'Scheduler proxy', stack_files: 'Stack files', stack_registry: 'Registry token', stack_challenge: 'Pull-token service', stack_release_status: 'Release status',
-    stack_accounts: 'Stack accounts', agent_status: 'Report to Gray', origin: 'Lane', clock: 'Clock against lane', parked: 'Account', login: 'Login', lane_registration: 'Lane registration',
+    stack_accounts: 'Stack accounts', agent_status: 'Report to Gray', origin: 'Lane', clock: 'Clock against lane', parked: 'Account', lane_registration: 'Lane registration',
     stack_account: 'Stack account',
   };
   const title = titles[family ?? ''] ?? (family ?? id).replaceAll('_', ' ');

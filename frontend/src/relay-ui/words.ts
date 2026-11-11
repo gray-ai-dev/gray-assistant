@@ -1,22 +1,23 @@
 // The local page's words: vendor and credential names, states, times and the sentences for the server's closed
 // refusal codes. Pure, so `words.test.mjs` reads each in Node.
 import { COMPATIBLE_VENDORS, compatibleRows, isCompatibleVendor } from '../runtime/lane-vendors.ts';
-import type { Account, AgentState, CredentialType, Login, LoginState, RelayInfo, Release, SignIn, Vendor } from './api';
+import type { Account, AgentState, CredentialType, PastedCredentialType, RelayInfo, Release, Vendor } from './api';
 
 export const VENDORS: readonly Vendor[] = ['anthropic', 'openai', 'chatgpt_codex', ...COMPATIBLE_VENDORS.map(v => v.id)];
 
 export const VENDOR_LABEL: Record<Vendor, string> = { anthropic: 'Anthropic', openai: 'OpenAI', chatgpt_codex: 'ChatGPT Codex', ...compatibleRows(v => v.name) };
 
-/** The credential kinds each vendor takes, in the order the form offers them; the first is the default. */
-export const CREDENTIAL_CHOICES: Record<Vendor, readonly CredentialType[]> = {
+/** The credential kinds the form takes for each vendor, in the order it offers them; the first is the default. */
+export const CREDENTIAL_CHOICES: Record<Vendor, readonly PastedCredentialType[]> = {
   anthropic: ['api_key', 'oauth_access_token'],
   openai: ['api_key'],
-  chatgpt_codex: ['oauth_login', 'oauth_access_token'],
+  chatgpt_codex: ['oauth_access_token'],
   ...compatibleRows(() => ['api_key'] as const),
 };
 
 export function credentialLabel(vendor: Vendor, type: CredentialType): string {
-  if (type === 'oauth_login') return 'Sign in with ChatGPT';
+  if (type === 'sign_in') return 'Signs in inside the VM';
+  if (type === 'password') return 'Password sign-in inside the VM';
   if (type === 'api_key') return 'API key';
   return vendor === 'anthropic' ? 'Subscription token' : 'Access token';
 }
@@ -27,7 +28,7 @@ export function keyHint(vendor: Vendor, type: CredentialType): string {
   if (vendor === 'anthropic') return 'A Claude subscription token: starts with sk-ant-oat01-.';
   if (vendor === 'openai') return 'Starts with sk- (a project key, sk-proj-, works too). Admin keys are refused.';
   if (isCompatibleVendor(vendor)) return `A ${VENDOR_LABEL[vendor]} pay-as-you-go API key for this region's host. A coding-plan key is not for resale.`;
-  return 'A ChatGPT access token (a JWT). It can’t refresh itself; Sign in with ChatGPT can.';
+  return 'A ChatGPT access token (a JWT). It can’t refresh itself.';
 }
 
 export type KeyKind = 'anthropic_api_key' | 'anthropic_subscription' | 'openai_api_key' | 'access_token' | 'admin_key' | 'vendor_api_key' | 'unknown';
@@ -71,11 +72,6 @@ export function relayCommand(relay: { config_path: string; config_default: boole
   return relay.config_default ? `gray-assistant ${verb}` : `gray-assistant ${verb} --config ${relay.config_path}`;
 }
 
-/** A login name from an account ID: lower-case letters, digits, _ and -, as gray-assistant names its login files. */
-export function loginNameFor(accountId: string): string {
-  return accountId.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^[^a-z0-9]+/, '').slice(0, 63);
-}
-
 export const AGENT_WORDS: Record<AgentState, { label: string; tone: 'success' | 'warning' | 'danger' | 'neutral' }> = {
   running: { label: 'Running', tone: 'success' },
   stale: { label: 'Not reporting', tone: 'warning' },
@@ -115,8 +111,7 @@ export function parkReason(reason: string | null): string {
 }
 
 /** The account's credential as one short phrase. */
-export function credentialPhrase(account: Pick<Account, 'vendor' | 'credential_type' | 'login'>): string {
-  if (account.credential_type === 'oauth_login') return 'ChatGPT sign-in';
+export function credentialPhrase(account: Pick<Account, 'vendor' | 'credential_type'>): string {
   return credentialLabel(account.vendor, account.credential_type);
 }
 
@@ -124,54 +119,6 @@ export function modelsPhrase(models: Account['models']): string {
   if (models === '*') return 'All models';
   if (models.length === 1) return models[0]!;
   return `${models[0]} and ${models.length - 1} more`;
-}
-
-export const LOGIN_WORDS: Record<LoginState, { label: string; tone: 'success' | 'warning' | 'danger' | 'neutral' }> = {
-  ok: { label: 'Signed in', tone: 'success' },
-  expiring: { label: 'Refresh failing', tone: 'warning' },
-  expired: { label: 'Expired', tone: 'danger' },
-  failed: { label: 'Needs a new sign-in', tone: 'danger' },
-  unreadable: { label: 'Can’t be read', tone: 'danger' },
-  missing: { label: 'Not signed in yet', tone: 'neutral' },
-};
-
-const LOGIN_FAILED: Record<string, string> = {
-  unauthorized: 'ChatGPT refused the login.',
-  invalid_grant: 'ChatGPT no longer accepts this login.',
-  refresh_token_expired: 'The login’s refresh token expired.',
-  refresh_token_reused: 'The login was refreshed somewhere else, so this copy stopped working.',
-  refresh_token_invalidated: 'ChatGPT signed this login out.',
-  account_mismatch: 'A refresh came back for another ChatGPT account.',
-  invalid_access_token: 'ChatGPT sent an access token gray-assistant can’t use.',
-  issuer_mismatch: 'The login was made against another sign-in server.',
-  unsupported_region: 'OpenAI refuses this relay machine’s region (unsupported_country_region_territory), so it can’t refresh. Its access token is served until it expires; run gray-assistant in a supported region, or route its traffic to auth.openai.com through a proxy there, and sign in again.',
-};
-
-export function loginProblem(login: Pick<Login, 'state' | 'failed' | 'failures'>): string | null {
-  if (login.state === 'failed') return login.failed === null ? 'Its refresh failed for good.' : LOGIN_FAILED[login.failed] ?? `Its refresh failed (${login.failed.replaceAll('_', ' ')}).`;
-  if (login.state === 'expiring') return `${login.failures === 1 ? 'A refresh has' : `${login.failures} refreshes have`} failed; gray-assistant keeps trying.`;
-  if (login.state === 'expired') return 'Its access token has expired, so its accounts aren’t served.';
-  if (login.state === 'unreadable') return 'Its file must be 0600, owned by gray-assistant’s user, and not a link.';
-  if (login.state === 'missing') return 'An account names it, but nobody has signed it in.';
-  return null;
-}
-
-const SIGN_IN_ERRORS: Record<string, string> = {
-  device_code_expired: 'The code expired before it was approved. Start again.',
-  device_code_unavailable: 'ChatGPT didn’t offer a device code. Try again later.',
-  network: 'gray-assistant couldn’t reach auth.openai.com. Check the relay machine’s internet access.',
-  rate_limited: 'ChatGPT asked to slow down. Wait a minute and try again.',
-  server_error: 'ChatGPT’s sign-in service had an error. Try again.',
-  rejected: 'ChatGPT refused the sign-in.',
-  unauthorized: 'ChatGPT refused the sign-in.',
-  bad_response: 'ChatGPT answered in a way gray-assistant doesn’t understand.',
-  issuer_answer: 'ChatGPT’s answer had no usable token. Try again.',
-  login_exists: 'This login is signed in already.',
-  unsupported_region: 'OpenAI refuses this relay machine’s region (unsupported_country_region_territory). Run gray-assistant in a supported region, or route its traffic to auth.openai.com through a proxy there.',
-};
-
-export function signInError(sign: Pick<SignIn, 'error'>): string {
-  return sign.error === null ? 'The sign-in failed.' : SIGN_IN_ERRORS[sign.error] ?? `The sign-in failed (${sign.error.replaceAll('_', ' ')}).`;
 }
 
 /** The server's refusals, in the page's words. `field` refusals are said beside their field. */
@@ -187,9 +134,6 @@ const REFUSALS: Record<string, string> = {
   refused_by_source: 'gray-assistant would refuse accounts.json with this change.',
   account_not_found: 'That account isn’t in accounts.json any more.',
   busy: 'Another gray-assistant command is changing the same file. Try again in a moment.',
-  logins_unconfigured: 'The config gives no folder for logins.',
-  too_many_sign_ins: 'Four sign-ins are running already. Finish or cancel one first.',
-  sign_in_not_found: 'That sign-in has ended.',
   not_listed: 'Gray’s signed release list doesn’t name it.',
   not_seen: 'gray-assistant hasn’t seen this release in Gray’s list yet. It shows here once gray-assistant reads the list; accept it then.',
   os_image_dev: 'This is a development OS image; it’s never accepted.',
@@ -213,10 +157,8 @@ export function fieldError(field: string, code: string): string {
   if (field === 'credential') {
     if (code === 'format') return 'This isn’t in the format this vendor uses for this kind of key.';
     if (code === 'type_vendor') return 'This vendor doesn’t take this kind of credential.';
-    if (code === 'login_account') return 'This account signs in with ChatGPT; sign it in again instead.';
     return 'Paste the key.';
   }
-  if (field === 'login') return code === 'login_exists' ? 'This login is signed in already.' : 'Use lower-case letters, digits, _ and -, starting with a letter or digit.';
   if (field === 'models') return 'Give model IDs separated by commas, or leave it empty for all models.';
   if (field === 'proxy') return 'Give a URL like socks5://user:password@host:1080 or http://host:3128.';
   if (field === 'code') return 'That code didn’t work: it was used, it expired, or a character is missing.';

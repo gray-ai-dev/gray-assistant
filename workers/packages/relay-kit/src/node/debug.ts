@@ -79,9 +79,9 @@ export function checkDebugRequestId(id: string): void {
 }
 
 /** The stack VM's origin and, for an adopted instance, the binding its quote must prove (P12). */
-export function debugStackVm(config: LoadedRelayConfig): { readonly origin: string; readonly instance?: LaneBinding } {
+export function debugStackVm(config: LoadedRelayConfig, command = "`gray-assistant debug get` is for a relay-stack lane, whose VM holds the records"): { readonly origin: string; readonly instance?: LaneBinding } {
   const stack = config.daemon.stack;
-  if (stack === null) throw new RelayKitError("usage", "the config has no `stack` section: `gray-assistant debug get` is for a relay-stack lane, whose VM holds the records");
+  if (stack === null) throw new RelayKitError("usage", `the config has no \`stack\` section: ${command}`);
   // The config's stack app is attested against its `lane.instances` entry, as the agent does.
   if (stack.laneOrigin !== null) return { origin: stack.laneOrigin };
   const inspected = inspectControlFile(controlFileBeside(config.daemon.stateFile));
@@ -200,6 +200,41 @@ async function stackBoots(fetch: DaemonFetch, origin: string, appId: string | nu
   }
 }
 
+/**
+ * The agent's attestation of one stack boot (`keyset`; undefined: the entry's newest), then the agent's checks of the
+ * boot (this relay's identity, an image this agent issued to it): the attested result, or a refusal with a sentence.
+ * `debug get` and `login` talk to the VM only after this.
+ */
+export async function attestStackBoot(input: {
+  readonly config: LoadedRelayConfig;
+  readonly vm: { readonly origin: string; readonly instance?: LaneBinding };
+  readonly keyset: string | undefined;
+  readonly nowMs: number;
+  readonly relayPublicKeyHex: string;
+  readonly attest?: DebugAttest;
+  readonly stackIssue?: (nonce: string) => Promise<StackIssueRecord | null>;
+}): Promise<(DaemonAttestResult & { readonly ok: true; readonly bootImage: string }) | { readonly code: string; readonly message: string }> {
+  const { config, vm, keyset } = input;
+  const relayId = config.daemon.relayId;
+  const nowSecs = BigInt(Math.floor(input.nowMs / 1000));
+  let attested: DaemonAttestResult;
+  try {
+    attested = await (input.attest ?? cliAttest(config))({ origin: vm.origin, nowSecs, ...(vm.instance === undefined ? {} : { instance: vm.instance }), ...(keyset === undefined ? {} : { keyset }) });
+  } catch (error) {
+    if (error instanceof RelayKitError) throw error;
+    return { code: "attest_transport_io", message: "the stack VM could not be attested (attest_transport_io); `gray-assistant doctor` checks the path to it" };
+  }
+  if (!attested.ok) {
+    const code = `attest_${attested.stage}_${attested.code}`;
+    return { code, message: `the stack VM did not attest (${code}); \`gray-assistant doctor\` says more` };
+  }
+  const mismatch = attestationMismatch(attested, vm.origin, relayId);
+  if (mismatch !== null) return { code: mismatch, message: `the stack VM's attestation is not this relay's VM at ${vm.origin} (${mismatch})` };
+  const boot = await stackBootDecision({ facts: attested.stackBoot ?? null, composeHash: attested.composeHash, relayId, relayPublicKeyHex: input.relayPublicKeyHex, stack: config.daemon.stack, stackIssue: input.stackIssue });
+  if (!boot.ok) return { code: `attest_${boot.code}`, message: `the stack VM's boot is not one this agent sealed credentials to (attest_${boot.code}); \`gray-assistant doctor\` says more` };
+  return { ...attested, bootImage: boot.image };
+}
+
 /** `debug get <request id> [--out <file>]`: fetch, open and write one authorized request's record. */
 export async function debugGet(options: DebugGetOptions): Promise<number> {
   const { config, io, requestId, out } = options;
@@ -226,22 +261,8 @@ export async function debugGet(options: DebugGetOptions): Promise<number> {
    * key that lives only in this process, at that same boot.
    */
   const ask = async (keyset: string | undefined): Promise<{ readonly response: DaemonHttpResponse; readonly privateKey: CryptoKey } | Refusal> => {
-    const nowSecs = BigInt(Math.floor(io.now() / 1000));
-    let attested: DaemonAttestResult;
-    try {
-      attested = await (options.attest ?? cliAttest(config))({ origin: vm.origin, nowSecs, ...(vm.instance === undefined ? {} : { instance: vm.instance }), ...(keyset === undefined ? {} : { keyset }) });
-    } catch (error) {
-      if (error instanceof RelayKitError) throw error;
-      return { code: "attest_transport_io", message: "the stack VM could not be attested (attest_transport_io); `gray-assistant doctor` checks the path to it" };
-    }
-    if (!attested.ok) {
-      const code = `attest_${attested.stage}_${attested.code}`;
-      return { code, message: `the stack VM did not attest (${code}); \`gray-assistant doctor\` says more` };
-    }
-    const mismatch = attestationMismatch(attested, vm.origin, relayId);
-    if (mismatch !== null) return { code: mismatch, message: `the stack VM's attestation is not this relay's VM at ${vm.origin} (${mismatch})` };
-    const boot = await stackBootDecision({ facts: attested.stackBoot ?? null, composeHash: attested.composeHash, relayId, relayPublicKeyHex, stack, stackIssue: issueReader });
-    if (!boot.ok) return { code: `attest_${boot.code}`, message: `the stack VM's boot is not one this agent sealed credentials to (attest_${boot.code}); \`gray-assistant doctor\` says more` };
+    const attested = await attestStackBoot({ config, vm, keyset, nowMs: io.now(), relayPublicKeyHex, ...(options.attest === undefined ? {} : { attest: options.attest }), ...(issueReader === undefined ? {} : { stackIssue: issueReader }) });
+    if ("code" in attested) return attested;
 
     const reply = await debugReplyKey();
     const signed = await debugRequestValue({ relayId, requestId, signingKey: options.seed, replyPublicKey: reply.publicKey, issuedAt: Math.floor(io.now() / 1000) });

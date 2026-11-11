@@ -11,12 +11,10 @@
  *   the same TLS proxy as the scheduler: they answer `POST /v1/pull-token/challenge` and
  *   `POST /v1/pull-token` before any other route, check boots with the same quote verifier and the
  *   daemon's release decision, and append every issue to `stack.issue_log`; and the agent status
- *   (S45: logins, sealing per replica, parked accounts), signed and posted to `stack.report_origin`
+ *   (S45: sealing per replica, parked accounts), signed and posted to `stack.report_origin`
  *   on a change and as a heartbeat (`./daemon/agent-status-report.ts`); Gray's answer names the relay's lane
  *   instance, which with `stack.instance: "gray"` the daemon adopts once a token request's quote proves it (P12) and
  *   keeps in control.json;
- * - for a `file` source, the refresher of the relay's own logins (`./login/refresher.ts`) runs on
- *   the source-poll cadence, so a rotated token is in the next poll's snapshot;
  * - with a `ui` section, the local page (`./ui/server.ts`): on 127.0.0.1 at `ui.listen.port`, printing no sign-in
  *   link (stdout is the agent's log; the operator runs `gray-assistant ui link`), and with `ui.public` under `/ui/` on this
  *   same listener, the relay's public origin behind its TLS proxy or tunnel, where only enrolled passkeys sign in. A
@@ -53,8 +51,8 @@ import { createPinnedDaemonFetch } from "./daemon/fetch.ts";
 import { createPullTokenIssueLog, createPullTokenIssueReader } from "./daemon/pull-token-log.ts";
 import { createPullTokenReporter, type PullTokenReporter } from "./daemon/pull-token-report.ts";
 import { accountAliasesPath, createFileAccountAliasStore } from "./daemon/account-aliases-file.ts";
-import { AGENT_STATUS_CHECK_MS, AGENT_STATUS_FIRST_WAIT_MS, createAgentLoginReader, createAgentStatusReporter, type AgentStatusReporter } from "./daemon/agent-status-report.ts";
-import { agentStatusDocument, type AgentLogin, type AgentStatusInput } from "../daemon/agent-status.ts";
+import { AGENT_STATUS_CHECK_MS, AGENT_STATUS_FIRST_WAIT_MS, createAgentStatusReporter, type AgentStatusReporter } from "./daemon/agent-status-report.ts";
+import { agentStatusDocument, type AgentStatusInput } from "../daemon/agent-status.ts";
 import { RELAY_KIT_VERSION } from "../endpoints.ts";
 import { releaseStatusDocument, signReleaseStatus } from "../daemon/release-status.ts";
 import { createFileStateStore } from "./daemon/state-file.ts";
@@ -64,13 +62,10 @@ import { createPlainDaemonFetch } from "./release-list-source.ts";
 import { buildKeyFromText } from "./scheduler-load.ts";
 import { startSchedulerServer, type StartedSchedulerServer } from "./scheduler-http-server.ts";
 import { createSourceAdapter } from "./source/config.ts";
-import { codexLoginEndpoint, createLoginRoutes } from "./login/proxy.ts";
-import { createLoginRefresher, type LoginRefresher } from "./login/refresher.ts";
 import { foreignCertificateAlert, sendAlert } from "./alerts.ts";
 import { startCtMonitor, type CtMonitor } from "./tunnel/ct.ts";
 import { tunnelStatusValue } from "./tunnel/status.ts";
 import { startTunnel, type RunningTunnel, type TunnelSeams } from "./tunnel/supervisor.ts";
-import { readLoginRecord } from "./login/store.ts";
 import type { RelayKeyFile } from "../keys.ts";
 import type { DaemonSchedule } from "../daemon/types.ts";
 import { readUiPort, uiMarkerPath } from "./ui/marker.ts";
@@ -87,8 +82,6 @@ export interface RunRelayOptions {
   readonly ca?: string;
   readonly verifierModule?: string;
   readonly io: RunIo;
-  /** The login refresher's issuer and `fetch`; tests point it at a fake token endpoint. */
-  readonly loginEndpoint?: { readonly issuer: string; readonly clientId: string; readonly fetch: typeof fetch };
   /**
    * Tests only: the public page's origin instead of the config's (`http://localhost:<port>`, for WebAuthn in a browser).
    */
@@ -112,8 +105,6 @@ export interface RunningRelay {
   readonly port: number;
   readonly config: LoadedRelayConfig;
   readonly daemon: RelayDaemon;
-  /** The relay's login refresher (`file` source only); its timer calls `tick`, tests may too. */
-  readonly logins: LoginRefresher | null;
   /** S13's reports of pull-token issues to Gray (`stack` only); its timer flushes, tests may too. */
   readonly pullTokenReports: PullTokenReporter | null;
   /** S45's agent status to Gray (`stack` only); its timer checks every AGENT_STATUS_CHECK_MS, tests may too. */
@@ -286,36 +277,9 @@ export function withHealthz(handler: SchedulerHandler, health: () => DaemonHealt
 /** Start the agent. The caller owns signals and calls `stop()`. */
 export async function startRelay(options: RunRelayOptions): Promise<RunningRelay> {
   const { config, key, policyBundle, quoteVerifier, registryPassword } = await loadRunInputs(options);
-  const logins = config.source.kind === "file" ? config.source.logins : null;
-  const loginsDir = logins?.dir ?? null;
-  const refresher: LoginRefresher | null =
-    logins === null || loginsDir === null
-      ? null
-      : createLoginRefresher({
-          settings: { ...logins, dir: loginsDir },
-          endpoint: options.loginEndpoint ?? codexLoginEndpoint(logins.proxy),
-          // Each login refreshes from its account's own proxy (a test's injected endpoint keeps its own fetch).
-          ...(options.loginEndpoint !== undefined || config.source.kind !== "file"
-            ? {}
-            : { routes: createLoginRoutes({ accountsPath: config.source.path, defaultProxy: logins.proxy }) }),
-          nowMs: () => options.io.now(),
-          log: (event) => logLine(options.io, event),
-        });
-  // The source's clock is the daemon's wall clock: a login's serve margin and a `limited` account's
-  // end are judged at the same instant the daemon seals and picks. A login is read through the
-  // refresher, so a rotated token whose write is still failing is served from its memory.
-  // In-VM refresh: the panel's accounts set to `gray`, as Gray's last answer to the agent status named them; a relay
-  // login account among them is handed to the VM. The daemon is made below, so its panel ids are reached through this.
-  let refreshGray: ReadonlySet<string> = new Set();
-  let panelIdOf: ((sourceId: string) => string | null) | null = null;
-  const source = createSourceAdapter(config.source, {
-    now: () => options.io.now(),
-    refreshInVm: (sourceId) => {
-      const id = panelIdOf?.(sourceId) ?? null;
-      return id !== null && refreshGray.has(id);
-    },
-    ...(refresher === null || loginsDir === null ? {} : { readLogin: (name: string) => refresher.view(name, readLoginRecord(loginsDir, name)) }),
-  });
+  // The source's clock is the daemon's wall clock: a `limited` account's end is judged at the same instant the daemon
+  // seals and picks.
+  const source = createSourceAdapter(config.source, { now: () => options.io.now() });
   const pinned = createPinnedDaemonFetch({ ...(options.ca === undefined ? {} : { ca: options.ca }) });
   const plain = createPlainDaemonFetch({ ...(options.ca === undefined ? {} : { ca: options.ca }) });
   // The release list and its freshness document (D137) are public, signed documents over plain https;
@@ -365,16 +329,6 @@ export async function startRelay(options: RunRelayOptions): Promise<RunningRelay
           log: (event) => logLine(options.io, event),
         });
   const writeIssue = stack === null ? null : createPullTokenIssueLog(stack.issueLog);
-  // S45: the relay's own logins (a `file` source's) and the daemon's replicas, parked accounts and source accounts.
-  const readLogins: (nowMs: number) => AgentLogin[] =
-    logins === null || loginsDir === null || config.source.kind !== "file"
-      ? () => []
-      : createAgentLoginReader({
-          loginsDir,
-          accountsPath: config.source.path,
-          settings: logins,
-          ...(refresher === null ? {} : { view: (name: string, stored) => refresher.view(name, stored) }),
-        });
   let trimmedLogged = false;
   // Started once the listener is bound (the terminator proxies to its port); the status reads it from then on.
   let tunnel: RunningTunnel | null = null;
@@ -403,7 +357,6 @@ export async function startRelay(options: RunRelayOptions): Promise<RunningRelay
           ...(options.ca === undefined ? {} : { ca: options.ca }),
           ...(options.verifierModule === undefined ? {} : { verifierModule: options.verifierModule }),
           io: options.io,
-          ...(options.loginEndpoint === undefined ? {} : { loginEndpoint: options.loginEndpoint }),
         })
       : null;
   const uiNow = (nowMs: number): AgentStatusInput["ui"] => {
@@ -426,7 +379,6 @@ export async function startRelay(options: RunRelayOptions): Promise<RunningRelay
               agentVersion: RELAY_KIT_VERSION,
               // P12: before the first adoption no replica is the stack app ("" names no origin).
               stackOrigin: daemon.stackInstance()?.held?.laneOrigin ?? "",
-              logins: readLogins(nowMs),
               replicas: status.replicas,
               parked: status.parked,
               sources: status.sources,
@@ -445,12 +397,7 @@ export async function startRelay(options: RunRelayOptions): Promise<RunningRelay
           },
           log: (event) => logLine(options.io, event),
           onInstance: (instance) => daemon.onStackInstance(instance),
-          onRefreshGray: (ids) => {
-            refreshGray = ids;
-          },
         });
-  // A relay login serves only ChatGPT Codex accounts.
-  panelIdOf = (sourceId) => daemon.panelAccountId("chatgpt_codex", sourceId);
   const pullToken =
     stack === null || registryPassword === null || reporter === null || writeIssue === null
       ? null
@@ -554,11 +501,6 @@ export async function startRelay(options: RunRelayOptions): Promise<RunningRelay
     }
   };
   timer = setInterval(() => void tick(), config.daemon.tickMs);
-  let loginTimer: ReturnType<typeof setInterval> | null = null;
-  if (refresher !== null) {
-    void refresher.tick();
-    loginTimer = setInterval(() => void refresher.tick(), config.daemon.sourcePollMs);
-  }
   let agentTimer: ReturnType<typeof setInterval> | null = null;
   let agentFirstWait: ReturnType<typeof setTimeout> | null = null;
   if (agentStatus !== null) {
@@ -587,7 +529,6 @@ export async function startRelay(options: RunRelayOptions): Promise<RunningRelay
         ...(options.ca === undefined ? {} : { ca: options.ca }),
         ...(options.verifierModule === undefined ? {} : { verifierModule: options.verifierModule }),
         io: options.io,
-        ...(options.loginEndpoint === undefined ? {} : { loginEndpoint: options.loginEndpoint }),
       });
       ownUiPort = ui.port;
       logLine(options.io, { level: "info", event: "ui_listening", url: ui.url });
@@ -601,7 +542,6 @@ export async function startRelay(options: RunRelayOptions): Promise<RunningRelay
     port: stopped.port,
     config,
     daemon,
-    logins: refresher,
     pullTokenReports: reporter,
     agentStatus,
     ui,
@@ -614,8 +554,6 @@ export async function startRelay(options: RunRelayOptions): Promise<RunningRelay
       stopping = true;
       if (timer !== null) clearInterval(timer);
       timer = null;
-      if (loginTimer !== null) clearInterval(loginTimer);
-      loginTimer = null;
       if (agentTimer !== null) clearInterval(agentTimer);
       agentTimer = null;
       if (agentFirstWait !== null) clearTimeout(agentFirstWait);
@@ -625,8 +563,6 @@ export async function startRelay(options: RunRelayOptions): Promise<RunningRelay
       uiPublic?.stop();
       ct?.stop();
       await tunnel?.stop();
-      // A refresh in flight finishes and is written first (bounded by `logins.request_timeout_ms`).
-      await refresher?.stop();
       reporter?.stop();
       await daemon.stop();
       await stopped.close();

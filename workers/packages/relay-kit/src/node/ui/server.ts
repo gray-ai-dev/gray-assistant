@@ -1,5 +1,5 @@
 /**
- * `gray-assistant ui`: the relay's local page, where an operator adds accounts, signs in logins, accepts releases and runs
+ * `gray-assistant ui`: the relay's local page, where an operator adds accounts, accepts releases and runs
  * the checks on the relay's own machine, so a key never enters a page Gray serves. The page lives under `/ui/` and is
  * served in one of two modes:
  *
@@ -56,14 +56,11 @@ import { accountAliasesPath, readAccountAliasesFile } from "../daemon/account-al
 import { controlFileBeside } from "../daemon/control-file.ts";
 import { readControlView } from "../control.ts";
 import type { DoctorOptions, DoctorReport } from "../doctor.ts";
-import { codexLoginEndpoint, createLoginRoutes } from "../login/proxy.ts";
-import { readLoginRecord } from "../login/store.ts";
 import { acceptReleaseId, vetoRelease } from "../release-control.ts";
 import { addAccount, readAccountsView, removeAccount, replaceCredential, type UiAccount } from "./accounts-file.ts";
 import { readAgentView, sealedState, type UiAgentView } from "./agent.ts";
 import { appendUiAudit, uiAuditPath, type UiAuditEntry } from "./audit.ts";
 import { UiHealth } from "./health.ts";
-import { readLogins, UiSignIns, type UiSignIn } from "./logins.ts";
 import { removeUiMarker, UI_MARKER_EVERY_MS, uiMarkerPath, writeUiMarker } from "./marker.ts";
 import { PASSKEY_LABEL, PasskeyCache, passkeysPath, updatePasskeys, type StoredPasskey } from "./passkeys.ts";
 import { UiRefusal } from "./refusal.ts";
@@ -107,8 +104,6 @@ interface UiCommonOptions {
   readonly verifierModule?: string;
   readonly io: RelayUiIo;
   readonly random?: (length: number) => Uint8Array;
-  /** The ChatGPT/Codex issuer and `fetch` for sign-ins; tests point it at a fake. */
-  readonly loginEndpoint?: { readonly issuer: string; readonly clientId: string; readonly fetch: typeof fetch };
   /** The built page; defaults to the package's `assets/ui`. */
   readonly bundleDir?: string;
   /** The doctor run, injectable for tests; defaults to `../doctor.ts`'s `runDoctor`. */
@@ -307,13 +302,12 @@ const newAccountBody = z
   .object({
     account_id: z.string().max(256),
     vendor: z.enum(VENDORS),
-    credential: z.union([credentialBody, z.object({ type: z.literal("oauth_login"), login: z.string().max(128) }).strict()]),
+    credential: credentialBody,
     models: z.array(z.string().max(512)).max(256).nullable(),
     proxy: z.string().max(4096).nullable(),
   })
   .strict();
 const replaceBody = z.object({ credential: credentialBody }).strict();
-const signInBody = z.object({ login: z.string().max(128), force: z.boolean() }).strict();
 const releaseIdBody = z.object({ id: z.string().min(1).max(256) }).strict();
 const hashBody = z.object({ hash: z.string().max(128) }).strict();
 // The browser's WebAuthn answers, checked whole by @simplewebauthn/server; here only their outline and size.
@@ -349,18 +343,6 @@ export async function createRelayUiHandler(options: UiHandlerOptions): Promise<U
   const loginOptionsLimit = new RateLimiter(30, 120, 60_000);
   const loginVerifyLimit = new RateLimiter(10, 30, 60_000);
   const enrollLimit = new RateLimiter(10, 30, 60_000);
-  const logins = config.source.kind === "file" ? config.source.logins : null;
-  const signIns =
-    logins === null || config.source.kind !== "file"
-      ? null
-      : new UiSignIns({
-          settings: logins,
-          endpoint: { ...(options.loginEndpoint ?? codexLoginEndpoint(logins.proxy)), timeoutMs: logins.requestTimeoutMs },
-          // A sign-in leaves from its account's own proxy, as the CLI's does (a test's injected endpoint keeps its fetch).
-          ...(options.loginEndpoint === undefined ? { routes: createLoginRoutes({ accountsPath: config.source.path, defaultProxy: logins.proxy }) } : {}),
-          nowMs: now,
-          random,
-        });
   const health = new UiHealth({
     run: options.runDoctor ?? (async (doctorOptions) => (await import("../doctor.ts")).runDoctor(doctorOptions)),
     doctorOptions: () => ({
@@ -375,8 +357,6 @@ export async function createRelayUiHandler(options: UiHandlerOptions): Promise<U
   // Two pages for two relays on one machine keep their own cookie; on the public origin the `__Host-` prefix binds it.
   const cookieName = mode === "public" ? "__Host-gray_assistant_ui" : `gray_assistant_ui_${createHash("sha256").update(`${config.daemon.relayId}\n${config.path}`).digest("hex").slice(0, 12)}`;
   const cookieAttributes = mode === "public" ? "HttpOnly; Secure; SameSite=Strict; Path=/" : `HttpOnly; SameSite=Strict; Path=${UI_BASE}`;
-  const loginsDir = logins === null ? null : logins.dir;
-  const readLogin = loginsDir === null ? undefined : (name: string) => readLoginRecord(loginsDir, name);
   // Commands the page shows name the config only when gray-assistant would not find it on its own.
   const configIsDefault = resolve(defaultConfigPath()) === config.path;
 
@@ -412,7 +392,6 @@ export async function createRelayUiHandler(options: UiHandlerOptions): Promise<U
       panel_id: panelId(account.vendor, account.accountId),
       vendor: account.vendor,
       credential_type: account.credentialType,
-      login: account.login,
       status: account.status,
       models: account.models === "*" ? "*" : [...account.models],
       proxy: account.proxy === null ? null : { type: account.proxy.type, host: account.proxy.host, port: account.proxy.port, username: account.proxy.username ?? null },
@@ -422,24 +401,9 @@ export async function createRelayUiHandler(options: UiHandlerOptions): Promise<U
     };
   }
 
-  function signInValue(view: UiSignIn): SerdeValue {
-    return {
-      id: view.id,
-      login: view.login,
-      state: view.state,
-      verification_url: view.verificationUrl,
-      user_code: view.userCode,
-      expires_at_ms: view.expiresAtMs,
-      started_at_ms: view.startedAtMs,
-      finished_at_ms: view.finishedAtMs,
-      error: view.error,
-      access_expires_at_ms: view.accessExpiresAtMs,
-    };
-  }
-
   function accountsValue(nowMs: number): SerdeValue {
     const agent = readAgentView(config, nowMs);
-    const view = readAccountsView(config.source, { ...(readLogin === undefined ? {} : { readLogin }), nowMs });
+    const view = readAccountsView(config.source);
     const panelId = panelIdLookup(readAccountAliasesFile(accountAliasesPath(config.daemon.stateFile)) ?? []);
     return {
       relay: relayView(agent),
@@ -447,40 +411,6 @@ export async function createRelayUiHandler(options: UiHandlerOptions): Promise<U
       source_poll_ms: config.daemon.sourcePollMs,
       agent_last_poll_at_ms: agent.sourceLastPollAtMs,
       accounts: view.accounts.map((account) => accountValue(account, agent, panelId)),
-    };
-  }
-
-  function loginsValue(nowMs: number): SerdeValue {
-    const agent = readAgentView(config, nowMs);
-    const view = readAccountsView(config.source, { ...(readLogin === undefined ? {} : { readLogin }), nowMs });
-    const byLogin = new Map<string, string[]>();
-    for (const account of view.accounts) {
-      if (account.login === null) continue;
-      byLogin.set(account.login, [...(byLogin.get(account.login) ?? []), account.accountId]);
-    }
-    const records = logins === null ? [] : readLogins(logins, nowMs);
-    // A login an account names but nobody signed in yet is listed too: it is the next thing to do.
-    const names = new Set([...records.map((record) => record.login), ...byLogin.keys()]);
-    return {
-      relay: relayView(agent),
-      source_kind: config.source.kind,
-      logins_dir: logins?.dir ?? null,
-      logins: [...names].sort().map((name) => {
-        const record = records.find((item) => item.login === name);
-        return {
-          login: name,
-          state: record?.state ?? "missing",
-          failed: record?.failed ?? null,
-          access_expires_at_ms: record?.accessExpiresAtMs ?? null,
-          refreshed_at_ms: record?.refreshedAtMs ?? null,
-          signed_in_at_ms: record?.signedInAtMs ?? null,
-          next_refresh_at_ms: record?.nextRefreshAtMs ?? null,
-          failures: record?.failures ?? 0,
-          account_ids: byLogin.get(name) ?? [],
-        };
-      }),
-      // Running sign-ins, and those that ended in the last 10 minutes by this machine's clock (the page shows how each ended).
-      sign_ins: (signIns?.list() ?? []).filter((view) => view.finishedAtMs === null || nowMs - view.finishedAtMs < 10 * 60_000).map(signInValue),
     };
   }
 
@@ -770,7 +700,7 @@ export async function createRelayUiHandler(options: UiHandlerOptions): Promise<U
           addAccount(config.source, config.daemon.relayId, {
             accountId,
             vendor: body.vendor,
-            credential: body.credential.type === "oauth_login" ? { type: "oauth_login", login: body.credential.login.trim() } : body.credential,
+            credential: body.credential,
             models: body.models === null ? null : body.models.map((model) => model.trim()).filter((model) => model.length > 0),
             proxy: body.proxy === null || body.proxy.trim() === "" ? null : body.proxy.trim(),
           }),
@@ -791,29 +721,6 @@ export async function createRelayUiHandler(options: UiHandlerOptions): Promise<U
         editedAt.delete(id as string);
         sendJson(response, 200, accountsValue(nowMs));
         return;
-      case "GET logins":
-        sendJson(response, 200, loginsValue(nowMs));
-        return;
-      case "POST logins": {
-        if (signIns === null) throw new UiRefusal(409, "source_not_file");
-        const body = parseBody(signInBody, await readJsonBody(request));
-        const started = await act("login.sign_in", body.login.trim(), async () => signIns.start(body.login.trim(), body.force));
-        sendJson(response, 202, signInValue(started));
-        return;
-      }
-      case "GET logins/:id": {
-        const found = signIns?.get(id as string) ?? null;
-        if (found === null) throw new UiRefusal(404, "sign_in_not_found");
-        sendJson(response, 200, signInValue(found));
-        return;
-      }
-      case "DELETE logins/:id": {
-        const cancelled = signIns?.cancel(id as string) ?? null;
-        if (cancelled === null) throw new UiRefusal(404, "sign_in_not_found");
-        audit({ action: "login.cancel", who: who(session), target: cancelled.login, outcome: "ok" });
-        sendJson(response, 200, signInValue(cancelled));
-        return;
-      }
       case "GET releases":
         sendJson(response, 200, await releasesValue(nowMs));
         return;
@@ -954,7 +861,6 @@ export async function createRelayUiHandler(options: UiHandlerOptions): Promise<U
       return { url: `${base}${UI_BASE}/session/${link.code}`, code: link.code, expiresAtMs: link.expiresAtMs };
     },
     stop() {
-      signIns?.stop();
       sessions.clear();
       ceremonies.clear();
     },

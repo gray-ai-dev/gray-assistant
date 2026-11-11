@@ -28,11 +28,6 @@ export const LANE_ENDPOINTS = Object.freeze({
   policyBundle: "/v1/aci/relay-policy/bundle",
   /** `POST`: one sealed credential message (full bundle or single-account update). */
   credentials: "/v1/aci/relay-credentials",
-  /**
-   * `POST`: the signed ask for tokens egress refreshed inside the VM (`refresh: "gray"`, docs/relay-changes-v2.md §6),
-   * answered sealed to the ask's reply key (`@gray/relay-connector` refreshed.ts).
-   */
-  refreshed: "/v1/aci/relay-credentials/refreshed",
 } as const);
 
 /** The reference scheduler's paths, as `@gray/relay-connector`'s scheduler client calls them. */

@@ -1,6 +1,5 @@
 /**
- * The CLI's exclusive lock around a `control.json` read-modify-write (K5-7, D38), also the lock of
- * each relay login record (`./login/store.ts`), which the agent itself takes.
+ * The CLI's exclusive lock around a `control.json` read-modify-write (K5-7, D38).
  *
  * Two operator commands (`pause` and `releases accept`, say) can run at once; without a lock each
  * reads the same document and the second write drops the first edit. The lock is one file beside

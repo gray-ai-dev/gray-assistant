@@ -5,7 +5,10 @@
 import type { CompatibleVendor } from '../runtime/lane-vendors.ts';
 
 export type Vendor = 'anthropic' | 'openai' | 'chatgpt_codex' | CompatibleVendor;
-export type CredentialType = 'api_key' | 'oauth_access_token' | 'oauth_login';
+/** What accounts.json may name; `sign_in` and `password` accounts sign in inside the VM (`gray-assistant login <account>`). */
+export type CredentialType = 'api_key' | 'oauth_access_token' | 'sign_in' | 'password';
+/** What the add-account form and a key replacement take: a pasted secret. */
+export type PastedCredentialType = 'api_key' | 'oauth_access_token';
 export type AgentState = 'running' | 'stopped' | 'stale' | 'not_running';
 
 /** Where this page is served: 127.0.0.1 (one-time sign-in links) or the relay's public origin (passkeys only). */
@@ -37,7 +40,6 @@ export type Account = {
   panel_id?: string;
   vendor: Vendor;
   credential_type: CredentialType;
-  login: string | null;
   status: string;
   models: string[] | '*';
   proxy: { type: string; host: string; port: number; username: string | null } | null;
@@ -59,43 +61,6 @@ export type AccountsView = {
   source_poll_ms: number;
   agent_last_poll_at_ms: number | null;
   accounts: Account[];
-};
-
-export type LoginState = 'ok' | 'expiring' | 'expired' | 'failed' | 'unreadable' | 'missing';
-
-export type Login = {
-  login: string;
-  state: LoginState;
-  failed: string | null;
-  access_expires_at_ms: number | null;
-  refreshed_at_ms: number | null;
-  signed_in_at_ms: number | null;
-  next_refresh_at_ms: number | null;
-  failures: number;
-  account_ids: string[];
-};
-
-export type SignInState = 'starting' | 'waiting' | 'exchanging' | 'done' | 'failed' | 'cancelled';
-
-export type SignIn = {
-  id: string;
-  login: string;
-  state: SignInState;
-  verification_url: string | null;
-  user_code: string | null;
-  expires_at_ms: number | null;
-  started_at_ms: number;
-  finished_at_ms: number | null;
-  error: string | null;
-  access_expires_at_ms: number | null;
-};
-
-export type LoginsView = {
-  relay: RelayInfo;
-  source_kind: 'file' | 'http' | 'cliproxyapi';
-  logins_dir: string | null;
-  logins: Login[];
-  sign_ins: SignIn[];
 };
 
 export type Release = {

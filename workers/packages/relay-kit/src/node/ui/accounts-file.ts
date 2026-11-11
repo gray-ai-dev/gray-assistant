@@ -20,7 +20,6 @@ import type { SourceEgress } from "../../source/types.ts";
 import { acquireControlLock } from "../control-lock.ts";
 import { writeAtomicPrivateFile } from "../daemon/atomic-file.ts";
 import { readPrivateFile } from "../files.ts";
-import { LOGIN_NAME, type LoginRecord } from "../login/record.ts";
 import type { ResolvedSourceConfig, SourceFileConfig } from "../source/config-types.ts";
 import { parseEgressUrl } from "../source/egress.ts";
 import { parseAccountsSourceText } from "../source/file.ts";
@@ -28,22 +27,20 @@ import { MAX_SOURCE_FILE_BYTES, MODEL_ID } from "../source/limits.ts";
 import { selectedBy } from "../source/select.ts";
 import { UiRefusal } from "./refusal.ts";
 
-/** How a credential reaches the account: a pasted secret, or one of the relay's own logins. */
-export type UiCredentialType = CredentialType | "oauth_login";
+/** The credential type an entry names. */
+export type UiCredentialType = CredentialType;
 
 /** One account as the page lists it. */
 export interface UiAccount {
   readonly accountId: string;
   readonly vendor: Vendor;
   readonly credentialType: UiCredentialType;
-  /** The relay login an `oauth_login` credential names; null otherwise. */
-  readonly login: string | null;
   /** The status the entry sets (`active` when it sets none). */
   readonly status: string;
   readonly models: readonly string[] | "*";
   /** The proxy's metadata; its password stays in the file. */
   readonly proxy: SourceEgress | null;
-  /** When the credential the entry holds (or its login's access token) expires, when known. */
+  /** When the credential the entry holds expires, when known. */
   readonly credentialExpiresAtMs: number | null;
   /** Whether the config's `source.select` lets the agent serve it. */
   readonly selected: boolean;
@@ -69,8 +66,8 @@ export interface UiAccountsView {
 export interface NewAccountInput {
   readonly accountId: string;
   readonly vendor: Vendor;
-  /** A pasted secret, or the relay login the account will use. */
-  readonly credential: { readonly type: CredentialType; readonly value: string } | { readonly type: "oauth_login"; readonly login: string };
+  /** A pasted secret. */
+  readonly credential: { readonly type: CredentialType; readonly value: string };
   /** Null: every model of the vendor. */
   readonly models: readonly string[] | null;
   /** A proxy URL (`socks5://user:password@host:port`); null for none. */
@@ -78,7 +75,7 @@ export interface NewAccountInput {
 }
 
 /** A refusal the page shows beside one field: the field and a closed code, never the value. */
-function fieldRefusal(field: "account_id" | "vendor" | "credential" | "login" | "models" | "proxy", code: string): UiRefusal {
+function fieldRefusal(field: "account_id" | "vendor" | "credential" | "models" | "proxy", code: string): UiRefusal {
   return new UiRefusal(422, code, field);
 }
 
@@ -103,10 +100,7 @@ function text(value: Json | undefined): string | null {
 }
 
 /** List the source's accounts for the page; a `file` source is read here, a remote one is only named. */
-export function readAccountsView(
-  source: ResolvedSourceConfig,
-  options: { readonly readLogin?: (name: string) => LoginRecord | null; readonly nowMs: number },
-): UiAccountsView {
+export function readAccountsView(source: ResolvedSourceConfig): UiAccountsView {
   if (source.kind !== "file") {
     return { kind: source.kind, path: null, url: source.url, exists: true, writable: false, problem: null, accounts: [] };
   }
@@ -121,12 +115,7 @@ export function readAccountsView(
   }
   let parsed;
   try {
-    parsed = parseAccountsSourceText(raw, {
-      maxAccounts: source.maxAccounts,
-      ...(options.readLogin === undefined ? {} : { readLogin: options.readLogin }),
-      nowMs: options.nowMs,
-      loginServeMarginSeconds: source.logins.serveMarginSeconds,
-    });
+    parsed = parseAccountsSourceText(raw, { maxAccounts: source.maxAccounts });
   } catch (error) {
     const known = error instanceof RelayKitError;
     return { kind: "file", path: source.path, url: null, exists: true, writable, problem: { code: known ? error.code : "source_bad_response", detail: known ? (error.detail ?? "accounts") : "accounts" }, accounts: [] };
@@ -142,7 +131,6 @@ export function readAccountsView(
       accountId: account.sourceId,
       vendor: account.vendor,
       credentialType: type,
-      login: type === "oauth_login" ? text(get(credential, "login")) : null,
       status: text(get(entry, "status")) ?? "active",
       models: account.models,
       proxy: account.egress ?? null,
@@ -157,14 +145,7 @@ export function readAccountsView(
 function newEntry(input: NewAccountInput): Record<string, unknown> {
   if (!RESOURCE_ID.test(input.accountId)) throw fieldRefusal("account_id", "invalid");
   if (!(VENDORS as readonly string[]).includes(input.vendor)) throw fieldRefusal("vendor", "invalid");
-  let credential: Record<string, unknown>;
-  if (input.credential.type === "oauth_login") {
-    if (input.vendor !== "chatgpt_codex") throw fieldRefusal("credential", "login_vendor");
-    if (!LOGIN_NAME.test(input.credential.login)) throw fieldRefusal("login", "invalid");
-    credential = { type: "oauth_login", login: input.credential.login };
-  } else {
-    credential = checkedCredential(input.vendor, input.credential);
-  }
+  const credential = checkedCredential(input.vendor, input.credential);
   const entry: Record<string, unknown> = { account_id: input.accountId, vendor: input.vendor, credential };
   if (input.models !== null) {
     if (input.models.length === 0 || input.models.length > 256 || input.models.some((model) => !MODEL_ID.test(model))) throw fieldRefusal("models", "invalid");
@@ -254,33 +235,6 @@ export async function addAccount(source: ResolvedSourceConfig, relayId: string, 
   });
 }
 
-/**
- * What `gray-assistant login codex` does for the account its login serves, so the operator never writes accounts.json's
- * entry by hand under the panel's ID (2026-10-31's manual step 12). `add`: no entry names the login (or `--account`
- * names a further one) and the ID is free, so the sign-in ends with `addAccount`; `named`: the account is there already
- * (a second sign-in, or the page added it first); `by_hand`: this process cannot change the file (read-only, or one the
- * agent refuses), so the sign-in goes on and the operator adds the entry. An ID another entry holds is refused before
- * the sign-in, so no one-time code is spent on it.
- */
-export type LoginAccountPlan =
-  | { readonly kind: "add"; readonly accountId: string }
-  | { readonly kind: "named"; readonly accountIds: readonly string[] }
-  | { readonly kind: "by_hand"; readonly accountId: string; readonly code: string };
-
-/** `account` is `--account`, or null for the default: the login's own name. */
-export function loginAccountPlan(view: UiAccountsView, login: string, account: string | null): LoginAccountPlan {
-  const accountId = account ?? login;
-  if (!RESOURCE_ID.test(accountId)) throw new RelayKitError("usage", "--account must be the account's ID in Gray's panel ([A-Za-z0-9._:-]{1,128})");
-  if (view.problem !== null) return { kind: "by_hand", accountId, code: view.problem.code };
-  const named = view.accounts.filter((entry) => entry.login === login).map((entry) => entry.accountId);
-  if (named.includes(accountId) || (account === null && named.length > 0)) return { kind: "named", accountIds: named };
-  if (view.accounts.some((entry) => entry.accountId === accountId)) {
-    throw new RelayKitError("usage", `accounts.json has an account ${accountId} with another credential; pass --account with the panel's ID of the account this login serves`);
-  }
-  if (!view.writable) return { kind: "by_hand", accountId, code: "source_read_only" };
-  return { kind: "add", accountId };
-}
-
 /** Replace the credential of one account that holds a pasted secret. */
 export async function replaceCredential(
   source: ResolvedSourceConfig,
@@ -293,7 +247,6 @@ export async function replaceCredential(
     if (index < 0) throw new UiRefusal(404, "account_not_found");
     const entries = get(document, "accounts") as Json[];
     const vendor = get(entries[index], "vendor") as Vendor;
-    if (get(get(entries[index], "credential"), "type") === "oauth_login") throw fieldRefusal("credential", "login_account");
     return applyEdits(current, modify(current, ["accounts", index, "credential"], checkedCredential(vendor, credential), { formattingOptions: FORMATTING }));
   });
 }

@@ -8,17 +8,16 @@ import {
   Badge, Button, Drawer, EmptyState, Field, Inline, LinkButton, Menu, MenuItem, MenuSeparator, Notice, Page, PageHeader, SegmentedControl, Skeleton, Stack, StackedTable, Step, Steps,
   TableBody, TableCell, TableHead, TableHeaderCell, TableRow, Text, TextInput, VisuallyHidden, toast, useConfirm,
 } from '../../ui';
-import { ApiError, write, type Account, type AccountsView, type CredentialType, type LoginsView, type RelayInfo } from '../api';
+import { ApiError, write, type Account, type AccountsView, type PastedCredentialType, type RelayInfo } from '../api';
 import { BUSY_MS, LIVE_MS, useLocal, useNow } from '../data';
-import { href, navigate } from '../router';
+import { href } from '../router';
 import {
-  clockText, credentialLabel, credentialPhrase, fieldError, keyFits, keyHint, LOGIN_WORDS, modelsPhrase, parkReason, recognizeKey, refusalText, relativeTime, VENDOR_LABEL,
+  clockText, credentialLabel, credentialPhrase, fieldError, keyFits, keyHint, modelsPhrase, parkReason, recognizeKey, refusalText, relativeTime, VENDOR_LABEL,
 } from '../words';
 import { AgentNotice } from './parts';
 
 export function AccountsPage({ relay }: { relay: RelayInfo }) {
   const accounts = useLocal<AccountsView>('accounts', { live: data => data?.accounts.some(account => account.sealed.state === 'waiting') ? BUSY_MS : LIVE_MS });
-  const logins = useLocal<LoginsView>('logins', { enabled: relay.source.kind === 'file' });
   const confirm = useConfirm();
   const [replacing, setReplacing] = useState<{ account: Account; key: number } | null>(null), [replaceOpen, setReplaceOpen] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
@@ -27,7 +26,6 @@ export function AccountsPage({ relay }: { relay: RelayInfo }) {
   const canEdit = !!source && source.kind === 'file' && source.writable && source.problem === null;
   const list = view?.accounts ?? [];
   const pollSeconds = Math.round((view?.source_poll_ms ?? 30_000) / 1000);
-  const loginState = new Map((logins.data?.logins ?? []).map(login => [login.login, login]));
   const leftOut = list.filter(account => account.sealed.state === 'parked');
 
   async function remove(account: Account) {
@@ -83,7 +81,6 @@ export function AccountsPage({ relay }: { relay: RelayInfo }) {
           {canEdit && <TableHeaderCell kind="menu"><VisuallyHidden>Actions</VisuallyHidden></TableHeaderCell>}
         </TableRow></TableHead>
         <TableBody>{list.map(account => {
-          const login = account.login === null ? null : loginState.get(account.login) ?? null;
           return <TableRow key={account.account_id} inactive={account.status !== 'active' && account.status !== 'limited'}>
             <TableCell data-label="Account"><Stack gap={0}>
               <Text as="span" weight="medium" truncate className="relay-ui-name">{account.account_id}</Text>
@@ -92,9 +89,7 @@ export function AccountsPage({ relay }: { relay: RelayInfo }) {
             </Stack></TableCell>
             <TableCell data-label="Credential"><Stack gap={1}>
               <span>{credentialPhrase(account)}</span>
-              {account.login !== null && <Text as="span" size="meta" tone="muted" truncate className="relay-ui-name">Login {account.login}</Text>}
-              {login && login.state !== 'ok' && <span><Badge tone={LOGIN_WORDS[login.state].tone} dot>{LOGIN_WORDS[login.state].label}</Badge></span>}
-              {account.credential_expires_at_ms !== null && account.credential_type !== 'oauth_login' && <Text as="span" size="meta" tone="muted">Expires {clockText(account.credential_expires_at_ms, Date.now())}</Text>}
+              {account.credential_expires_at_ms !== null && <Text as="span" size="meta" tone="muted">Expires {clockText(account.credential_expires_at_ms, Date.now())}</Text>}
             </Stack></TableCell>
             <TableCell data-label="Sealed" wide><SealedCell account={account} pollSeconds={pollSeconds} /></TableCell>
             <TableCell data-label="Models"><Text as="span" size="support" truncate className="relay-ui-models" title={account.models === '*' ? undefined : account.models.join(', ')}>{modelsPhrase(account.models)}</Text></TableCell>
@@ -102,10 +97,9 @@ export function AccountsPage({ relay }: { relay: RelayInfo }) {
               ? <Text as="span" size="support" truncate className="relay-ui-proxy">{account.proxy.type} · {account.proxy.host}:{account.proxy.port}</Text>
               : <Text as="span" size="support" tone="muted">None</Text>}</TableCell>
             {canEdit && <TableCell kind="menu"><Menu label={`Actions for ${account.account_id}`}>
-              {account.credential_type === 'oauth_login'
-                ? <MenuItem onSelect={() => navigate(`/logins/${encodeURIComponent(account.login ?? account.account_id)}`)}>Sign in again</MenuItem>
-                : <MenuItem disabled={busy !== null} onSelect={() => { setReplacing({ account, key: Date.now() }); setReplaceOpen(true); }}>Replace key</MenuItem>}
-              <MenuSeparator />
+              {/* A sign_in or password account signs in inside the VM (gray-assistant login <account>): no key to replace. */}
+              {pasted(account.credential_type) && <><MenuItem disabled={busy !== null} onSelect={() => { setReplacing({ account, key: Date.now() }); setReplaceOpen(true); }}>Replace key</MenuItem>
+              <MenuSeparator /></>}
               <MenuItem tone="danger" disabled={busy !== null} icon={<Trash size={15} aria-hidden="true" />} onSelect={() => void remove(account)}>Remove account</MenuItem>
             </Menu></TableCell>}
           </TableRow>;
@@ -115,6 +109,11 @@ export function AccountsPage({ relay }: { relay: RelayInfo }) {
     </Stack>
     {replacing && <ReplaceKey key={replacing.key} account={replacing.account} open={replaceOpen} onOpenChange={setReplaceOpen} onSaved={next => accounts.set(next)} pollSeconds={pollSeconds} />}
   </Page>;
+}
+
+/** A credential this page pastes, so a key it can replace. */
+function pasted(type: Account['credential_type']): type is PastedCredentialType {
+  return type === 'api_key' || type === 'oauth_access_token';
 }
 
 /** Where the account's key is: sealed (with its version and when), on its way, left out (and why), or unknown. */
@@ -131,7 +130,7 @@ function SealedCell({ account, pollSeconds }: { account: Account; pollSeconds: n
   </Stack>;
   if (sealed.state === 'waiting') return <Stack gap={1}>
     <span><Badge tone="info" dot>Waiting to seal</Badge></span>
-    <Text as="span" size="meta" tone="muted">{account.credential_type === 'oauth_login' && sealed.version === null ? 'Once its login is signed in.' : `Within ${pollSeconds} seconds.`}</Text>
+    <Text as="span" size="meta" tone="muted">{`Within ${pollSeconds} seconds.`}</Text>
   </Stack>;
   if (sealed.state === 'parked') return <Stack gap={1}>
     <span><Badge tone="warning" dot>Left out</Badge></span>
@@ -144,7 +143,7 @@ function SealedCell({ account, pollSeconds }: { account: Account; pollSeconds: n
 /** Replace one account's key in a side sheet; the key field starts empty and the old key is never shown. */
 function ReplaceKey({ account, open, onOpenChange, onSaved, pollSeconds }: { account: Account; open: boolean; onOpenChange(open: boolean): void; onSaved(view: AccountsView): void; pollSeconds: number }) {
   const types = account.vendor === 'anthropic' ? (['api_key', 'oauth_access_token'] as const) : account.vendor === 'chatgpt_codex' ? (['oauth_access_token'] as const) : (['api_key'] as const);
-  const [type, setType] = useState<Exclude<CredentialType, 'oauth_login'>>(account.credential_type === 'oauth_login' ? types[0] : account.credential_type);
+  const [type, setType] = useState<PastedCredentialType>(pasted(account.credential_type) ? account.credential_type : types[0]);
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<{ field: string | null; text: string } | null>(null);

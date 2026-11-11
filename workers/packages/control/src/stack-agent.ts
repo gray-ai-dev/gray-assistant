@@ -7,11 +7,11 @@ import { TUNNEL_STATES } from "./tunnel.ts";
 
 /**
  * gray-assistant's agent status (docs/confidential-lane-supply-implementation.md S45): what the relay's own agent knows
- * and the VM cannot see, its logins and how far it sealed each replica, posted to the console's public
+ * and the VM cannot see, how far it sealed each replica, posted to the console's public
  * `POST /v1/lane-stack/agent-status` as `{"status": {...}, "signature": "<128 hex>"}`. The signature is the relay
  * key's Ed25519 (its stack endpoints' lane record, `signing_public_key`) over `gray-relay-agent-status/v1\n` ||
  * JCS(status), the construction of relay-kit's signed release status (`release-status.ts`). Nothing here is a
- * secret: login names, token times and failure words, origins, versions, account ids and closed reasons.
+ * secret: origins, versions, account ids and closed reasons.
  *
  * `ui_mode` says where gray-assistant's own page runs (where a key is typed on the relay's side, never on Gray's page), and
  * is absent while it runs nowhere: `loopback` on the relay machine's 127.0.0.1 at `ui_port` (`gray-assistant ui`, or
@@ -24,13 +24,13 @@ import { TUNNEL_STATES } from "./tunnel.ts";
  * section): `connected` while the rendezvous holds its name, `down` otherwise, so the panel can say whether the relay's
  * public origin (`https://<label>.<zone>`, `@gray/control/tunnel`) answers and link to its page.
  *
- * Every word is closed (S33 rule 1): the login states and failures, the replica phases (relay-kit's daemon
+ * Every word is closed (S33 rule 1): the replica phases (relay-kit's daemon
  * `REPLICA_PHASES`; its test holds the two lists equal), and the error and park reasons as lower-case words. Ids are
  * the panel's account id rule. The console keeps the newest status per relay (0032 `lane_stack_agent_status`).
  *
  * `sources` (2026-10-29, optional: an agent before it stays valid) lists the accounts the agent's credential source
- * holds, by panel id, so the panel can offer to adopt those it does not have: vendor, credential type and login name
- * only, never a credential. Null when the agent cannot read its source (unknown, unlike `[]`, a source listing none).
+ * holds, by panel id, so the panel can offer to adopt those it does not have: vendor and credential type only, never a
+ * credential. Null when the agent cannot read its source (unknown, unlike `[]`, a source listing none).
  *
  * `boot` (2026-10-29, optional: an agent before it sends none) is what the relay's token service last answered a booting
  * VM: the refusal code (`TOKEN_SERVICE_CODES`), whether it held the boot (a 5xx or 429, which pre-launch waits out, so
@@ -49,39 +49,16 @@ import { TUNNEL_STATES } from "./tunnel.ts";
  * JCS, which the other importers of `@gray/control` (gray-jobs, the snapshot) would otherwise bundle for nothing.
  */
 
-/**
- * A login's state: `ok`; `expiring`, still served, inside the agent's refresh lead with a failed refresh behind it;
- * `expired`, its access token past or inside the serve margin; `failed`, the issuer refused its refresh for good
- * (`failed` names why; after `unsupported_region` its access token is still served until it expires); `unreadable`, a
- * record the agent cannot read.
- */
-export const STACK_AGENT_LOGIN_STATES = ["ok", "expiring", "expired", "failed", "unreadable"] as const;
-export type StackAgentLoginState = (typeof STACK_AGENT_LOGIN_STATES)[number];
-
-/** Why a login stopped refreshing (relay-kit `LOGIN_FAILURES`; each needs `gray-assistant login codex --force`). */
-export const STACK_AGENT_LOGIN_FAILURES = [
-  "unauthorized",
-  "invalid_grant",
-  "refresh_token_expired",
-  "refresh_token_reused",
-  "refresh_token_invalidated",
-  "account_mismatch",
-  "invalid_access_token",
-  "issuer_mismatch",
-  "unsupported_region",
-] as const;
-
 /** A replica's step in the agent's supervisor (relay-kit daemon `REPLICA_PHASES`). */
 export const STACK_AGENT_REPLICA_PHASES = ["unknown", "attesting", "release_pending", "policy", "credentials", "serving", "failed", "withdrawn"] as const;
 
-/** The bounds of one status: logins, parked and source accounts as a relay's accounts (1000), replicas as `lane.origins` (16). */
-export const STACK_AGENT_LOGINS_MAX = 1000;
+/** The bounds of one status: parked and source accounts as a relay's accounts (1000), replicas as `lane.origins` (16). */
 export const STACK_AGENT_REPLICAS_MAX = 16;
 export const STACK_AGENT_PARKED_MAX = 1000;
 export const STACK_AGENT_SOURCES_MAX = 1000;
 /** Compose hashes one status lists as accepted: a signed release list names a few (relay-kit `MAX_PAIRING_ACCEPTANCES`). */
 export const STACK_AGENT_ACCEPTED_COMPOSE_MAX = 256;
-/** Account ids one login or one replica lists: a bundle's accounts (@gray/relay-connector `MAX_ACCOUNTS_PER_BUNDLE`). */
+/** Account ids one replica lists: a bundle's accounts (@gray/relay-connector `MAX_ACCOUNTS_PER_BUNDLE`). */
 export const STACK_AGENT_ACCOUNT_IDS_MAX = 1000;
 /** Where gray-assistant's own page runs (above). */
 export const STACK_AGENT_UI_MODES = ["loopback", "public", "tunnel"] as const;
@@ -96,8 +73,6 @@ export const STACK_AGENT_STATUS_MAX_BYTES = 256 * 1024;
 export const STACK_AGENT_STATUS_MAX_FUTURE_MS = 5 * 60_000;
 export const STACK_AGENT_STATUS_MAX_AGE_MS = 60 * 60_000;
 
-/** A login's name (relay-kit `LOGIN_NAME`: a file name under the agent's logins directory). */
-export const STACK_AGENT_LOGIN_NAME = /^[a-z0-9][a-z0-9_-]{0,62}$/;
 /** A closed lower-case word: a replica's last error, a parked account's reason. */
 export const STACK_AGENT_WORD = /^[a-z0-9_]{1,64}$/;
 
@@ -109,22 +84,6 @@ const u64 = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const accountId = z.string().regex(STACK_ID_PATTERN);
 const accountIds = z.array(accountId).max(STACK_AGENT_ACCOUNT_IDS_MAX);
 const word = z.string().regex(STACK_AGENT_WORD);
-
-const loginSchema = z
-  .object({
-    login: z.string().regex(STACK_AGENT_LOGIN_NAME),
-    vendor: z.literal("chatgpt_codex"),
-    state: z.enum(STACK_AGENT_LOGIN_STATES),
-    failed: z.enum(STACK_AGENT_LOGIN_FAILURES).nullable(),
-    // Null when the record is unreadable.
-    access_expires_at_s: u64.nullable(),
-    refreshed_at_s: u64.nullable(),
-    next_refresh_at_s: u64.nullable(),
-    failures: z.number().int().min(0).max(1_000_000).nullable(),
-    account_ids: accountIds,
-  })
-  .strict()
-  .refine((l) => (l.state === "failed") === (l.failed !== null), { message: "failed names why exactly when the state is failed", path: ["failed"] });
 
 const replicaSchema = z
   .object({
@@ -155,13 +114,15 @@ const bootSchema = z
   .refine((b) => b.first_ms <= b.last_ms, { message: "first_ms is not after last_ms", path: ["first_ms"] });
 export type StackAgentBoot = z.infer<typeof bootSchema>;
 
-/** One account the agent's source lists. `credential_type` null when the source does not say; `login` the relay login. */
+/** One account the agent's source lists. `credential_type` null when the source does not say. */
 const sourceSchema = z
   .object({
     account_id: accountId,
     vendor: z.enum(STACK_AGENT_SOURCE_VENDORS),
     credential_type: z.enum(STACK_AGENT_CREDENTIAL_TYPES).nullable(),
-    login: z.string().regex(STACK_AGENT_LOGIN_NAME).nullable(),
+    // Retired (gray-assistant before 1.4 names the relay login of an `oauth_login` account): taken, never read, and
+    // dropped before the status is kept (`withoutRetiredAgentFields`).
+    login: z.string().max(64).nullable().optional(),
   })
   .strict();
 
@@ -175,9 +136,12 @@ export const stackAgentStatusSchema = z
     relay_id: z.string().regex(STACK_ID_PATTERN),
     issued_ms: u64,
     agent_version: z.string().regex(/^[0-9A-Za-z.+-]{1,64}$/),
-    logins: z.array(loginSchema).max(STACK_AGENT_LOGINS_MAX),
     replicas: z.array(replicaSchema).max(STACK_AGENT_REPLICAS_MAX),
     parked: z.array(parkedSchema).max(STACK_AGENT_PARKED_MAX),
+    // Retired: gray-assistant before 1.4 reports the Codex logins it refreshed on the relay's machine. Gray refreshes
+    // nothing now (docs/design/relay-sign-in-in-vm.md), so the list is taken, never read, and dropped before the status
+    // is kept (`withoutRetiredAgentFields`); bounded as it was (a relay's accounts).
+    logins: z.array(z.unknown()).max(STACK_AGENT_SOURCES_MAX).optional(),
     // docs/relay-stack-provisioner.md P10: when the read-only registry token gray-assistant hands out ends (its config's
     // `stack.registry.expires_at`), so Gray can tell the relay 14 days before; absent from agents that do not report it.
     registry: z.object({ expires_at_s: u64.nullable() }).strict().optional(),
@@ -200,12 +164,30 @@ export const stackAgentStatusSchema = z
   .superRefine((s, ctx) => {
     if (s.accepted_compose && !unique(s.accepted_compose, (h) => h)) ctx.addIssue({ code: "custom", path: ["accepted_compose"], message: "a compose hash is listed twice" });
     if ((s.ui_mode === "loopback") !== (s.ui_port !== undefined)) ctx.addIssue({ code: "custom", path: ["ui_port"], message: "ui_port comes with ui_mode loopback, and only with it" });
-    if (!unique(s.logins, (l) => l.login)) ctx.addIssue({ code: "custom", path: ["logins"], message: "a login is listed twice" });
     if (!unique(s.replicas, (r) => r.origin)) ctx.addIssue({ code: "custom", path: ["replicas"], message: "an origin is listed twice" });
     if (!unique(s.parked, (p) => p.account_id)) ctx.addIssue({ code: "custom", path: ["parked"], message: "an account is listed twice" });
     if (s.sources && !unique(s.sources, (a) => a.account_id)) ctx.addIssue({ code: "custom", path: ["sources"], message: "an account is listed twice" });
   });
 export type StackAgentStatus = z.infer<typeof stackAgentStatusSchema>;
+
+/**
+ * The status without the members an older gray-assistant still sends and Gray no longer reads (`logins`, a source
+ * account's `login`), for the console to keep. The signature is checked over the status as sent, before this.
+ */
+export function withoutRetiredAgentFields(status: Json): Json {
+  if (status === null || typeof status !== "object" || Array.isArray(status)) return status;
+  const { logins: _logins, ...rest } = status as { readonly [key: string]: Json };
+  const sources = rest["sources"];
+  if (!Array.isArray(sources)) return rest;
+  return {
+    ...rest,
+    sources: sources.map((source) => {
+      if (source === null || typeof source !== "object" || Array.isArray(source)) return source;
+      const { login: _login, ...kept } = source as { readonly [key: string]: Json };
+      return kept;
+    }),
+  };
+}
 
 /** The report body: the status and the relay key's signature over `stackAgentStatusMessage(status)`, 128 lower-case hex. */
 export const stackAgentStatusReportSchema = z.object({ status: stackAgentStatusSchema, signature: z.string().regex(/^[0-9a-f]{128}$/) }).strict();

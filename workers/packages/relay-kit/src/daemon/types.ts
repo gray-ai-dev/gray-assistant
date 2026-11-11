@@ -413,8 +413,6 @@ export interface DaemonSourceAccount {
   readonly sourceId: string;
   readonly vendor: Vendor;
   readonly credentialType: Credential["type"];
-  /** The relay login the credential comes from (`SourceAccount.login`), or null. */
-  readonly login: string | null;
 }
 
 /** One release the list carries, as acceptance sees it. */

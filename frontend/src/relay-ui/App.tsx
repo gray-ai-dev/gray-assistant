@@ -1,4 +1,4 @@
-// The relay's local page (`gray-assistant ui`): Gray's app bar and design system around five pages that gray-assistant serves on
+// The relay's local page (`gray-assistant ui`): Gray's app bar and design system around four pages that gray-assistant serves on
 // the relay's own machine. The bar says where the page runs, so it is never mistaken for Gray's website: keys typed
 // here go to gray-assistant on the relay's machine and nowhere else.
 import { useEffect, useState, type ReactNode } from 'react';
@@ -13,14 +13,12 @@ import { AccountsPage } from './pages/Accounts';
 import { EnrollPage, SignInPage } from './pages/SignIn';
 import { AddAccountPage } from './pages/AddAccount';
 import { HealthPage } from './pages/Health';
-import { LoginsPage } from './pages/Logins';
 import { ReleasesPage } from './pages/Releases';
 
-type PageKey = 'accounts' | 'logins' | 'releases' | 'image' | 'health';
+type PageKey = 'accounts' | 'releases' | 'image' | 'health';
 
 const PAGES: readonly { key: PageKey; label: string; href: string }[] = [
   { key: 'accounts', label: 'Accounts', href: href('/accounts') },
-  { key: 'logins', label: 'Logins', href: href('/logins') },
   { key: 'releases', label: 'Releases', href: href('/releases') },
   // The image page arrives with `gray-assistant stack` (rollout, rollback); the server says when it is there.
   { key: 'image', label: 'Image', href: href('/image') },
@@ -32,17 +30,8 @@ function pageOf(path: string): PageKey | 'add-account' | 'enroll' | null {
   // `gray-assistant ui enroll`'s one-time link (public mode).
   if (/^\/enroll\/[A-Za-z0-9_-]{43}$/.test(path)) return 'enroll';
   if (path === '/accounts/new') return 'add-account';
-  // Gray's panel links a login's re-login to /logins/<login>.
-  if (/^\/logins\/[^/]+$/.test(path)) return 'logins';
   const key = path.slice(1) as PageKey;
   return PAGES.some(page => page.key === key) ? key : null;
-}
-
-/** The login a `/logins/<login>` address names. */
-function loginOf(path: string): string | null {
-  const match = /^\/logins\/([^/]+)$/.exec(path);
-  if (!match) return null;
-  try { return decodeURIComponent(match[1]!); } catch { return null; }
 }
 
 function useTheme(): [boolean, (dark: boolean) => void] {
@@ -91,11 +80,10 @@ export function App() {
   else if (session.error || !info) content = <Unreachable error={session.error} onRetry={() => void session.refetch()} />;
   else if (page === 'accounts') content = <AccountsPage relay={info} />;
   else if (page === 'add-account') content = <AddAccountPage relay={info} query={route.query} />;
-  else if (page === 'logins') content = <LoginsPage relay={info} login={loginOf(route.path) ?? route.query.get('login')} />;
   else if (page === 'releases') content = <ReleasesPage relay={info} />;
   else if (page === 'health') content = <HealthPage relay={info} />;
   else content = <Page size="narrow"><Stack gap={6}>
-    <PageHeader title="No page here" description="gray-assistant’s page has Accounts, Logins, Releases and Health." />
+    <PageHeader title="No page here" description="gray-assistant’s page has Accounts, Releases and Health." />
     <div><LinkButton variant="primary" href={href('/accounts')}>Go to Accounts</LinkButton></div>
   </Stack></Page>;
 

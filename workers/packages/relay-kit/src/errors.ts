@@ -40,8 +40,6 @@ export type RelayKitErrorCode =
   | "source_bad_response"
   | "source_shape_changed"
   | "source_unsupported"
-  | "invalid_login"
-  | "login_failed"
   | "attestation_failed"
   | "upload_failed"
   | "unsupported_document"

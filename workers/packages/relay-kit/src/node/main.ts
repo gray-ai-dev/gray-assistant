@@ -38,8 +38,7 @@
  *     gray-assistant stack rollout <image> | rollback | restart [--config <gray-assistant.jsonc>] [--no-wait] [--timeout <s>]
  *     gray-assistant stack status [--config <gray-assistant.jsonc>]
  *     gray-assistant debug get <request id> [--out <file>] [--config <gray-assistant.jsonc>]
- *     gray-assistant login codex --name <login> [--account <panel id>] [--force] [--config <gray-assistant.jsonc>]
- *     gray-assistant login status [--config <gray-assistant.jsonc>]
+ *     gray-assistant login <account> [--config <gray-assistant.jsonc>]
  *     gray-assistant ui [--config <gray-assistant.jsonc>] [--port <n>] [--ca <pem>] [--verifier-module <mjs>]
  *     gray-assistant ui link [--config <gray-assistant.jsonc>] [--port <n>]
  *     gray-assistant ui enroll [--config <gray-assistant.jsonc>] [--origin <https origin>]
@@ -103,7 +102,6 @@ import { loadVerifiedReports } from "./reports.ts";
 import { buildKeyFromText } from "./scheduler-load.ts";
 import { startReferenceScheduler } from "./scheduler-server.ts";
 import { uploadToLane } from "./upload.ts";
-import type { SourceFileConfig } from "./source/config-types.ts";
 
 const U64_MAX = 0xffff_ffff_ffff_ffffn;
 const MAX_KEY_BYTES = 64 * 1024;
@@ -275,15 +273,14 @@ function usage(): string {
     "                                     restart waits for the new boot's own attestation)",
     "       gray-assistant stack status [--config <config>]",
     "       gray-assistant debug get <request id> [--out <file>] [--config <config>]   (a request's record the customer authorized; the VM holds it 24 h)",
-    "       gray-assistant login codex --name <login> [--account <panel id>] [--force] [--config <config>]   (the relay's own ChatGPT sign-in; adds the account)",
-    "       gray-assistant login status [--config <config>]",
+    "       gray-assistant login <account> [--config <config>]   (signs a subscription account in inside the VM, by your software there)",
     "       gray-assistant ui [--config <config>] [--port <n>] [--ca <pem>] [--verifier-module <module.mjs>]   (the local page, on 127.0.0.1)",
     "       gray-assistant ui link [--config <config>] [--port <n>]   (a one-time sign-in link for the local page)",
     "       gray-assistant ui enroll [--config <config>] [--origin <https origin>]   (a one-time link that adds a passkey, ui.public)",
     "       gray-assistant ui passkeys list | revoke <id> [--config <config>]",
     "       gray-assistant tunnel status [--config <config>]   (the relay tunnel, its certificate and the CT monitor)",
     "       gray-assistant tunnel ack <cert or key sha256> [--config <config>]   (a CT finding the operator has explained)",
-    "       gray-assistant config set <member> <value> [--json] [--config <config>]   (one member, e.g. source.logins.proxy; restart the agent after)",
+    "       gray-assistant config set <member> <value> [--json] [--config <config>]   (one member; restart the agent after)",
     "       gray-assistant config unset <member> [--config <config>]",
     "       gray-assistant upgrade --dir <kit dir> [--image <image@sha256:...>]   (a kit of any earlier version, of the old name too, to this one;",
     "                                    run from the newest image: docker run --rm -v \"$PWD:/work\" <image> upgrade --dir /work)",
@@ -1336,140 +1333,48 @@ async function pauseCommand(args: ParsedArgs, io: CliIo, paused: boolean): Promi
 // login
 // ---------------------------------------------------------------------------------------------
 
-/** The logins directory of a `file` source's config, or the usage error that says why there is none. */
-async function loginsOf(configPath: string): Promise<{
-  readonly dir: string;
-  readonly relayId: string;
-  readonly source: SourceFileConfig;
-  readonly timeoutMs: number;
-  readonly serveMarginSeconds: number;
-  readonly refreshLeadSeconds: number;
-  readonly proxy: string | null;
-}> {
-  const { loadRelayConfigFile } = await import("./config-file.ts");
-  const config = loadRelayConfigFile(configPath);
-  if (config.source.kind !== "file") throw new RelayKitError("usage", "relay logins are used by the file source only (source.kind \"file\")");
-  const { dir, requestTimeoutMs, serveMarginSeconds, refreshLeadSeconds, proxy } = config.source.logins;
-  if (dir === null) throw new RelayKitError("usage", "source.logins.dir is not set");
-  return { dir, relayId: config.daemon.relayId, source: config.source, timeoutMs: requestTimeoutMs, serveMarginSeconds, refreshLeadSeconds, proxy };
+/** `login <account>` (docs/design/relay-sign-in-in-vm.md): the sign-in inside the VM. */
+async function loginCommand(args: ParsedArgs, io: CliIo): Promise<number> {
+  if (args.positionals[1] === undefined) throw new RelayKitError("usage", "login needs an account id (gray-assistant login <account>)");
+  return loginVmCommand(args, io);
 }
 
-async function loginCommand(args: ParsedArgs, io: CliIo): Promise<number> {
-  const sub = args.positionals[1];
-  if (sub === "codex") {
-    assertFlags(args, ["config", "name", "account", "force"]);
-    assertPositionals(args, 2);
-    const logins = await loginsOf(configPathOf(args));
-    const name = requiredFlag(args, "name");
-    // The account the login serves, judged before the sign-in so a taken ID spends no one-time code.
-    const { addAccount, loginAccountPlan, readAccountsView } = await import("./ui/accounts-file.ts");
-    const { UiRefusal } = await import("./ui/refusal.ts");
-    const plan = loginAccountPlan(readAccountsView(logins.source, { nowMs: io.now() }), name, args.flags.get("account") ?? null);
-    const { signInCodex } = await import("./login/sign-in.ts");
-    const { codexLoginEndpoint, createLoginRoutes, loginVia, loginViaText } = await import("./login/proxy.ts");
-    // The sign-in leaves from the address the account's calls and refreshes use: its own proxy, else the default.
-    const endpoint = codexLoginEndpoint(logins.proxy);
-    let route: { readonly via: import("./login/proxy.ts").LoginVia; readonly fetch: typeof fetch };
-    let unread = "";
-    try {
-      route = createLoginRoutes({ accountsPath: logins.source.path, defaultProxy: logins.proxy }).route(name);
-    } catch (error) {
-      // The operator reads the path below before approving; the agent's refreshes wait for a readable file instead.
-      route = { via: loginVia(null, logins.proxy), fetch: endpoint.fetch };
-      unread = ` (${logins.source.path} can't be read: ${error instanceof RelayKitError ? error.code : "io"})`;
-    }
-    io.stdout(
-      route.via.kind === "account_proxy"
-        ? `gray-assistant login: signing in through ${loginViaText(route.via)}; the agent's refreshes take it too.\n`
-        : `gray-assistant login: signing in through ${loginViaText(route.via)}${unread}: the account has no proxy of its own yet. Once its accounts.json entry has one, the agent's refreshes take it.\n`,
-    );
-    const record = await signInCodex({
-      dir: logins.dir,
-      name,
-      force: args.flags.has("force"),
-      endpoint: { ...endpoint, fetch: route.fetch, timeoutMs: logins.timeoutMs },
-      nowMs: io.now,
-      sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
+/** `login <account>`: the sign-in inside the relay's stack VM (`./login-vm.ts`). */
+async function loginVmCommand(args: ParsedArgs, io: CliIo): Promise<number> {
+  assertFlags(args, ["config"]);
+  assertPositionals(args, 2);
+  const accountId = args.positionals[1] as string;
+  const { checkLoginAccountId, loginVm } = await import("./login-vm.ts");
+  checkLoginAccountId(accountId);
+  const { loadRelayConfigFile } = await import("./config-file.ts");
+  const config = loadRelayConfigFile(configPathOf(args));
+  const key = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "relay key", MAX_KEY_BYTES));
+  const { createInterface } = await import("node:readline");
+  return loginVm({
+    config,
+    seed: key.seed,
+    accountId,
+    io: {
+      stdout: io.stdout,
+      stderr: io.stderr,
+      now: io.now,
+      sleep: io.sleep,
       random: io.random,
-      print: (line) => io.stdout(line),
-    });
-    io.stdout(`gray-assistant login: ${record.login} signed in; its access token expires at ${new Date(record.accessExpiresAt * 1000).toISOString()}\n`);
-    let account: { readonly state: "added" | "named" | "by_hand"; readonly ids: readonly string[]; readonly code: string | null };
-    if (plan.kind === "add") {
-      try {
-        await addAccount(logins.source, logins.relayId, { accountId: plan.accountId, vendor: "chatgpt_codex", credential: { type: "oauth_login", login: record.login }, models: null, proxy: null });
-        account = { state: "added", ids: [plan.accountId], code: null };
-      } catch (error) {
-        // The sign-in is done and kept; only the entry is left to the operator (the file changed meanwhile, say).
-        if (!(error instanceof UiRefusal)) throw error;
-        account = { state: "by_hand", ids: [plan.accountId], code: error.code };
-      }
-    } else {
-      account = plan.kind === "named" ? { state: "named", ids: plan.accountIds, code: null } : { state: "by_hand", ids: [plan.accountId], code: plan.code };
-    }
-    if (account.state === "added") {
-      io.stdout(`Added the account ${account.ids[0]} to ${logins.source.path}; the agent refreshes the login and seals the account at its next read.\n`);
-      io.stdout(`In Gray's panel it is the account ${account.ids[0]}: adopt it under Credentials if the panel doesn't list it yet.\n`);
-    } else if (account.state === "named") {
-      io.stdout(`The agent refreshes it from now on for ${account.ids.join(", ")}.\n`);
-    } else {
-      io.stdout(`The agent refreshes it from now on. accounts.json can't be changed here (${account.code}): add {"account_id": "${account.ids[0]}", "vendor": "chatgpt_codex", "credential": {"type": "oauth_login", "login": "${record.login}"}} to ${logins.source.path}.\n`);
-    }
-    printJson(io, {
-      command: "login",
-      login: record.login,
-      vendor: record.vendor,
-      access_expires_at: BigInt(record.accessExpiresAt),
-      generation: BigInt(record.generation),
-      account: account.state,
-      account_ids: [...account.ids],
-      // `account_proxy`, `logins_proxy` or `host`: the address the sign-in left from.
-      via: route.via.kind,
-    });
-    return 0;
-  }
-  if (sub === "status") {
-    assertFlags(args, ["config"]);
-    assertPositionals(args, 2);
-    const logins = await loginsOf(configPathOf(args));
-    const { listLoginNames, readLoginRecord } = await import("./login/store.ts");
-    const { loginUsable, refreshDueAtSeconds } = await import("./login/record.ts");
-    const nowSecs = Math.floor(io.now() / 1000);
-    let healthy = true;
-    const rows: JsonObject[] = [];
-    for (const name of listLoginNames(logins.dir)) {
-      let row: JsonObject;
-      try {
-        const record = readLoginRecord(logins.dir, name);
-        if (record === null) continue;
-        const usable = loginUsable(record, nowSecs, logins.serveMarginSeconds);
-        const due = refreshDueAtSeconds(record, logins.refreshLeadSeconds);
-        // Handed to the VM: Gray's egress refreshes it there, and this host's copy is only as new as the last write-back.
-        const inVm = record.handedToVmAt !== undefined && record.failed === null;
-        row = {
-          login: name,
-          state: record.failed !== null ? "failed" : inVm ? "refreshed_in_vm" : usable ? "ok" : "expired",
-          failed: record.failed,
-          handed_to_vm_at: record.handedToVmAt === undefined ? null : BigInt(record.handedToVmAt),
-          access_expires_at: BigInt(record.accessExpiresAt),
-          refreshed_at: record.refreshedAt === null ? null : BigInt(record.refreshedAt),
-          next_refresh_at: due === null ? null : BigInt(due),
-          failures: BigInt(record.failures),
+      readLines: (onLine) => {
+        const lines = createInterface({ input: process.stdin, terminal: false });
+        lines.on("line", onLine);
+        return () => lines.close();
+      },
+      onCancel: (onCancel) => {
+        process.on("SIGINT", onCancel);
+        process.on("SIGHUP", onCancel);
+        return () => {
+          process.off("SIGINT", onCancel);
+          process.off("SIGHUP", onCancel);
         };
-        // A failed login can still be usable (`unsupported_region` serves its access token until it expires).
-        if ((!usable && !inVm) || record.failed !== null) healthy = false;
-      } catch (error) {
-        healthy = false;
-        row = { login: name, state: "unreadable", code: error instanceof RelayKitError ? error.code : "io" };
-      }
-      const vmNote = row["state"] === "refreshed_in_vm" ? " (its Token refresh is gray: Gray's egress refreshes it in the VM, this host no longer does; to refresh it here again set the account to source and run gray-assistant login codex --name " + name + " --force)" : "";
-      io.stdout(`login ${name}: ${String(row["state"])}${vmNote}${row["failed"] === null || row["failed"] === undefined ? "" : ` (${String(row["failed"])}; run gray-assistant login codex --name ${name} --force)`}\n`);
-      rows.push(row);
-    }
-    printJson(io, { command: "login status", relay_id: logins.relayId, logins_dir: logins.dir, logins: rows });
-    return healthy ? 0 : 1;
-  }
-  throw new RelayKitError("usage", "login needs the `codex` or `status` subcommand");
+      },
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------------------------
