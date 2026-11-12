@@ -11,7 +11,8 @@
  *                 "ui_mode": "loopback|public|tunnel", "ui_port": 7470,   // while the page runs; the port for loopback
  *                 "tunnel": "connected",              // only with the config's tunnel section
  *                 "boot": {"code", "held", "first_ms", "last_ms", "count", "compose_hash"} | null,
- *                 "accepted_compose": ["<64 hex>", …] | null},
+ *                 "accepted_compose": ["<64 hex>", …] | null,
+ *                 "registry": {"expires_at_s": <unix s> | null}},   // only from a command that read the config's stack
  *      "signature": "<128 hex>"}
  *
  * The schema and the signed message are the console's (`@gray/control/stack-agent`), so a status this builds is one
@@ -99,6 +100,11 @@ export interface AgentStatusInput {
    * release list; absent: the member is left out (an agent without a release registry).
    */
   readonly acceptedCompose?: readonly string[] | null;
+  /**
+   * When the registry pull token ends (`stack.registry.expires_at`), in ms, null for a token with no known end; absent:
+   * the member is left out. Phase 2's commands send it, so Gray's notice follows a token changed with `registry set`.
+   */
+  readonly registryExpiresAtMs?: number | null;
 }
 
 const int = (value: number | null): bigint | null => (value === null ? null : BigInt(Math.trunc(value)));
@@ -167,6 +173,7 @@ export function agentStatusDocument(input: AgentStatusInput): { readonly status:
     ...(input.tunnel === undefined || input.tunnel === null ? {} : { tunnel: input.tunnel }),
     ...boot,
     ...acceptedCompose,
+    ...(input.registryExpiresAtMs === undefined ? {} : { registry: { expires_at_s: input.registryExpiresAtMs === null ? null : BigInt(Math.floor(input.registryExpiresAtMs / 1000)) } }),
   });
   // The envelope (`{"status":…,"signature":"<128 hex>"}`) is under 200 bytes; 1 KiB of room is plenty.
   const fits = (value: JsonObject): boolean => new TextEncoder().encode(toJsonString(value)).length <= STACK_AGENT_STATUS_MAX_BYTES - 1024;

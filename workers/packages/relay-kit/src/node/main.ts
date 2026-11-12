@@ -104,6 +104,11 @@ import { startReferenceScheduler } from "./scheduler-server.ts";
 import { uploadToLane } from "./upload.ts";
 
 const U64_MAX = 0xffff_ffff_ffff_ffffn;
+/**
+ * Gray's release traffic window in hours (the console's RELAY_RELEASE_TRAFFIC_WINDOW_HOURS default, @gray/control
+ * release-traffic.ts): a VM still on an older release gets no traffic from this long after a newer normal one is proposed.
+ */
+const RELEASE_TRAFFIC_WINDOW_HOURS = 72;
 const MAX_KEY_BYTES = 64 * 1024;
 const MAX_MODULE_BYTES = 8 * 1024 * 1024;
 const MAX_TEMPLATES_BYTES = 4 * 1024 * 1024;
@@ -939,9 +944,17 @@ async function initPairCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   if (phase2 !== null) {
     io.stdout(`contract ${phase2.contract} on chain ${phase2.chainId} (your relay's app id; Gray deploys it at Deploy)\n`);
     io.stdout(`approved for it: compose hash ${phase2.composeHash}, OS image hash ${phase2.osImageHash} (signed by the guardian, submitted by Gray after Deploy)\n`);
+    const delayHours = Number(phase2.releaseDelaySeconds) / 3600;
     io.stdout(
-      `release delay ${Number(phase2.releaseDelaySeconds) / 3600} h: each later Gray release takes effect that long after it is proposed unless you veto it (approve one to let it in sooner); an upgrade of the contract always waits 7 days. Change it with gray-assistant releases delay <hours>\n`,
+      `release delay ${delayHours} h: each later Gray release takes effect that long after it is proposed unless you veto it (approve one to let it in sooner); an upgrade of the contract always waits 7 days. Change it with gray-assistant releases delay <hours>\n`,
     );
+    // Gray's release traffic window: a VM still on an older release gets no traffic from that long after a newer normal
+    // release is proposed, so a longer delay leaves a time without traffic at each one.
+    if (delayHours > RELEASE_TRAFFIC_WINDOW_HOURS) {
+      io.stdout(
+        `note: the delay is longer than Gray's ${RELEASE_TRAFFIC_WINDOW_HOURS} h traffic window: each normal release stops your relay's traffic ${RELEASE_TRAFFIC_WINDOW_HOURS} h after it is proposed until it takes effect, ${delayHours - RELEASE_TRAFFIC_WINDOW_HOURS} h later, unless you approve it sooner (gray-assistant releases approve)\n`,
+      );
+    }
   }
   const recovery = result.guardian.recovery;
   if (recovery !== null) {
@@ -978,10 +991,9 @@ async function initPairCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   // The config names the paths the host install mounts the kit at, so the install's own check reads it there.
   const then = left.length > 0 || placeholderNote !== null ? "then" : "next:";
   if (phase2 !== null) {
-    // Phase 2 runs nothing on the host: the person's Delete and Deploy, then one delivery from the kit directory.
-    io.stdout(`${then} the person, in the panel: Delete the VM if there is one, then Deploy (the relay serves nothing from the Delete until deliver)\n`);
-    io.stdout(`      stop the host's agent, if one runs: docker compose stop agent (phase 2 runs nothing on this host)\n`);
-    io.stdout(`      once the VM waits for its delivery, from ${shown(result.directory)}: docker compose run --rm --no-deps agent deliver\n`);
+    // Phase 2 runs nothing on the host: an apply queues Deploy (relay-stack.md §6), then one delivery from the kit directory.
+    io.stdout(`${then} apply the relay-stack document again: it adds the models and, once Gray approved the VM, queues Deploy (relay-stack.md §6)\n`);
+    io.stdout(`      once the VM waits for its delivery (the setup checklist's deliver step), from ${shown(result.directory)}: docker compose run --rm --no-deps agent deliver\n`);
   } else if (result.composePath === null) io.stdout(`${then} install it: deploy/relay/host/install.sh --host <ssh alias> --kit ${shown(result.directory)}\n`);
   else io.stdout(`${then} start gray-assistant from ${shown(result.directory)}: docker compose up -d\n`);
   printJson(io, { ...pairSummary(result), ...(hostDir === null ? {} : { host_directory: hostDir }) } as JsonObject);

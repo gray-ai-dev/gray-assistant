@@ -72,7 +72,7 @@ import { acquireControlLock } from "./control-lock.ts";
 import { controlFileBeside, inspectControlFile } from "./daemon/control-file.ts";
 import { writeAtomicPrivateFile } from "./daemon/atomic-file.ts";
 import { debugStackVm } from "./debug.ts";
-import type { ReadAccounts } from "./deliver-accounts.ts";
+import type { ReadAccounts, SkippedAccount } from "./deliver-accounts.ts";
 import { readControlView, setStackImageState, setStackInstanceState } from "./control.ts";
 import { signedStackRestartRequest, stackRestartRequest, STACK_RESTART_REQUEST_PATH, type StackPost } from "./stack.ts";
 
@@ -278,10 +278,19 @@ export function phase2Candidate(answer: unknown, relayId: string, chain: ChainCo
  * Gray's answer to a signed agent status (S45): the relay's lane instance (`instance`, P12). The console answers it to a signed agent status only, so this posts one with nothing in it but the
  * relay, this kit's version and `sources` (a host-less relay runs no agent, so no other status is overwritten; a running
  * agent's next status replaces it; `accepted_compose` null: no release registry here). `sources` is null until the
- * command has read the source; it then posts again with what the source lists, as the agent does, so the panel offers
- * Adopt for an account new to it.
+ * command has read the source; it then posts again with what the source lists and the accounts it left out (`parked`,
+ * each with its reason), as the agent does, so Gray adopts an account new to it at once and the panel names each one
+ * left out. Each status carries the registry token's end (`stack.registry.expires_at`), so the panel's notice follows
+ * a token changed with `registry set`.
  */
-async function cliAgentAnswer(config: LoadedRelayConfig, seed: Uint8Array, nowMs: number, sources: readonly DaemonSourceAccount[] | null, post: StackPost): Promise<unknown> {
+async function cliAgentAnswer(
+  config: LoadedRelayConfig,
+  seed: Uint8Array,
+  nowMs: number,
+  sources: readonly DaemonSourceAccount[] | null,
+  post: StackPost,
+  skipped: readonly SkippedAccount[] = [],
+): Promise<unknown> {
   const stack = config.daemon.stack;
   if (stack === null) throw new RelayKitError("usage", "the config has no `stack` section");
   const { status } = agentStatusDocument({
@@ -290,9 +299,11 @@ async function cliAgentAnswer(config: LoadedRelayConfig, seed: Uint8Array, nowMs
     agentVersion: RELAY_KIT_VERSION,
     stackOrigin: "",
     replicas: [],
-    parked: [],
+    // A skipped account the panel knows by an id: its closed reason only, never a value.
+    parked: skipped.flatMap((s) => (s.panelId === null ? [] : [{ accountId: s.panelId, vendor: s.vendor, reason: s.reason, sourceId: s.panelId }])),
     sources,
     acceptedCompose: null,
+    registryExpiresAtMs: stack.registry.expiresAtMs,
   });
   const url = `${stack.reportOrigin}${AGENT_STATUS_PATH}`;
   let answer: { readonly status: number; readonly text: string };
@@ -617,9 +628,9 @@ export async function deliverCommand(options: DeliverOptions): Promise<number> {
     // What the source lists, for the panel's Adopt (the agent's `sources`): a failure here sends the accounts all the same.
     if (accounts.sources !== undefined) {
       try {
-        await cliAgentAnswer(config, seed, nextIssuedMs(), accounts.sources, postStatus);
+        await cliAgentAnswer(config, seed, nextIssuedMs(), accounts.sources, postStatus, accounts.skipped);
       } catch {
-        io.stderr(`gray-assistant ${name}: Gray did not take the list of the source's accounts, so the panel shows no new account to adopt until the next run\n`);
+        io.stderr(`gray-assistant ${name}: Gray did not take the list of the source's accounts, so Gray adopts no new account until the next run\n`);
       }
     }
     for (const skipped of accounts.skipped) {
@@ -659,6 +670,17 @@ export async function deliverCommand(options: DeliverOptions): Promise<number> {
     io.stdout(
       `gray-assistant ${name}: the VM keeps boot box version ${String(get(receipt, "boot_version"))} designating ${box.designation.image} (seq ${box.designation.seq}); Gray's copy ${String(get(receipt, "copy"))}\n`,
     );
+    if (action === "registry") {
+      // The token's end as the config names it now, for the panel's notice; with what the source lists, so the status
+      // Gray keeps still names the source's accounts. The VM has the login either way.
+      try {
+        const read = await (options.readAccounts ?? (() => cliAccounts(config, io.now())))();
+        if (read.sources === undefined) throw new Error("the source's accounts were not read");
+        await cliAgentAnswer(config, seed, nextIssuedMs(), read.sources, postStatus, read.skipped);
+      } catch {
+        io.stderr(`gray-assistant ${name}: Gray did not take the token's end date; the next deliver or accounts push reports it\n`);
+      }
+    }
   }
 
   let accountsReceipt: JsonObject | null = null;
