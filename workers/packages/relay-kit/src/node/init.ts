@@ -483,11 +483,13 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
   let phase2: Phase2Pairing | null = null;
   const terms = await chainTerms(gray, code, timeoutMs);
   if (!terms.ok) return terms.failure;
-  if (terms.chain !== null) {
-    const prepared = await phase2Part(terms.chain, pairingGuardian, pairingRecovery.address, releaseDelaySeconds, nowMs, timeoutMs);
-    if (!prepared.ok) return prepared.failure;
-    phase2 = prepared.pairing;
+  // A relay runs on its own contract: Gray names no chain terms when it cannot deploy one for this relay now.
+  if (terms.chain === null) {
+    return { ok: false, reason: "refused", status: null, code: null, text: "Gray offers no contract for this relay now (no chain terms for this code); tell Gray, and pair again once it does" };
   }
+  const prepared = await phase2Part(terms.chain, pairingGuardian, pairingRecovery.address, releaseDelaySeconds, nowMs, timeoutMs);
+  if (!prepared.ok) return prepared.failure;
+  phase2 = prepared.pairing;
   const signature = bytesToLowerHex(await ed25519Sign(key.seed, pairMessage(code, publicKeyHex, phase2?.part ?? null)));
   // A new guardian key is on disk (0600, synced) before the request that carries its approvals: Gray may keep them even
   // when its answer is lost, and a contract naming a guardian whose key this kit lost could never be paused or vetoed.
@@ -586,7 +588,7 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
     writePrivateFile(keyPath, `${toJsonString(relayKeyValue(key))}\n`, { force });
     files.push(keyPath);
   }
-  // 0600 like every kit file: the host install refuses a kit file other users can read (deploy/relay/host/install.sh).
+  // 0600 like every kit file.
   writePrivateFile(configPath, text, { force });
   files.push(configPath);
   // A phase-2 pairing's was written before the request (above).

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Rebuilds the gray-assistant image of v1.4.5-5952845ee856 for one platform from this tree, with the build command of
+# Rebuilds the gray-assistant image of v1.4.6-c646adeca0a8 for one platform from this tree, with the build command of
 # deploy/relay/image/release.sh (the script Gray publishes with): the same Dockerfile, build arguments, labels and
 # annotations, and prints the platform's OCI manifest digest. Compare it with the published image's manifest for the
 # same platform (README.md, "Rebuild"):
 #
 #   ./rebuild.sh                              # linux/amd64
 #   PLATFORM=linux/arm64 ./rebuild.sh
-#   docker buildx imagetools inspect ghcr.io/gray-ai-dev/gray-assistant:5952845ee856     # the published digests, per platform
+#   docker buildx imagetools inspect ghcr.io/gray-ai-dev/gray-assistant:c646adeca0a8     # the published digests, per platform
 #
 # The build fixes every time in the image to the commit's (SOURCE_DATE_EPOCH, rewrite-timestamp), as
 # deploy/relay/image/release.sh does when it passes SOURCE_DATE_EPOCH. rewrite-timestamp sets only the times later
@@ -19,11 +19,11 @@
 # npm's registry (the bundle stage runs npm ci from workers/package-lock.json).
 set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-commit=5952845ee85627d549df89e52eecae860e3bdc6f
-epoch=1794461183
+commit=c646adeca0a840ef95c2c0e5566763caa80e29cf
+epoch=1794463763
 platform=${PLATFORM:-linux/amd64}
-image=ghcr.io/gray-ai-dev/gray-assistant:5952845ee856
-version=1.4.5+5952845ee856
+image=ghcr.io/gray-ai-dev/gray-assistant:c646adeca0a8
+version=1.4.6+c646adeca0a8
 out="$here/rebuild"
 command -v docker >/dev/null 2>&1 || { echo "rebuild.sh: docker is required" >&2; exit 2; }
 rm -rf "$out" && mkdir -p "$out"

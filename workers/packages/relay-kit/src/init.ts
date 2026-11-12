@@ -263,12 +263,12 @@ export function isRelayImagePlaceholder(image: string): boolean {
   return image.endsWith(`/replace-with-your-image@sha256:${"0".repeat(64)}`);
 }
 
-/** The container paths the host install and compose mount (deploy/relay/host/compose.host.yaml): the kit and the state volume. */
+/** The container paths the kit's compose mounts: the kit and the state volume. */
 export const KIT_MOUNT = "/run/secrets";
 /** The page's port the kit's compose.yaml publishes on the host's 127.0.0.1 (the ui's DEFAULT_UI_PORT). */
 export const KIT_UI_PORT = 7470;
 export const STATE_MOUNT = "/var/lib/gray-assistant";
-/** The host install's default `--listen` (deploy/relay/host/install.sh), the agent's scheduler listener. */
+/** The agent's scheduler listener in the kit's config. */
 export const PAIRED_LISTEN = Object.freeze({ host: "127.0.0.1", port: 18080 });
 
 /** One hash `init --pair` accepts: a compose release or an OS image of Gray's list, and the name the comment gives it. */
@@ -439,8 +439,7 @@ export function pairedComposeName(relayId: string): string {
 }
 
 /**
- * The kit's own compose file: the agent of deploy/relay/compose.yaml with the host install's mounts
- * (deploy/relay/host/compose.host.yaml), so each command runs from the kit directory as it is with
+ * The kit's own compose file, so each command runs from the kit directory as it is with
  * `docker compose run --rm --no-deps agent <command>`. `image` is the
  * image `init` ran from, as its build named it; JSON quoting keeps it one YAML scalar. The project, its volume and its
  * network are named after the relay (`pairedComposeName`; a Gray relay ID is lower-case letters, digits and hyphens,

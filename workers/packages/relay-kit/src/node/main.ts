@@ -25,9 +25,9 @@
  *     gray-assistant init --pair <code> --gray <api origin> --dir <dir> [--key <relay-key.json>] [--force]
  *                    [--registry-user <user> [--registry-expires-at <YYYY-MM-DDTHH:MM:SSZ>]]
  *     gray-assistant accounts [--config <gray-assistant.jsonc>]
- *     gray-assistant deliver [--config <gray-assistant.jsonc>] [--no-wait] [--timeout <s>]   (phase 2, P4b)
- *     gray-assistant accounts push [--config <gray-assistant.jsonc>]                       (phase 2)
- *     gray-assistant registry set [--config <gray-assistant.jsonc>]                        (phase 2)
+ *     gray-assistant deliver [--config <gray-assistant.jsonc>] [--no-wait] [--timeout <s>]
+ *     gray-assistant accounts push [--config <gray-assistant.jsonc>]
+ *     gray-assistant registry set [--config <gray-assistant.jsonc>] 
  *     gray-assistant run [--config <gray-assistant.jsonc>] [--ca <pem>] [--verifier-module <mjs>]
  *     gray-assistant doctor [--config <gray-assistant.jsonc>] [--ca <pem>] [--verifier-module <mjs>] [--now <unix>]
  *     gray-assistant status [--config <gray-assistant.jsonc>]
@@ -243,39 +243,30 @@ function usage(): string {
     "       gray-assistant upload <lane origin> <file> [--report <verified-report.json>] [--reports <list.json>]",
     "                                  [--accept-unpinned] [--ca <pem>] [--max-report-age <seconds>]",
     "       gray-assistant scheduler --config <scheduler.json>",
-    "       gray-assistant init --dir <dir> [--relay-id <id>] [--scheduler-url <url>] [--lane-origin <url>]",
-    "                        [--release-list <url>] [--release-public-key <64 hex>] [--release-freshness-public-key <64 hex>]",
-    "                        [--app-id <40 hex>] [--kms-ca-pubkey <182 hex>] [--force]",
     "       gray-assistant init --pair <code> --gray <api origin> --dir <dir> [--key <relay-key.json>] [--force]   (the code from the relay's Integration page)",
-    "                        [--release-delay <hours>]   (phase 2: how long a Gray release waits for your veto, 0 to 168, default 24)",
+    "                        [--release-delay <hours>]   (how long a Gray release waits for your veto, 0 to 168, default 24)",
     "                        [--registry-user <user> [--registry-expires-at <YYYY-MM-DDTHH:MM:SSZ>]] [--image <image@sha256:...>]   (the pull token's user, and its expiry when it has one; the image compose.yaml runs)",
     "       gray-assistant accounts [--config <config>]   (each account's panel id beside its source id)",
-    "       gray-assistant deliver [--config <config>] [--no-wait] [--timeout <seconds>]   (phase 2: attest the VM, check the contract, seal the boot box and the accounts, restart when needed)",
-    "       gray-assistant accounts push [--config <config>]   (phase 2: read the source once and seal the accounts to the VM)",
-    "       gray-assistant registry set [--config <config>]   (phase 2: seal stack.registry's login anew, same designation)",
+    "       gray-assistant deliver [--config <config>] [--no-wait] [--timeout <seconds>]   (attest the VM, check the contract, seal the boot box and the accounts, restart when needed)",
+    "       gray-assistant accounts push [--config <config>]   (read the source once and seal the accounts to the VM)",
+    "       gray-assistant registry set [--config <config>]   (seal stack.registry's login anew, same designation)",
     "       gray-assistant source check [--config <config>]   (the http source's two routes against the standard; prints no key)",
-    "       gray-assistant run [--config <config>] [--ca <pem>] [--verifier-module <module.mjs>]",
     "       gray-assistant doctor [--config <config>] [--ca <pem>] [--verifier-module <module.mjs>] [--now <unix>]",
-    "       gray-assistant status [--config <config>]",
-    "       gray-assistant pause|resume [--config <config>]",
-    "       gray-assistant releases [--config <config>]   (Gray's releases and OS images, each accepted, rejected or pending)",
-    "       gray-assistant releases accept <id> [--config <config>] [--no-wait] [--timeout <seconds>]   (waits for the agent's first sight)",
-    "       gray-assistant releases reject|unreject <hash> [--config <config>]   (a compose hash or an OS image hash)",
-    "       gray-assistant releases list [--from-block <n>] [--config <config>]   (phase 2: each release proposed on the relay's contract)",
+    "       gray-assistant releases list [--from-block <n>] [--config <config>]   (each release proposed on the relay's contract)",
     "       gray-assistant releases check <hash> [--kind compose|os_image] [--config <config>]   (its state on the contract, read from both RPCs, and its compose or OS image texts from Gray's signed list, checked here)",
     "       gray-assistant releases approve|reject <hash> [--kind compose|os_image] [--deadline <unix>] [--nonce <n>]",
-    "                                          [--submit --rpc <url> | --print] [--config <config>]   (phase 2: the guardian's signed approval or veto;",
+    "                                          [--submit --rpc <url> | --print] [--config <config>]   (the guardian's signed approval or veto;",
     "                                          Gray's relayer sends it by default, --submit from the guardian key, --print only signs)",
     "       gray-assistant releases delay <hours> [--force] [--deadline <unix>] [--nonce <n>] [--submit --rpc <url> | --print] [--config <config>]",
-    "                                          (phase 2: your release delay, 0 to 168 h, signed by the guardian and sent as approve is; --force when",
+    "                                          (your release delay, 0 to 168 h, signed by the guardian and sent as approve is; --force when",
     "                                          lengthening it would stop a release that is effective by time alone)",
     "       gray-assistant keys set-guardian|set-recovery <address> --key <recovery-key.json> [--deadline <unix>] [--nonce <n>]",
-    "                                          [--submit --rpc <url> | --print] [--config <config>]   (phase 2: the recovery key replaces a key)",
+    "                                          [--submit --rpc <url> | --print] [--config <config>]   (the recovery key replaces a key)",
     "       gray-assistant pause|unpause [--deadline <unix>] [--nonce <n>] [--submit --rpc <url> | --print] [--config <config>]",
-    "                                    (phase 2, a config with `chain`: the contract's off switch, signed by the guardian)",
+    "                                    (the contract's off switch, signed by the guardian)",
     "       gray-assistant stack rollout <image> [--config <config>] [--no-wait] [--timeout <seconds>]   (one of stack.relay_images)",
     "       gray-assistant stack rollback|restart [--config <config>] [--no-wait] [--timeout <seconds>]",
-    "                                    (phase 2, a config with `chain`: rollout and rollback seal a new designation, then restart the VM;",
+    "                                    (rollout and rollback seal a new designation, then restart the VM;",
     "                                     restart waits for the new boot's own attestation)",
     "       gray-assistant stack status [--config <config>]",
     "       gray-assistant debug get <request id> [--out <file>] [--config <config>]   (a request's record the customer authorized; the VM holds it 24 h)",
@@ -283,10 +274,6 @@ function usage(): string {
     "       gray-assistant ui [--config <config>] [--port <n>] [--host <address>] [--ca <pem>] [--verifier-module <module.mjs>]",
     "                                    (the local page, on 127.0.0.1; in the kit's container --host 0.0.0.0, published on the host's 127.0.0.1 only)",
     "       gray-assistant ui link [--config <config>] [--port <n>]   (a one-time sign-in link for the local page)",
-    "       gray-assistant ui enroll [--config <config>] [--origin <https origin>]   (a one-time link that adds a passkey, ui.public)",
-    "       gray-assistant ui passkeys list | revoke <id> [--config <config>]",
-    "       gray-assistant tunnel status [--config <config>]   (the relay tunnel, its certificate and the CT monitor)",
-    "       gray-assistant tunnel ack <cert or key sha256> [--config <config>]   (a CT finding the operator has explained)",
     "       gray-assistant config set <member> <value> [--json] [--config <config>]   (one member; restart the agent after)",
     "       gray-assistant config unset <member> [--config <config>]",
     "       gray-assistant upgrade --dir <kit dir> [--image <image@sha256:...>]   (a kit of any earlier version, of the old name too, to this one;",
@@ -385,18 +372,9 @@ async function dispatch(args: ParsedArgs, io: CliIo): Promise<number> {
     return deliverCli(args, io, "registry", null);
   }
   if (command === "source") return sourceCommand(args, io);
-  if (command === "run") return runCommand(args, io);
   if (command === "doctor") return doctorCommand(args, io);
   if (command === "upgrade") return upgradeCommand(args, io);
-  if (command === "status") return statusCommand(args, io);
-  if (command === "pause" || command === "resume") {
-    // Phase 2: with a `chain` member, `pause` is the contract's off switch; `resume` stays the agent's.
-    if (command === "pause") {
-      const chain = await chainContextOf(args, true);
-      if (chain !== null) return chainSwitchCommand(args, io, "pause", chain);
-    }
-    return pauseCommand(args, io, command === "pause");
-  }
+  if (command === "pause") return chainSwitchCommand(args, io, "pause", await requireChainContext(args, "pause"));
   if (command === "unpause") return chainSwitchCommand(args, io, "unpause", await requireChainContext(args, "unpause"));
   if (command === "releases") return releasesCommand(args, io);
   if (command === "keys") return keysCommand(args, io);
@@ -404,7 +382,6 @@ async function dispatch(args: ParsedArgs, io: CliIo): Promise<number> {
   if (command === "debug") return debugCommand(args, io);
   if (command === "login") return loginCommand(args, io);
   if (command === "ui") return uiCommand(args, io);
-  if (command === "tunnel") return tunnelCommand(args, io);
   if (command === "config") return configCommand(args, io);
   io.stderr(`gray-assistant: unknown command ${JSON.stringify(command)}\n${usage()}`);
   return 2;
@@ -427,11 +404,9 @@ async function upgradeCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   for (const member of result.members) io.stdout(`renamed the old path in ${member}\n`);
   for (const note of result.notes) io.stdout(`note: ${note}\n`);
   if (result.written.length === 0) io.stdout("nothing to change: the kit is already this version's\n");
-  // Phase 2: nothing runs on the host, so the next step is a check; the next `deliver` or `accounts push` reports the new
-  // version to Gray. A relay paired before phase 2 (no `chain`) still restarts its always-on agent (the console guide §10).
+  // Nothing runs on the host, so the next step is a check; the next `deliver` or `accounts push` reports the new version to Gray.
   const next = result.project === null ? [] : ["docker compose run --rm --no-deps agent --version", "docker compose run --rm --no-deps agent doctor"];
   for (const line of next) io.stdout(`next, in the kit directory: ${line}\n`);
-  if (result.project !== null) io.stdout("note: a relay paired before phase 2 (its config has no chain) restarts its agent instead: docker compose up -d\n");
   printJson(io, {
     command: "upgrade",
     relay_id: result.relayId,
@@ -478,12 +453,11 @@ async function configCommand(args: ParsedArgs, io: CliIo): Promise<number> {
     io.stdout(`gray-assistant config: ${member} is not in ${result.path}; nothing changed\n`);
   } else {
     io.stdout(`gray-assistant config: ${sub === "set" ? "set" : "removed"} ${member} in ${result.path}\n`);
-    // Phase 2: every command reads the config when it starts. The config is mounted read-only in the agent's compose, so
+    // Every command reads the config when it starts. The config is mounted read-only in the agent's compose, so
     // the write itself runs with the kit mounted writable (writeRefusal names the same form).
     io.stdout(
       "Each gray-assistant command reads the config when it starts: the next one uses the change. From the kit's directory, " +
-        'config set runs as: docker compose run --rm --no-deps -v "$PWD:/work" agent config set --config /work/gray-assistant.jsonc <member> <value>. ' +
-        "A relay paired before phase 2 (its config has no chain) restarts its agent: docker compose up -d --force-recreate agent.\n",
+        'config set runs as: docker compose run --rm --no-deps -v "$PWD:/work" agent config set --config /work/gray-assistant.jsonc <member> <value>.\n',
     );
   }
   printJson(io, { command: "config", action: sub, member, config: result.path, changed: result.changed, restart_needed: result.changed });
@@ -883,33 +857,8 @@ async function scheduler(args: ParsedArgs, io: CliIo): Promise<number> {
 // ---------------------------------------------------------------------------------------------
 
 async function initCommand(args: ParsedArgs, io: CliIo): Promise<number> {
-  if (args.flags.has("pair")) return initPairCommand(args, io);
-  assertFlags(args, ["dir", "relay-id", "scheduler-url", "lane-origin", "release-list", "release-public-key", "release-freshness-public-key", "app-id", "kms-ca-pubkey", "force"]);
-  assertPositionals(args, 1);
-  const { initSummary, initWorkspace } = await import("./init.ts");
-  const result = await initWorkspace({
-    directory: requiredFlag(args, "dir"),
-    ...(args.flags.has("relay-id") ? { relayId: args.flags.get("relay-id") as string } : {}),
-    ...(args.flags.has("scheduler-url") ? { schedulerUrl: args.flags.get("scheduler-url") as string } : {}),
-    ...(args.flags.has("lane-origin") ? { laneOrigin: args.flags.get("lane-origin") as string } : {}),
-    ...(args.flags.has("release-list") ? { releaseListUrl: args.flags.get("release-list") as string } : {}),
-    ...(args.flags.has("release-public-key") ? { releasePublicKey: args.flags.get("release-public-key") as string } : {}),
-    ...(args.flags.has("release-freshness-public-key") ? { releaseFreshnessPublicKey: args.flags.get("release-freshness-public-key") as string } : {}),
-    ...(args.flags.has("app-id") ? { appId: args.flags.get("app-id") as string } : {}),
-    ...(args.flags.has("kms-ca-pubkey") ? { kmsCaPubkey: args.flags.get("kms-ca-pubkey") as string } : {}),
-    ...(args.flags.has("force") ? { force: true } : {}),
-  });
-  io.stdout(`gray-assistant init: wrote the relay workspace in ${result.directory}\n`);
-  io.stdout(`relay_id ${result.relayId}\n`);
-  io.stdout(`public_key ${result.publicKeyHex}\n`);
-  for (const file of result.files) io.stdout(`wrote ${file}\n`);
-  const placeholderNote = initPlaceholderNote(result.placeholders);
-  if (placeholderNote !== null) io.stdout(`${placeholderNote}\n`);
-  io.stdout("next: fill relay_id, scheduler.public_url, lane.origins, lane.release_list and lane.release_public_key\n");
-  io.stdout("      write accounts.json (0600), then run `gray-assistant doctor --config <dir>/gray-assistant.jsonc`\n");
-  io.stdout("      replace lane.example and scheduler.example only after Gray sends the registration values\n");
-  printJson(io, initSummary(result) as JsonObject);
-  return 0;
+  if (!args.flags.has("pair")) throw new RelayKitError("usage", "init needs --pair <code> --gray <api origin> --dir <dir> (the code from the relay's Integration page)");
+  return initPairCommand(args, io);
 }
 
 /** `GRAY_ASSISTANT_HOST_DIR`: the kit directory's path on the host, when it is an absolute path of printable characters. */
@@ -1001,12 +950,9 @@ async function initPairCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   if (placeholderNote !== null) io.stdout(`${placeholderNote}\n`);
   // The config names the paths the host install mounts the kit at, so the install's own check reads it there.
   const then = left.length > 0 || placeholderNote !== null ? "then" : "next:";
-  if (phase2 !== null) {
-    // Phase 2 runs nothing on the host: an apply queues Deploy (relay-stack.md §6), then one delivery from the kit directory.
-    io.stdout(`${then} apply the relay-stack document again: it adds the models and, once Gray approved the VM, queues Deploy (relay-stack.md §6)\n`);
-    io.stdout(`      once the VM waits for its delivery (the setup checklist's deliver step), from ${shown(result.directory)}: docker compose run --rm --no-deps agent deliver\n`);
-  } else if (result.composePath === null) io.stdout(`${then} install it: deploy/relay/host/install.sh --host <ssh alias> --kit ${shown(result.directory)}\n`);
-  else io.stdout(`${then} start gray-assistant from ${shown(result.directory)}: docker compose up -d\n`);
+  // Nothing runs on the host: an apply queues Deploy (relay-stack.md §6), then one delivery from the kit directory.
+  io.stdout(`${then} apply the relay-stack document again: it adds the models and, once Gray approved the VM, queues Deploy (relay-stack.md §6)\n`);
+  io.stdout(`      once the VM waits for its delivery (the setup checklist's deliver step), from ${shown(result.directory)}: docker compose run --rm --no-deps agent deliver\n`);
   printJson(io, { ...pairSummary(result), ...(hostDir === null ? {} : { host_directory: hostDir }) } as JsonObject);
   return 0;
 }
@@ -1064,48 +1010,6 @@ async function sourceCommand(args: ParsedArgs, io: CliIo): Promise<number> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// run
-// ---------------------------------------------------------------------------------------------
-
-async function runCommand(args: ParsedArgs, io: CliIo): Promise<number> {
-  assertFlags(args, ["config", "ca", "verifier-module"]);
-  assertPositionals(args, 1);
-  const { runSummary, startRelay } = await import("./run.ts");
-  const runnerIo = { stdout: io.stdout, stderr: io.stderr, now: io.now };
-  // Register the handlers before the listener exists: a supervisor that stops the process as soon
-  // as it reads the listening line must find a handler, not the default terminate action.
-  let resolveStop: () => void = () => undefined;
-  const stopped = new Promise<void>((resolve) => {
-    resolveStop = resolve;
-  });
-  const onSignal = (): void => resolveStop();
-  process.once("SIGINT", onSignal);
-  process.once("SIGTERM", onSignal);
-  let running;
-  try {
-    running = await startRelay({
-      configPath: configPathOf(args),
-      ...(args.flags.has("ca") ? { ca: readFileText(args.flags.get("ca") as string, "CA certificate", 1024 * 1024) } : {}),
-      ...(args.flags.has("verifier-module") ? { verifierModule: args.flags.get("verifier-module") as string } : {}),
-      io: runnerIo,
-    });
-  } catch (error) {
-    process.removeListener("SIGINT", onSignal);
-    process.removeListener("SIGTERM", onSignal);
-    throw error;
-  }
-  io.stdout(`gray-assistant run: listening on ${running.url}\n`);
-  if (running.ui !== null) io.stdout(`gray-assistant run: local page on ${running.ui.url}/ui/; sign in with gray-assistant ui link${configArgumentFor(running.config.path)}\n`);
-  const publicPage = running.uiPublic?.origin() ?? null;
-  if (publicPage !== null) io.stdout(`gray-assistant run: page on ${publicPage}/ui/ (passkeys only); add one with gray-assistant ui enroll${configArgumentFor(running.config.path)}\n`);
-  printJson(io, runSummary(running));
-  await stopped;
-  await running.stop();
-  io.stdout("gray-assistant run: stopped\n");
-  return 0;
-}
-
-// ---------------------------------------------------------------------------------------------
 // doctor
 // ---------------------------------------------------------------------------------------------
 
@@ -1126,7 +1030,7 @@ async function doctorCommand(args: ParsedArgs, io: CliIo): Promise<number> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// status / pause / resume
+// reading JSON values
 // ---------------------------------------------------------------------------------------------
 
 function objectOf(value: unknown): JsonObject | null {
@@ -1143,213 +1047,6 @@ function numeric(value: unknown): number | null {
 
 function text(value: unknown): string | null {
   return typeof value === "string" ? value : null;
-}
-
-/**
- * `gray-assistant tunnel status`: the tunnel's part of the running agent's status (docs/relay-tunnel.md). `gray-assistant
- * tunnel ack <sha256>`: a CT finding the operator has explained (a certificate the relay obtained by hand, say) stops
- * counting; the agent reads the acknowledgements on its next poll. Both read the config for the tunnel's files.
- */
-async function tunnelCommand(args: ParsedArgs, io: CliIo): Promise<number> {
-  const action = args.positionals[1];
-  const { loadRelayConfigFile } = await import("./config-file.ts");
-  if (action === "status") {
-    assertFlags(args, ["config"]);
-    assertPositionals(args, 2);
-    const { readDaemonStatusFile } = await import("./daemon/status-file.ts");
-    const config = loadRelayConfigFile(requiredFlag(args, "config"));
-    if (config.daemon.tunnel === null) throw new RelayKitError("usage", "the config has no tunnel section");
-    const snapshot = readDaemonStatusFile(config.daemon.statusFile);
-    const tunnel = snapshot === null ? null : objectOf(get(snapshot, "tunnel"));
-    if (tunnel === null) {
-      io.stdout(`gray-assistant tunnel: not running (no tunnel status in ${config.daemon.statusFile})\n`);
-      io.stdout(`name ${config.daemon.tunnel.name}\n`);
-      printJson(io, { command: "tunnel status", running: false, name: config.daemon.tunnel.name, origin: config.daemon.tunnel.origin });
-      return 0;
-    }
-    const certificate = objectOf(get(tunnel, "certificate"));
-    const ct = objectOf(get(tunnel, "ct"));
-    io.stdout(`tunnel ${text(get(tunnel, "state")) ?? "unknown"}\n`);
-    io.stdout(`name ${config.daemon.tunnel.name}\n`);
-    io.stdout(`origin ${config.daemon.tunnel.origin}\n`);
-    io.stdout(`certificate ${certificate === null ? "unknown" : (text(get(certificate, "state")) ?? "unknown")}\n`);
-    io.stdout(`ct ${ct === null ? "not run yet" : (text(get(ct, "state")) ?? "unknown")}\n`);
-    printJson(io, { command: "tunnel status", running: true, ...(tunnel as Record<string, unknown>) });
-    return 0;
-  }
-  if (action === "ack") {
-    assertFlags(args, ["config"]);
-    assertPositionals(args, 3);
-    const sha256 = args.positionals[2] ?? "";
-    if (!/^[0-9a-f]{64}$/.test(sha256)) throw new RelayKitError("usage", "tunnel ack takes a certificate's or a key's SHA-256, 64 lower-case hex");
-    const { tunnelPaths } = await import("./tunnel/files.ts");
-    const { writeCtAck } = await import("./tunnel/ct.ts");
-    const config = loadRelayConfigFile(requiredFlag(args, "config"));
-    if (config.daemon.tunnel === null) throw new RelayKitError("usage", "the config has no tunnel section");
-    const path = tunnelPaths(config.daemon.tunnel).ctAcks;
-    writeCtAck(path, sha256);
-    io.stdout(`gray-assistant tunnel: ${sha256} acknowledged; the agent stops counting it at its next CT poll\n`);
-    printJson(io, { command: "tunnel ack", sha256, acks_file: path });
-    return 0;
-  }
-  throw new RelayKitError("usage", "tunnel takes status or ack");
-}
-
-async function statusCommand(args: ParsedArgs, io: CliIo): Promise<number> {
-  assertFlags(args, ["config"]);
-  assertPositionals(args, 1);
-  const { loadRelayConfigFile } = await import("./config-file.ts");
-  const { controlFileBeside } = await import("./daemon/control-file.ts");
-  const { readControlView } = await import("./control.ts");
-  const { readDaemonStatusFile } = await import("./daemon/status-file.ts");
-  const config = loadRelayConfigFile(configPathOf(args));
-  const controlFile = controlFileBeside(config.daemon.stateFile);
-  const snapshot = readDaemonStatusFile(config.daemon.statusFile);
-  if (snapshot === null) {
-    const view = await readControlView(config.daemon.stateFile, controlFile);
-    io.stdout(`gray-assistant status: not running (no status file at ${config.daemon.statusFile})\n`);
-    io.stdout(`relay_id ${config.daemon.relayId}\n`);
-    io.stdout(`paused ${view.control.paused ? "yes" : "no"}\n`);
-    io.stdout(`last_version ${view.lastVersion}\n`);
-    io.stdout(`control_file ${controlFile} (${view.source})\n`);
-    printJson(io, {
-      command: "status",
-      running: false,
-      relay_id: config.daemon.relayId,
-      paused: view.control.paused,
-      last_version: view.lastVersion,
-      control_file: controlFile,
-      control_source: view.source,
-      status_file: config.daemon.statusFile,
-    });
-    return 0;
-  }
-  const status = objectOf(get(snapshot, "status"));
-  const health = objectOf(get(snapshot, "health"));
-  const relayId = status === null ? null : text(get(status, "relay_id"));
-  const paused = status !== null && get(status, "paused") === true;
-  const writtenAt = numeric(get(snapshot, "written_at_ms"));
-  const clockSkew = status === null ? null : numeric(get(status, "clock_skew_ms"));
-  const reasons = health === null ? [] : arrayOf(get(health, "reasons")).map(String);
-  const stopped = reasons.includes("stopped");
-  // R23: a snapshot older than 3 ticks + one 60 s request timeout is not a running agent; the
-  // status file is written after every tick, and one tick may wait out a slow lane POST.
-  const staleAfterMs = 3 * config.daemon.tickMs + 60_000;
-  const ageMs = writtenAt === null ? null : Math.max(0, io.now() - writtenAt);
-  if (ageMs !== null && ageMs > staleAfterMs) {
-    io.stdout(`gray-assistant status: not running (stale snapshot: written ${ageMs} ms ago, older than ${staleAfterMs} ms)\n`);
-    io.stdout(`relay_id ${relayId ?? config.daemon.relayId}\n`);
-    io.stdout(`paused ${paused ? "yes" : "no"}\n`);
-    io.stdout(`snapshot_age_ms ${ageMs}\n`);
-    printJson(io, { command: "status", running: false, stale: true, snapshot_age_ms: BigInt(ageMs), ...snapshot } as JsonObject);
-    return 0;
-  }
-  const readiness = health !== null && get(health, "ready") === true && !stopped;
-  io.stdout(`gray-assistant status: ${relayId ?? config.daemon.relayId}${stopped ? " (stopped)" : ""}\n`);
-  io.stdout(`ready ${readiness ? "yes" : "no"}${reasons.length === 0 ? "" : ` (${reasons.join(", ")})`}\n`);
-  io.stdout(`paused ${paused ? "yes" : "no"}\n`);
-  io.stdout(`clock_skew_ms ${clockSkew === null ? "unknown" : String(clockSkew)}\n`);
-  if (ageMs !== null) io.stdout(`snapshot_age_ms ${ageMs}\n`);
-  const source = status === null ? null : objectOf(get(status, "source"));
-  if (source !== null) io.stdout(`source healthy ${get(source, "healthy") === true ? "yes" : "no"}, accounts ${numeric(get(source, "accounts")) ?? 0}\n`);
-  for (const replica of status === null ? [] : arrayOf(get(status, "replicas"))) {
-    const record = objectOf(replica);
-    if (record === null) continue;
-    // R23: the remaining lease is the absolute deadline minus now, so it ages even when the writer
-    // stopped. `lease_remaining_ms` in the file is the writer's snapshot and is deliberately unused.
-    const expiresAt = numeric(get(record, "lease_expires_at_ms"));
-    const remaining = expiresAt === null ? null : Math.max(0, expiresAt - io.now());
-    // D116(b): the scheduler API version the replica's TEE uses, from its last verified call.
-    const apiVersion = numeric(get(record, "scheduler_api_version"));
-    io.stdout(
-      `replica ${text(get(record, "origin")) ?? "?"}: phase ${text(get(record, "phase")) ?? "?"}, accounts ${numeric(get(record, "accounts")) ?? 0}, lease ${remaining === null ? "none" : `${Math.floor(remaining / 1000)}s`}, policy ${text(get(record, "policy_version")) ?? "-"}, credentials ${text(get(record, "credential_version")) ?? "-"}, scheduler api ${apiVersion === null ? "-" : String(apiVersion)}\n`,
-    );
-  }
-  for (const account of status === null ? [] : arrayOf(get(status, "parked"))) {
-    const record = objectOf(account);
-    if (record === null) continue;
-    io.stdout(`parked ${text(get(record, "account_id")) ?? "?"} (${text(get(record, "vendor")) ?? "?"}): ${text(get(record, "reason")) ?? "?"}\n`);
-  }
-  printReleaseLines(io, status);
-  // S45: what the agent last reported to Gray's console (a relay stack's agent only).
-  const agent = objectOf(get(snapshot, "agent_status"));
-  if (agent !== null) {
-    const { agentStatusVerdict } = await import("./daemon/agent-status-report.ts");
-    const verdict = agentStatusVerdict(agent, io.now());
-    io.stdout(`agent_status ${verdict.status}: ${verdict.message}\n`);
-  }
-  printJson(io, { command: "status", running: !stopped, ...(stopped ? { stopped: true } : {}), ...snapshot } as JsonObject);
-  return 0;
-}
-
-/**
- * The release lines of `status` and `releases` (the daemon's status snapshot): each release of Gray's list and each OS
- * image with whether it is accepted (at pairing, or by you), rejected or pending and when it will be accepted, and what
- * keeps the list current.
- */
-function printReleaseLines(io: CliIo, status: JsonObject | null): void {
-  for (const release of status === null ? [] : arrayOf(get(status, "releases"))) {
-    const record = objectOf(release);
-    if (record === null) continue;
-    const acceptable = get(record, "acceptable") === true;
-    const at = numeric(get(record, "acceptable_at_ms"));
-    const remaining = at === null ? null : Math.max(0, at - io.now());
-    const rejected = get(record, "rejected") === true;
-    const atPairing = acceptable && get(record, "accepted_at_pairing") === true ? " at pairing" : "";
-    io.stdout(
-      `release ${text(get(record, "compose_hash")) ?? "?"}: ${acceptable ? `accepted${atPairing}` : rejected ? "rejected" : "pending"}${acceptable || rejected || remaining === null ? "" : `, acceptable in ${Math.ceil(remaining / 3_600_000)}h`}\n`,
-    );
-  }
-  // D137: what keeps the release list an authority, and until when; which part is stale when it is not.
-  const releaseList = status === null ? null : objectOf(get(status, "release_list"));
-  if (releaseList !== null) {
-    const iso = (value: number | null): string => (value === null ? "none" : new Date(value).toISOString());
-    const until = numeric(get(releaseList, "current_until_ms"));
-    const freshness = text(get(releaseList, "freshness"));
-    const error = text(get(releaseList, "last_error"));
-    const staleness = text(get(releaseList, "staleness"));
-    io.stdout(
-      `release_list current until ${iso(until)}${until !== null && until <= io.now() ? " (lapsed)" : ""} by ${text(get(releaseList, "current_by")) ?? "-"}, expires ${iso(numeric(get(releaseList, "expires_at_ms")))}, freshness ${freshness ?? "-"}${error === null ? "" : `; last poll ${error}${staleness === null ? "" : ` (${staleness})`}`}\n`,
-    );
-  }
-  // S11b: the list's OS images, with why one is not accepted and when it will be.
-  for (const image of status === null ? [] : arrayOf(get(status, "os_images"))) {
-    const record = objectOf(image);
-    if (record === null) continue;
-    const acceptable = get(record, "acceptable") === true;
-    const refusal = text(get(record, "refusal"));
-    const at = numeric(get(record, "acceptable_at_ms"));
-    const remaining = at === null ? null : Math.max(0, at - io.now());
-    const waiting = refusal === "os_image_not_accepted" && remaining !== null ? `, acceptable in ${Math.ceil(remaining / 3_600_000)}h` : "";
-    const atPairing = acceptable && get(record, "accepted_at_pairing") === true ? " at pairing" : "";
-    io.stdout(
-      `os_image ${text(get(record, "os_image_hash")) ?? "?"}: ${acceptable ? `accepted${atPairing}` : (refusal ?? "pending")}${waiting}, provenance ${text(get(record, "provenance")) ?? "?"}${text(get(record, "version")) === null ? "" : `, version ${text(get(record, "version"))}`}\n`,
-    );
-  }
-}
-
-async function pauseCommand(args: ParsedArgs, io: CliIo, paused: boolean): Promise<number> {
-  assertFlags(args, ["config"]);
-  assertPositionals(args, 1);
-  const { loadRelayConfigFile } = await import("./config-file.ts");
-  const { controlFileBeside } = await import("./daemon/control-file.ts");
-  const { setPausedState } = await import("./control.ts");
-  const config = loadRelayConfigFile(configPathOf(args));
-  const controlFile = controlFileBeside(config.daemon.stateFile);
-  const view = await setPausedState(controlFile, config.daemon.stateFile, paused);
-  io.stdout(`gray-assistant ${paused ? "pause" : "resume"}: relay ${config.daemon.relayId} is ${paused ? "paused" : "running"}\n`);
-  io.stdout(`control_file ${controlFile}\n`);
-  io.stdout(`state_file ${config.daemon.stateFile} (read only; the agent owns it)\n`);
-  printJson(io, {
-    command: paused ? "pause" : "resume",
-    relay_id: config.daemon.relayId,
-    paused: view.control.paused,
-    accepted_releases: BigInt(view.control.acceptedReleases.length),
-    last_version: view.lastVersion,
-    control_file: controlFile,
-    control_source: view.source,
-  });
-  return 0;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1421,8 +1118,6 @@ function printUiLink(io: CliIo, link: { readonly url: string; readonly code: str
 }
 
 async function uiCommand(args: ParsedArgs, io: CliIo): Promise<number> {
-  if (args.positionals[1] === "enroll") return uiEnrollCommand(args, io);
-  if (args.positionals[1] === "passkeys") return uiPasskeysCommand(args, io);
   if (args.positionals[1] === "link") {
     const { DEFAULT_UI_PORT } = await import("./ui/server.ts");
     assertFlags(args, ["config", "port"]);
@@ -1483,85 +1178,8 @@ async function uiCommand(args: ParsedArgs, io: CliIo): Promise<number> {
  * (`ui.public`). The origin is `--origin`, else where the running agent serves the page now (its status snapshot: the
  * tunnel's origin while it is up), else `ui.origin`, else `stack.token_url`'s. Printed to this terminal only.
  */
-async function uiEnrollCommand(args: ParsedArgs, io: CliIo): Promise<number> {
-  assertFlags(args, ["config", "origin"]);
-  assertPositionals(args, 2);
-  const { loadRelayConfigFile } = await import("./config-file.ts");
-  const { readDaemonStatusFile } = await import("./daemon/status-file.ts");
-  const { mintUiLink, uiEnrollDirectory, UI_ENROLL_LIFETIME_MS } = await import("./ui/session.ts");
-  const config = loadRelayConfigFile(configPathOf(args));
-  if (config.daemon.ui?.public !== true) throw new RelayKitError("usage", "passkeys sign in to the page on the relay's public origin: set ui.public to true in the config first (and restart gray-assistant run)");
-  let origin: string | null = null;
-  if (args.flags.has("origin")) {
-    const given = args.flags.get("origin") as string;
-    let url: URL;
-    try {
-      url = new URL(given);
-    } catch {
-      throw new RelayKitError("usage", "--origin must be an https origin");
-    }
-    if (url.protocol !== "https:" || url.origin !== given) throw new RelayKitError("usage", "--origin must be an https origin (no path or trailing slash)");
-    origin = given;
-  }
-  if (origin === null) {
-    const snapshot = readDaemonStatusFile(config.daemon.statusFile);
-    const page = snapshot === null ? null : get(snapshot, "ui_page");
-    const written = snapshot === null ? null : get(snapshot, "written_at_ms");
-    const fresh = typeof written === "number" && io.now() - written <= 3 * config.daemon.tickMs + 60_000;
-    const served = fresh && isObject(page as never) ? get(page as JsonObject, "origin") : null;
-    if (typeof served === "string") origin = served;
-  }
-  origin ??= config.daemon.ui.origin ?? (config.daemon.stack === null ? null : new URL(config.daemon.stack.tokenUrl).origin);
-  if (origin === null) throw new RelayKitError("usage", "no public origin for the page yet: set ui.origin, or pass --origin");
-  const link = mintUiLink(uiEnrollDirectory(config.daemon.stateFile), io.now(), io.random, UI_ENROLL_LIFETIME_MS);
-  io.stdout(`gray-assistant ui enroll: add a passkey for ${config.daemon.relayId}'s page on ${origin}/ui/\n`);
-  io.stdout("Open this link on the device that will hold the passkey (it works once, within 15 minutes):\n");
-  io.stdout(`  ${origin}/ui/enroll/${link.code}\n`);
-  io.stdout("Anyone with the link can add a passkey until it is used: open it yourself, now.\n");
-  printJson(io, { command: "ui enroll", relay_id: config.daemon.relayId, origin, expires_at_ms: BigInt(link.expiresAtMs) });
-  return 0;
-}
-
-/** `gray-assistant ui passkeys list|revoke <id>`: the passkeys that sign in to the public page, and taking one back. */
-async function uiPasskeysCommand(args: ParsedArgs, io: CliIo): Promise<number> {
-  const verb = args.positionals[2];
-  const { loadRelayConfigFile } = await import("./config-file.ts");
-  const { passkeyByPrefix, passkeysPath, readPasskeys, updatePasskeys } = await import("./ui/passkeys.ts");
-  if (verb === "list") {
-    assertFlags(args, ["config"]);
-    assertPositionals(args, 3);
-    const config = loadRelayConfigFile(configPathOf(args));
-    const store = readPasskeys(passkeysPath(config.daemon.stateFile), io.random);
-    const iso = (ms: number | null): string => (ms === null ? "never" : new Date(ms).toISOString());
-    if (store.passkeys.length === 0) io.stdout("gray-assistant ui passkeys: none yet; add one with gray-assistant ui enroll\n");
-    for (const passkey of store.passkeys) {
-      io.stdout(`${passkey.id.slice(0, 12)}  ${passkey.label}  on ${passkey.rp_id}  added ${iso(passkey.created_at_ms)}  last used ${iso(passkey.last_used_at_ms)}\n`);
-    }
-    printJson(io, {
-      command: "ui passkeys list",
-      relay_id: config.daemon.relayId,
-      passkeys: store.passkeys.map((passkey) => ({ id: passkey.id, label: passkey.label, rp_id: passkey.rp_id, created_at_ms: BigInt(passkey.created_at_ms), last_used_at_ms: passkey.last_used_at_ms === null ? null : BigInt(passkey.last_used_at_ms) })),
-    });
-    return 0;
-  }
-  if (verb === "revoke") {
-    assertFlags(args, ["config"]);
-    assertPositionals(args, 4);
-    const config = loadRelayConfigFile(configPathOf(args));
-    const prefix = args.positionals[3] as string;
-    const removed = await updatePasskeys(passkeysPath(config.daemon.stateFile), io.random, (store) => {
-      const passkey = passkeyByPrefix(store, prefix);
-      return { store: { userId: store.userId, passkeys: store.passkeys.filter((item) => item.id !== passkey.id) }, result: passkey };
-    });
-    io.stdout(`gray-assistant ui passkeys revoke: ${removed.id.slice(0, 12)} (${removed.label}) can no longer sign in; its open sessions end at their next request\n`);
-    printJson(io, { command: "ui passkeys revoke", relay_id: config.daemon.relayId, id: removed.id, label: removed.label });
-    return 0;
-  }
-  throw new RelayKitError("usage", "ui passkeys needs `list` or `revoke <id>`");
-}
-
 // ---------------------------------------------------------------------------------------------
-// releases accept | reject | unreject
+// stack
 // ---------------------------------------------------------------------------------------------
 
 /** S53: the relay's own image rollout, rollback and restart, and where its stack app stands. */
@@ -1572,31 +1190,16 @@ async function stackCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   }
   assertFlags(args, verb === "status" ? ["config"] : ["config", "no-wait", "timeout"]);
   assertPositionals(args, verb === "rollout" ? 3 : 2);
-  // Phase 2 (a config with `chain`): a rollout or rollback is a new designation in a boot box, then the restart (P4b);
-  // a restart is accepted on the new boot's attestation (a phase-2 boot asks for no pull token).
-  if (verb === "rollout" || verb === "rollback" || verb === "restart") {
-    const chain = await chainContextOf(args, true);
-    if (chain !== null) return deliverCli(args, io, verb, verb === "rollout" ? (args.positionals[2] as string) : null);
-  }
+  // A rollout or rollback is a new designation in a boot box, then the restart (P4b); a restart is accepted on the new
+  // boot's own attestation.
+  if (verb !== "status") return deliverCli(args, io, verb, verb === "rollout" ? (args.positionals[2] as string) : null);
   const { loadRelayConfigFile } = await import("./config-file.ts");
-  const { readPrivateFile } = await import("./files.ts");
-  const { buildKeyFromText } = await import("./scheduler-load.ts");
-  const { stackRoll, stackStatus } = await import("./stack.ts");
-  const config = loadRelayConfigFile(configPathOf(args));
-  if (verb === "status") return stackStatus({ config, seed: new Uint8Array(32), io, wait: false });
-  const timeout = args.flags.get("timeout");
-  if (timeout !== undefined && !/^[1-9][0-9]{0,5}$/.test(timeout)) throw new RelayKitError("usage", "--timeout is whole seconds");
-  const key = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "relay key", 64 * 1024));
-  return stackRoll(
-    { config, seed: key.seed, io, wait: !args.flags.has("no-wait"), ...(timeout === undefined ? {} : { timeoutMs: Number(timeout) * 1000 }) },
-    verb,
-    verb === "rollout" ? (args.positionals[2] as string) : null,
-  );
+  const { stackStatus } = await import("./stack.ts");
+  return stackStatus({ config: loadRelayConfigFile(configPathOf(args)), seed: new Uint8Array(32), io, wait: false });
 }
 
 /**
- * Phase 2's deliveries (P4b, `./deliver.ts`): `deliver`, `accounts push`, `registry set`, and `stack rollout|rollback`
- * for a config with a `chain` member. Each attests the VM, checks the relay's contract from two RPCs, seals what it
+ * The deliveries (P4b, `./deliver.ts`): `deliver`, `accounts push`, `registry set`, and `stack rollout|rollback|restart`. Each attests the VM, checks the relay's contract from two RPCs, seals what it
  * sends to the attested boot, and asks Gray for the restart when the VM's receipt says one is needed.
  */
 async function deliverCli(args: ParsedArgs, io: CliIo, action: "deliver" | "accounts" | "registry" | "rollout" | "rollback" | "restart", image: string | null): Promise<number> {
@@ -1656,184 +1259,12 @@ async function debugCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   });
 }
 
-/**
- * `releases` alone: Gray's releases and OS images as the running agent last saw them (its status snapshot, as `status`
- * prints them), each accepted (at pairing or by you), rejected or pending with when it will be; the hashes to give
- * `releases accept`. A stopped agent lists what control.json accepted and rejected.
- */
-async function releasesListCommand(args: ParsedArgs, io: CliIo): Promise<number> {
-  assertFlags(args, ["config"]);
-  assertPositionals(args, 1);
-  const { loadRelayConfigFile } = await import("./config-file.ts");
-  const { readDaemonStatusFile } = await import("./daemon/status-file.ts");
-  const config = loadRelayConfigFile(configPathOf(args));
-  const snapshot = readDaemonStatusFile(config.daemon.statusFile);
-  const status = snapshot === null ? null : objectOf(get(snapshot, "status"));
-  if (status === null) {
-    const { controlFileBeside } = await import("./daemon/control-file.ts");
-    const { readControlView } = await import("./control.ts");
-    const view = await readControlView(config.daemon.stateFile, controlFileBeside(config.daemon.stateFile));
-    io.stdout(`gray-assistant releases: ${config.daemon.relayId}: the agent is not running (no status file at ${config.daemon.statusFile}), so Gray's list is not read; control.json says:\n`);
-    for (const hash of view.control.acceptedReleases) io.stdout(`accepted ${hash}\n`);
-    for (const hash of view.control.rejectedReleases ?? []) io.stdout(`rejected ${hash}\n`);
-    printJson(io, {
-      command: "releases",
-      running: false,
-      relay_id: config.daemon.relayId,
-      accepted: [...view.control.acceptedReleases],
-      rejected: [...(view.control.rejectedReleases ?? [])],
-    });
-    return 0;
-  }
-  io.stdout(`gray-assistant releases: ${text(get(status, "relay_id")) ?? config.daemon.relayId}\n`);
-  printReleaseLines(io, status);
-  io.stdout("accept one now with gray-assistant releases accept <hash>; reject one with gray-assistant releases reject <hash>\n");
-  printJson(io, {
-    command: "releases",
-    running: true,
-    relay_id: text(get(status, "relay_id")) ?? config.daemon.relayId,
-    releases: arrayOf(get(status, "releases")),
-    os_images: arrayOf(get(status, "os_images")),
-    release_list: objectOf(get(status, "release_list")),
-  } as JsonObject);
-  return 0;
-}
-
 async function releasesCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   const verb = args.positionals[1];
-  if (verb === undefined) return releasesListCommand(args, io);
-  // Phase 2: the releases on the relay's contract. `reject` is the contract's veto when the config has a `chain` member.
-  if (verb === "list" || verb === "check" || verb === "approve") return chainReleasesCommand(args, io, verb, await requireChainContext(args, `releases ${verb}`));
+  // The releases on the relay's contract, all signed by the guardian or read from both RPCs.
+  if (verb === "list" || verb === "check" || verb === "approve" || verb === "reject") return chainReleasesCommand(args, io, verb, await requireChainContext(args, `releases ${verb}`));
   if (verb === "delay") return releasesDelayCommand(args, io, await requireChainContext(args, "releases delay"));
-  if (verb === "reject") {
-    const chain = await chainContextOf(args, true);
-    if (chain !== null) return chainReleasesCommand(args, io, "reject", chain);
-  }
-  if (verb === "reject" || verb === "unreject") return releasesVetoCommand(args, io, verb);
-  if (verb !== "accept") throw new RelayKitError("usage", "releases lists Gray's releases; it takes no subcommand, or `accept <id>`, `reject <hash>` or `unreject <hash>`; on a relay's contract `list`, `check <hash>`, `approve <hash>` or `reject <hash>`");
-  assertFlags(args, ["config", "no-wait", "timeout"]);
-  assertPositionals(args, 3);
-  const id = args.positionals[2] as string;
-  const timeout = args.flags.get("timeout");
-  if (timeout !== undefined && !/^[1-9][0-9]{0,5}$/.test(timeout)) throw new RelayKitError("usage", "--timeout is whole seconds");
-  const waitMs = args.flags.has("no-wait") ? 0 : timeout === undefined ? RELEASE_ACCEPT_WAIT_DEFAULT_MS : Number(timeout) * 1000;
-  const { loadRelayConfigFile } = await import("./config-file.ts");
-  const { controlFileBeside } = await import("./daemon/control-file.ts");
-  const { agentRunning, readDaemonStatusFile } = await import("./daemon/status-file.ts");
-  const { acceptReleaseId } = await import("./release-control.ts");
-  const config = loadRelayConfigFile(configPathOf(args));
-  const controlFile = controlFileBeside(config.daemon.stateFile);
-  const outcome = await acceptReleaseId(config, controlFile, id, io.now, {
-    waitMs,
-    agentRunning: agentRunning(readDaemonStatusFile(config.daemon.statusFile), config.daemon.tickMs, io.now()),
-    sleep: io.sleep,
-    onWait: (hash) =>
-      io.stderr(`gray-assistant releases accept: the agent has not seen ${hash} in Gray's list yet; it reads the list now, waiting up to ${Math.round(waitMs / 1000)} s for its first sight\n`),
-  });
-  if (!outcome.ok && outcome.code === "os_image_dev") {
-    io.stderr(`gray-assistant: releases accept: ${id} is a dstack dev image by its own metadata.json; it is never accepted\n`);
-    printJson(io, { command: "releases.accept", ok: false, relay_id: config.daemon.relayId, id, code: "os_image_dev" });
-    return 1;
-  }
-  if (!outcome.ok && outcome.code === "not_seen") {
-    // R27: an acceptance counts only from the agent's first sight, so one made now would not count. Say so, and what to do.
-    const what = outcome.kind === "os_image" ? `OS image ${outcome.hash}` : outcome.hash;
-    const why = !outcome.agentRunning
-      ? `the agent is not running (no fresh status in ${config.daemon.statusFile}), so it cannot record its first sight of ${what}`
-      : outcome.waitedMs === 0
-        ? `the agent has not seen ${what} in Gray's list yet`
-        : `the agent did not see ${what} in Gray's list within ${Math.round(outcome.waitedMs / 1000)} s`;
-    const next = !outcome.agentRunning
-      ? "start the agent, wait until `gray-assistant releases` lists it, then run this command again"
-      : outcome.waitedMs === 0
-        ? "run this command again without --no-wait, or once `gray-assistant releases` lists it"
-        : "`gray-assistant releases` shows whether the agent's last read of the list failed; run this command again once it lists the release";
-    io.stderr(`gray-assistant: releases accept: ${why}. An acceptance counts only from that first sight, so this one does not count; ${next}\n`);
-    printJson(io, {
-      command: "releases.accept",
-      ok: false,
-      relay_id: config.daemon.relayId,
-      id,
-      code: "not_seen",
-      [outcome.kind === "os_image" ? "os_image_hash" : "compose_hash"]: outcome.hash,
-      agent_running: outcome.agentRunning,
-      waited_ms: BigInt(outcome.waitedMs),
-    });
-    return 1;
-  }
-  if (!outcome.ok) {
-    io.stderr(`gray-assistant: releases accept: ${id} names no release or OS image in the signed list\n`);
-    printJson(io, { command: "releases.accept", ok: false, relay_id: config.daemon.relayId, id });
-    return 1;
-  }
-  const counted = {
-    first_seen_ms: BigInt(outcome.firstSeenMs),
-    accepted_at_ms: BigInt(outcome.acceptedAtMs),
-    accepted_releases: BigInt(outcome.view.control.acceptedReleases.length),
-    control_file: controlFile,
-    control_source: outcome.view.source,
-  };
-  const printCounted = (): void => {
-    io.stdout(`first_seen ${new Date(outcome.firstSeenMs).toISOString()}\n`);
-    io.stdout(`accepted_at ${new Date(outcome.acceptedAtMs).toISOString()}\n`);
-    io.stdout(`control_file ${controlFile}\n`);
-    io.stdout(`accepted_releases ${outcome.view.control.acceptedReleases.length}\n`);
-  };
-  if (outcome.kind === "os_image") {
-    if (outcome.provenance !== "ok") {
-      io.stderr(`gray-assistant releases accept: warning: ${id}'s entry does not prove it a production image (${outcome.provenance}); you are accepting it on your own judgment\n`);
-    }
-    io.stdout(`gray-assistant releases accept: OS image ${id} accepted for ${config.daemon.relayId}; the agent counts it from its next tick\n`);
-    printCounted();
-    printJson(io, { command: "releases.accept", ok: true, relay_id: config.daemon.relayId, os_image_hash: id, provenance: outcome.provenance, ...counted });
-    return 0;
-  }
-  io.stdout(`gray-assistant releases accept: ${outcome.composeHash} accepted for ${config.daemon.relayId}; the agent counts it from its next tick\n`);
-  printCounted();
-  printJson(io, { command: "releases.accept", ok: true, relay_id: config.daemon.relayId, compose_hash: outcome.composeHash, git_commit: outcome.gitCommit, ...counted });
-  return 0;
-}
-
-/** How long `releases accept` waits for the agent's first sight by default: its forced read of the list takes a tick and two 20 s GETs at most. */
-const RELEASE_ACCEPT_WAIT_DEFAULT_MS = 120_000;
-
-/**
- * S11b's veto (`./release-control.ts`): `reject <hash>` records a compose hash or an OS image hash of the current
- * signed list in `control.json`'s `rejected_releases`, and the agent stops accepting it at its next tick; `unreject
- * <hash>` removes the veto, also for a hash that has since left the list.
- */
-async function releasesVetoCommand(args: ParsedArgs, io: CliIo, verb: "reject" | "unreject"): Promise<number> {
-  assertFlags(args, ["config"]);
-  assertPositionals(args, 3);
-  const hash = args.positionals[2] as string;
-  if (!/^[0-9a-f]{64}$/.test(hash)) throw new RelayKitError("usage", `releases ${verb} takes a compose hash or an OS image hash (64 lower-case hex)`);
-  const { loadRelayConfigFile } = await import("./config-file.ts");
-  const { controlFileBeside } = await import("./daemon/control-file.ts");
-  const { vetoRelease } = await import("./release-control.ts");
-  const config = loadRelayConfigFile(configPathOf(args));
-  const controlFile = controlFileBeside(config.daemon.stateFile);
-  const outcome = await vetoRelease(config, controlFile, verb, hash, io.now());
-  if (!outcome.ok) {
-    io.stderr(`gray-assistant: releases reject: ${hash} names no release or OS image in the signed list\n`);
-    printJson(io, { command: "releases.reject", ok: false, relay_id: config.daemon.relayId, hash });
-    return 1;
-  }
-  const view = outcome.view;
-  const rejected = view.control.rejectedReleases ?? [];
-  io.stdout(`gray-assistant releases ${verb}: ${hash} ${verb === "reject" ? "rejected" : "no longer rejected"} for ${config.daemon.relayId}\n`);
-  io.stdout(`control_file ${controlFile}\n`);
-  io.stdout(`rejected_releases ${rejected.length}\n`);
-  printJson(io, {
-    command: `releases.${verb}`,
-    ok: true,
-    relay_id: config.daemon.relayId,
-    hash,
-    rejected_releases: BigInt(rejected.length),
-    accepted_releases: BigInt(view.control.acceptedReleases.length),
-    control_file: controlFile,
-    control_source: view.source,
-  });
-  return 0;
+  throw new RelayKitError("usage", "releases takes `list`, `check <hash>`, `approve <hash>`, `reject <hash>` or `delay <hours>`");
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -2089,23 +1520,18 @@ function toText(bytes: Uint8Array): string {
 }
 
 // ---------------------------------------------------------------------------------------------
-// the relay's contract (phase 2): releases list|check|approve|reject, pause, unpause
+// the relay's contract: releases list|check|approve|reject|delay, pause, unpause
 
-/**
- * The config's `chain` member, or null for a config without one. With `routing` (choosing between a phase-1 command
- * and the contract's), a missing config is null too, so the phase-1 command says what is missing in its own words.
- */
 /** The image `init --pair` writes into compose.yaml: `--image`, else the published image's own `$GRAY_ASSISTANT_IMAGE`. */
 function composeImageOf(args: ParsedArgs, io: CliIo): string | null {
   const image = (args.flags.get("image") ?? io.env["GRAY_ASSISTANT_IMAGE"] ?? "").trim();
   return image === "" ? null : image;
 }
 
-async function chainContextOf(args: ParsedArgs, routing = false) {
+async function chainContextOf(args: ParsedArgs) {
   const { readChainContext } = await import("./chain.ts");
   const path = configPathOf(args);
   if (!existsSync(path)) {
-    if (routing) return null;
     throw new RelayKitError("io", `no relay config at ${path}: pass --config <file> or set GRAY_ASSISTANT_CONFIG`);
   }
   return readChainContext(path);
@@ -2114,7 +1540,7 @@ async function chainContextOf(args: ParsedArgs, routing = false) {
 async function requireChainContext(args: ParsedArgs, command: string) {
   const context = await chainContextOf(args);
   if (context === null) {
-    throw new RelayKitError("usage", `${command} acts on the relay's contract, and this config has no chain member (a phase-2 relay's: chain_id, rpc, proposer, guardian, contract)`);
+    throw new RelayKitError("usage", `${command} acts on the relay's contract, and this config has no chain member (chain_id, rpc, proposer, guardian, contract): pair the relay again with init --pair`);
   }
   return context;
 }

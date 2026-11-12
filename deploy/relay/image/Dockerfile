@@ -10,7 +10,7 @@
 # - The final stage gets only /opt/gray-assistant (bundle.mjs's header lists it): the bundle, the one dependency file it
 #   loads at run time (dcap-qvl's collateral.js, bundled too), the npm licenses of the code in both, relay-kit's built
 #   page and the policy interpreter (wasm) at the paths the bundle finds them by; and frpc and Caddy, each copied
-#   from its project's image and pinned by digest as in deploy/relay/Dockerfile. No workspace source, no other
+#   from its project's image and pinned by its multi-arch index digest. No workspace source, no other
 #   node_modules, no npm: the base image's npm and corepack are removed.
 # - GRAY_ASSISTANT_IMAGE is the reference this image is pushed as. `gray-assistant init --pair` writes a compose.yaml that
 #   runs it into the kit; empty (the default), `init --pair` writes no compose file.
