@@ -56,10 +56,14 @@ export type TextInputProps = Omit<InputHTMLAttributes<HTMLInputElement>, 'size'>
   mono?: boolean;
 };
 
-/** Single-line text input (Base UI Input). Use inside `Field`, or give it an `aria-label`. */
-export const TextInput = forwardRef<HTMLInputElement, TextInputProps>(function TextInput({ size = 'md', mono, className, type = 'text', defaultValue, ...rest }, ref) {
+/** Single-line text input (Base UI Input). Use inside `Field`, or give it an `aria-label`. A `mono`, `url` or `email`
+ *  input is `translate="no"`, so the browser's page translation leaves its placeholder (a model ID, an address) as
+ *  written; pass `translate="no"` for another input whose placeholder is a name or an ID. */
+export const TextInput = forwardRef<HTMLInputElement, TextInputProps>(function TextInput({ size = 'md', mono, className, type = 'text', defaultValue, translate, ...rest }, ref) {
+  // An identifier or an address, and its placeholder, stay as written under the browser's page translation.
+  const keep = translate ?? (mono || type === 'url' || type === 'email' ? 'no' : undefined);
   return <BaseInput ref={ref} type={type} className={cx('ui-input', size !== 'md' && `ui-input--${size}`, mono && 'ui-input--mono', className)}
-    defaultValue={defaultValue as string | number | string[] | undefined} {...rest} />;
+    defaultValue={defaultValue as string | number | string[] | undefined} translate={keep} {...rest} />;
 });
 
 const compactExact: Intl.NumberFormatOptions = { notation: 'compact', maximumSignificantDigits: 21 };

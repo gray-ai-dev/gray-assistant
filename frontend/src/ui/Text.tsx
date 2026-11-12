@@ -25,7 +25,9 @@ export type TextProps = HTMLAttributes<HTMLElement> & {
 /** Text in one of the typography roles from DESIGN.md. */
 export function Text({ as: Tag = 'p', size = 'body', tone = 'default', weight = 'regular', mono, numeric, measure, preWrap, truncate, title, className, ...rest }: TextProps) {
   const classes = cx('ui-text', size !== 'body' && `ui-text--${size}`, tone !== 'default' && `ui-text--${tone}`, weight !== 'regular' && `ui-text--${weight}`, mono && 'ui-text--mono', numeric && 'ui-text--numeric', measure && 'ui-text--measure', preWrap && 'ui-text--pre-wrap', truncate && 'ui-text--truncate', className);
-  return truncate ? <TruncatedText as={Tag} className={classes} title={title} {...rest} /> : <Tooltip content={title}><Tag className={classes} {...rest} /></Tooltip>;
+  // Mono text is an identifier (a model ID, a key, an address): the browser's page translation leaves it as written.
+  const keep = mono && rest.translate === undefined ? { translate: 'no' as const } : null;
+  return truncate ? <TruncatedText as={Tag} className={classes} title={title} {...keep} {...rest} /> : <Tooltip content={title}><Tag className={classes} {...keep} {...rest} /></Tooltip>;
 }
 /** Whether the element `ref` points at is cut off by its ellipsis now; measured again when it resizes or `content`
  *  changes. For a tooltip that should appear only while a name does not fit. */
@@ -49,9 +51,16 @@ function TruncatedText({ as: Tag, title, children, ...rest }: HTMLAttributes<HTM
   return <Tooltip content={title ?? children} disabled={title == null && !cut}><Tag ref={ref} {...rest}>{children}</Tag></Tooltip>;
 }
 
-/** An identifier or short code inside running text. */
+/** An identifier or short code inside running text. The browser's page translation leaves it as written. */
 export function InlineCode({ children }: { children: ReactNode }) {
-  return <code className="ui-inline-code">{children}</code>;
+  return <code className="ui-inline-code" translate="no">{children}</code>;
+}
+
+/** A proper name inside running text or a label: a product, vendor, protocol or header name ("Gray", "Anthropic
+ *  Messages", "Authorization: Bearer"). It looks like the text around it; the browser's page translation leaves it as
+ *  written instead of translating it word by word. */
+export function Name({ children }: { children: ReactNode }) {
+  return <span translate="no">{children}</span>;
 }
 
 /** Text for screen readers only. */

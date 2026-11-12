@@ -147,7 +147,7 @@ export function CodeBlock({ code, language, title, level = 2, icon, description,
       <div className="ui-code__tools">{tools}{copy && <CopyButton code={code} label={copyLabel} />}</div>
     </div>}
     {!header && copy && !bare && !line && <div className="ui-code__corner"><CopyButton code={code} label={copyLabel} /></div>}
-    <pre className={cx('ui-code__pre', wrap && 'ui-code__pre--wrap')} data-language={language} tabIndex={0}><CodeContent code={code} language={language} /></pre>
+    <pre className={cx('ui-code__pre', wrap && 'ui-code__pre--wrap')} data-language={language} tabIndex={0} translate="no"><CodeContent code={code} language={language} /></pre>
     {line && <div className="ui-code__end"><CopyButton code={code} label={copyLabel} iconOnly={iconOnly} /></div>}
     {footer && <p className="ui-code__footer">{footer}</p>}
   </section>;

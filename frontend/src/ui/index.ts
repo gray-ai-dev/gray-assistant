@@ -15,7 +15,7 @@ export { SegmentedControl, Tabs, type SegmentOption, type TabItem } from './Segm
 export { Page, PageHeader, Section, SectionHeader, Panel, Stack, Inline, Grow, FormGrid, Split } from './Layout';
 export { Notice, EmptyState, Badge, Spinner, Skeleton, type Tone } from './Feedback';
 export { DescriptionList, DescriptionItem, Stat, StatGroup, type StatDelta, Table, TableHead, TableBody, TableRow, TableHeaderCell, TableCell, Disclosure, List, Steps, Step, type StepState, Progress } from './Data';
-export { Text, TextLink, InlineCode, VisuallyHidden, useTruncated } from './Text';
+export { Text, TextLink, InlineCode, Name, VisuallyHidden, useTruncated } from './Text';
 export { CodeBlock, CodeExamples, CopyButton, type CodeLanguage, type CodeExample } from './Code';
 export { Fieldset } from './Fieldset';
 export { SettingsList, SettingsRow } from './Settings';

@@ -7,7 +7,8 @@ import { useInsideField } from './Field';
 import { usePopupPositionMethod } from './popup';
 import './select-field.css';
 
-type Choice = { value: string; label: string; disabled: boolean };
+/** `label` is the option's text (search, typeahead, the accessible name); `node` is what shows, e.g. with a `Name`. */
+type Choice = { value: string; label: string; node: ReactNode; disabled: boolean };
 type ChoiceGroup = { label: string; items: Choice[] };
 type SelectFieldProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'value' | 'defaultValue' | 'onChange' | 'children' | 'type'> & {
   value?: string | number;
@@ -36,9 +37,11 @@ function choiceGroups(children: ReactNode): ChoiceGroup[] {
       if (child.type === 'optgroup') { append(child.props.children, child.props.label || '', disabled || !!child.props.disabled); return; }
       if (child.type !== 'option') return;
       const text = child.props.label ?? optionText(child.props.children);
+      // `label` gives the text when the shown children carry markup, e.g. a `Name`.
+      const node = child.props.children ?? text;
       let group = groups.at(-1);
       if (!group || group.label !== label) { group = { label, items: [] }; groups.push(group); }
-      group.items.push({ value: String(child.props.value ?? optionText(child.props.children)), label: text, disabled: disabled || !!child.props.disabled });
+      group.items.push({ value: String(child.props.value ?? optionText(child.props.children)), label: text, node, disabled: disabled || !!child.props.disabled });
     });
   };
   append(children);
@@ -62,12 +65,12 @@ export function SelectField({ value, defaultValue, onValueChange, children, requ
     setLocalValue(next);
     onValueChange?.(next);
   }
-  const triggerContent = <><span className="select-value">{selected?.label ?? current}</span><CaretDown size={14} aria-hidden="true" /></>;
+  const triggerContent = <><span className="select-value">{selected?.node ?? current}</span><CaretDown size={14} aria-hidden="true" /></>;
   const common = { id, name, form, required, disabled, autoComplete };
   // An explicit name on the trigger wins over the field's label.
   const triggerAttributes = { ...triggerProps, ...(triggerProps['aria-label'] ? { 'aria-labelledby': undefined } : null), className: `select-trigger ${className}`.trim() };
   const renderComboItem = (option: Choice) => <Combobox.Item key={option.value} className="select-option" value={option} disabled={option.disabled}>
-    <span className="select-option-label">{option.label}</span><Combobox.ItemIndicator className="select-check"><Check size={14} aria-hidden="true" /></Combobox.ItemIndicator>
+    <span className="select-option-label">{option.node}</span><Combobox.ItemIndicator className="select-check"><Check size={14} aria-hidden="true" /></Combobox.ItemIndicator>
   </Combobox.Item>;
 
   const control = searchEnabled ? <Combobox.Root<Choice> {...common} items={groups} value={selected ?? null}
@@ -93,7 +96,7 @@ export function SelectField({ value, defaultValue, onValueChange, children, requ
           {groups.map((group, index) => <Select.Group key={`${group.label}-${index}`}>
             {group.label && <Select.GroupLabel className="select-group-label">{group.label}</Select.GroupLabel>}
             {group.items.map(option => <Select.Item key={option.value} className="select-option" value={option.value} disabled={option.disabled}>
-              <Select.ItemText className="select-option-label">{option.label}</Select.ItemText><Select.ItemIndicator className="select-check"><Check size={14} aria-hidden="true" /></Select.ItemIndicator>
+              <Select.ItemText className="select-option-label">{option.node}</Select.ItemText><Select.ItemIndicator className="select-check"><Check size={14} aria-hidden="true" /></Select.ItemIndicator>
             </Select.Item>)}
           </Select.Group>)}
         </Select.List></Select.Popup>
