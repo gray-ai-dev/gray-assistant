@@ -137,6 +137,12 @@ export interface RelayUiOptions extends UiCommonOptions {
   readonly configPath: string;
   /** The port on 127.0.0.1; 0 picks a free one (tests). Defaults to `ui.listen.port`, then `DEFAULT_UI_PORT`. */
   readonly port?: number;
+  /**
+   * The address the listener binds, 127.0.0.1 by default. In the kit's container, `0.0.0.0` (`ui --host 0.0.0.0`) lets
+   * the port compose.yaml publishes on the host's 127.0.0.1 only reach it; the page still answers only to a loopback
+   * Host and a sign-in link, and its URL stays `http://127.0.0.1:<port>`.
+   */
+  readonly host?: string;
 }
 
 export interface RunningRelayUi {
@@ -881,8 +887,8 @@ export async function startRelayUi(options: RelayUiOptions): Promise<RunningRela
   server.headersTimeout = 20_000;
   server.requestTimeout = 60_000;
   const actualPort = await new Promise<number>((resolvePort, reject) => {
-    server.once("error", (error: NodeJS.ErrnoException) => reject(new RelayKitError("io", error.code === "EADDRINUSE" ? `port ${port} on 127.0.0.1 is in use; pick another with --port` : `cannot listen on 127.0.0.1:${port}`)));
-    server.listen(port, "127.0.0.1", () => {
+    server.once("error", (error: NodeJS.ErrnoException) => reject(new RelayKitError("io", error.code === "EADDRINUSE" ? `port ${port} on ${options.host ?? "127.0.0.1"} is in use; pick another with --port` : `cannot listen on 127.0.0.1:${port}`)));
+    server.listen(port, options.host ?? "127.0.0.1", () => {
       const address = server.address();
       if (address === null || typeof address === "string") reject(new RelayKitError("io", "no port"));
       else resolvePort(address.port);

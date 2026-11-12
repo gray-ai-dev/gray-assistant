@@ -696,8 +696,14 @@ export const TOKEN_SERVICE_CODE_WORDS: Readonly<Record<TokenServiceCode, TokenSe
   },
 };
 
-/** What gray-assistant runs after its image is changed (deploy/relay/GUIDE.en.md section 10, "Limits and updates"). */
-export const KIT_UPGRADE_COMMAND = "docker compose up -d";
+/**
+ * What moves a kit directory to the published gray-assistant `image`, run in that directory on the relay's host (the
+ * console guide §10, "Upgrade"; deploy/relay/GUIDE.en.md section 10). Nothing runs there between commands (phase 2), so
+ * the upgrade is the whole step; the relay then pairs again, which records the new kit with the pairing.
+ */
+export function kitUpgradeCommand(image: string): string {
+  return `docker run --rm -v "$PWD:/work" ${image} upgrade --dir /work --image ${image}`;
+}
 
 /**
  * The version of a published kit archive from its URL: deploy/relay/kit/publish.sh names every archive
@@ -725,8 +731,8 @@ export interface PublishedKitRef {
 
 /**
  * `kit_outdated`'s words (docs/design/relay-outbound-only.md decision R10). With the needed kit known:
- * - Gray publishes a kit at or above it: the relay upgrades to exactly that one (its image in the compose file, then
- *   the guide's `docker compose up -d`, deploy/relay/GUIDE.en.md section 10), on its side;
+ * - Gray publishes a kit at or above it: the relay upgrades to exactly that one (`kitUpgradeCommand`, then pairs again
+ *   with a new code, the console guide §5 and §10), on its side;
  * - Gray has not published one yet (the published kit is below the minimum, or none is configured): nothing the relay
  *   can do, Deploy waits for Gray, which is Gray's side; it is never told to upgrade to a kit that does not exist.
  * Without it (a failed operation's words, which know neither), the general words.
@@ -747,8 +753,8 @@ export function kitOutdatedWords(needed: string | null, published: PublishedKitR
     title,
     fix:
       `This release's VM has no public address; only gray-assistant ${needed} or later reaches it, through Gray's entry. Upgrade to the kit Gray publishes, ${published.version}: ` +
-      `on your gray-assistant host, set gray-assistant's image in its compose file to ${published.image}, then run ${KIT_UPGRADE_COMMAND} in its directory ` +
-      `(the signed kit: ${published.url}; the relay guide, section 10 "Limits and updates"). gray-assistant reports its version within a minute; then Deploy.`,
+      `on your gray-assistant host, in its kit directory, run ${kitUpgradeCommand(published.image)}, then pair again with a new pairing code from the Integration page ` +
+      `(the signed kit: ${published.url}; the relay guide, section 10 "Limits and updates"). The pairing records the new kit; then Deploy.`,
     side: "relay",
   };
 }

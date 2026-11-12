@@ -265,6 +265,8 @@ export function isRelayImagePlaceholder(image: string): boolean {
 
 /** The container paths the host install and compose mount (deploy/relay/host/compose.host.yaml): the kit and the state volume. */
 export const KIT_MOUNT = "/run/secrets";
+/** The page's port the kit's compose.yaml publishes on the host's 127.0.0.1 (the ui's DEFAULT_UI_PORT). */
+export const KIT_UI_PORT = 7470;
 export const STATE_MOUNT = "/var/lib/gray-assistant";
 /** The host install's default `--listen` (deploy/relay/host/install.sh), the agent's scheduler listener. */
 export const PAIRED_LISTEN = Object.freeze({ host: "127.0.0.1", port: 18080 });
@@ -438,7 +440,8 @@ export function pairedComposeName(relayId: string): string {
 
 /**
  * The kit's own compose file: the agent of deploy/relay/compose.yaml with the host install's mounts
- * (deploy/relay/host/compose.host.yaml), so the kit directory runs as it is with `docker compose up -d`. `image` is the
+ * (deploy/relay/host/compose.host.yaml), so each command runs from the kit directory as it is with
+ * `docker compose run --rm --no-deps agent <command>`. `image` is the
  * image `init` ran from, as its build named it; JSON quoting keeps it one YAML scalar. The project, its volume and its
  * network are named after the relay (`pairedComposeName`; a Gray relay ID is lower-case letters, digits and hyphens,
  * a valid compose project name): the network takes the project's name (`COMPOSE_PROJECT_NAME`, which compose sets
@@ -451,15 +454,20 @@ export function pairedComposeName(relayId: string): string {
 export function pairedComposeText(image: string, relayId: string, keep: { readonly name?: string; readonly stateVolume?: string } = {}): string {
   const name = keep.name ?? pairedComposeName(relayId);
   const volume = keep.stateVolume ?? "relay-state";
-  return `# gray-assistant's agent, written by \`gray-assistant init --pair\`. Start it from this directory: docker compose up -d
+  return `# gray-assistant's agent, written by \`gray-assistant init --pair\`. Run each command from this
+# directory, one at a time: docker compose run --rm --no-deps agent <command> (deliver, accounts push, login <id>, ...).
+# Nothing of it runs all the time.
 #
 # The directory is the kit: mounted read-only at ${KIT_MOUNT} (the paths gray-assistant.jsonc names), its config where the
 # image's command reads it. Every kit file is owned by 10001:10001 (the agent's uid) with mode 0600 or 0400, as
 # \`init\` wrote it; add registry-password the same way. The agent's state is the ${volume} volume.
 #
-# Change a config member with the agent's own writer, not an editor (e.g. the source poll):
-#   docker compose run --rm --no-deps -v "$PWD:/work" agent config set --json --config /work/gray-assistant.jsonc source_poll 60
-#   docker compose up -d --force-recreate agent
+# Change a config member with the agent's own writer, not an editor (the config is mounted read-only below, so the
+# writer gets the kit mounted writable); the next command reads it:
+#   docker compose run --rm --no-deps -v "$PWD:/work" agent config set --config /work/gray-assistant.jsonc stack.registry.expires_at <YYYY-MM-DDTHH:MM:SSZ>
+# The gray-assistant page, only while you add an account by hand (stop it with Ctrl-C, then accounts push), on
+# http://127.0.0.1:${KIT_UI_PORT} of this host:
+#   docker compose run --rm --no-deps --service-ports agent ui --host 0.0.0.0
 # Add to this file (another network, TZ, ...) in compose.override.yaml beside it, which docker compose merges; this
 # file is rewritten by the next init --pair --force, the override is not.
 #
@@ -494,7 +502,10 @@ services:
       - ${volume}:${STATE_MOUNT}
     networks:
       - relay
-    # No published port: with the config's tunnel section the agent connects out to Gray's rendezvous.
+    # The page's port, on the host's 127.0.0.1 only, and only for a run with --service-ports (gray-assistant ui --host
+    # 0.0.0.0); no other command publishes it, and no other network reaches it.
+    ports:
+      - "127.0.0.1:${KIT_UI_PORT}:${KIT_UI_PORT}"
 
 networks:
   relay:

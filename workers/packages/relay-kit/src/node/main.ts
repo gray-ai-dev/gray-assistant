@@ -61,6 +61,7 @@
  * envelope, which is not a secret); tests scan every stdout/stderr line for them.
  */
 import { existsSync } from "node:fs";
+import { isIP } from "node:net";
 import { join } from "node:path";
 import { get, isObject, parsePlain, parseStrict, toJsonString, type JsonObject } from "@gray/json";
 import { bytesToLowerHex, lowerHexBytes } from "@gray/attest";
@@ -279,7 +280,8 @@ function usage(): string {
     "       gray-assistant stack status [--config <config>]",
     "       gray-assistant debug get <request id> [--out <file>] [--config <config>]   (a request's record the customer authorized; the VM holds it 24 h)",
     "       gray-assistant login <account> [--config <config>]   (signs a subscription account in inside the VM, by your software there)",
-    "       gray-assistant ui [--config <config>] [--port <n>] [--ca <pem>] [--verifier-module <module.mjs>]   (the local page, on 127.0.0.1)",
+    "       gray-assistant ui [--config <config>] [--port <n>] [--host <address>] [--ca <pem>] [--verifier-module <module.mjs>]",
+    "                                    (the local page, on 127.0.0.1; in the kit's container --host 0.0.0.0, published on the host's 127.0.0.1 only)",
     "       gray-assistant ui link [--config <config>] [--port <n>]   (a one-time sign-in link for the local page)",
     "       gray-assistant ui enroll [--config <config>] [--origin <https origin>]   (a one-time link that adds a passkey, ui.public)",
     "       gray-assistant ui passkeys list | revoke <id> [--config <config>]",
@@ -425,8 +427,11 @@ async function upgradeCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   for (const member of result.members) io.stdout(`renamed the old path in ${member}\n`);
   for (const note of result.notes) io.stdout(`note: ${note}\n`);
   if (result.written.length === 0) io.stdout("nothing to change: the kit is already this version's\n");
-  const next = result.project === null ? [] : ["docker compose up -d", "docker compose exec agent gray-assistant doctor"];
+  // Phase 2: nothing runs on the host, so the next step is a check; the next `deliver` or `accounts push` reports the new
+  // version to Gray. A relay paired before phase 2 (no `chain`) still restarts its always-on agent (the console guide §10).
+  const next = result.project === null ? [] : ["docker compose run --rm --no-deps agent --version", "docker compose run --rm --no-deps agent doctor"];
   for (const line of next) io.stdout(`next, in the kit directory: ${line}\n`);
+  if (result.project !== null) io.stdout("note: a relay paired before phase 2 (its config has no chain) restarts its agent instead: docker compose up -d\n");
   printJson(io, {
     command: "upgrade",
     relay_id: result.relayId,
@@ -473,7 +478,13 @@ async function configCommand(args: ParsedArgs, io: CliIo): Promise<number> {
     io.stdout(`gray-assistant config: ${member} is not in ${result.path}; nothing changed\n`);
   } else {
     io.stdout(`gray-assistant config: ${sub === "set" ? "set" : "removed"} ${member} in ${result.path}\n`);
-    io.stdout("The agent reads its config when it starts: restart it to use the change (in the kit's directory: docker compose up -d --force-recreate agent).\n");
+    // Phase 2: every command reads the config when it starts. The config is mounted read-only in the agent's compose, so
+    // the write itself runs with the kit mounted writable (writeRefusal names the same form).
+    io.stdout(
+      "Each gray-assistant command reads the config when it starts: the next one uses the change. From the kit's directory, " +
+        'config set runs as: docker compose run --rm --no-deps -v "$PWD:/work" agent config set --config /work/gray-assistant.jsonc <member> <value>. ' +
+        "A relay paired before phase 2 (its config has no chain) restarts its agent: docker compose up -d --force-recreate agent.\n",
+    );
   }
   printJson(io, { command: "config", action: sub, member, config: result.path, changed: result.changed, restart_needed: result.changed });
   return 0;
@@ -1426,8 +1437,11 @@ async function uiCommand(args: ParsedArgs, io: CliIo): Promise<number> {
     printJson(io, { command: "ui link", relay_id: config.daemon.relayId, port: BigInt(port), expires_at_ms: BigInt(link.expiresAtMs) });
     return 0;
   }
-  assertFlags(args, ["config", "port", "ca", "verifier-module"]);
+  assertFlags(args, ["config", "port", "host", "ca", "verifier-module"]);
   assertPositionals(args, 1);
+  const host = args.flags.get("host");
+  // An address literal only (node:net isIP); a name would resolve to who knows what.
+  if (host !== undefined && isIP(host) === 0) throw new RelayKitError("usage", "--host must be an IP address, such as 0.0.0.0 in the kit's container");
   const { startRelayUi } = await import("./ui/server.ts");
   const configPath = configPathOf(args);
   const port = uiPortFlag(args);
@@ -1443,6 +1457,7 @@ async function uiCommand(args: ParsedArgs, io: CliIo): Promise<number> {
     running = await startRelayUi({
       configPath,
       ...(port === undefined ? {} : { port }),
+      ...(host === undefined ? {} : { host }),
       ...(args.flags.has("ca") ? { ca: readFileText(args.flags.get("ca") as string, "CA certificate", 1024 * 1024) } : {}),
       ...(args.flags.has("verifier-module") ? { verifierModule: args.flags.get("verifier-module") as string } : {}),
       io: { stdout: io.stdout, stderr: io.stderr, now: io.now },
