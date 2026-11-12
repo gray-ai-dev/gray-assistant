@@ -413,6 +413,19 @@ export interface DaemonSourceAccount {
   readonly sourceId: string;
   readonly vendor: Vendor;
   readonly credentialType: Credential["type"];
+  /**
+   * The proxy the source declares for the account, without its user name and password (the console's panel proxy is
+   * its type, host and port, all the lane compares with the sealed egress): null for none; absent when the source's
+   * proxy is not one the connector would seal (the account is parked `invalid_egress_format`), so Gray changes nothing.
+   */
+  readonly proxy?: DaemonSourceProxy | null;
+}
+
+/** A source account's proxy as the agent status names it: never its user name or password. */
+export interface DaemonSourceProxy {
+  readonly type: "http" | "https" | "socks5" | "socks5h";
+  readonly host: string;
+  readonly port: number;
 }
 
 /** One release the list carries, as acceptance sees it. */

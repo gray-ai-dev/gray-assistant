@@ -7,7 +7,7 @@
  *                 "replicas": [{"origin", "stack", "phase", "credential_version", "lease_expires_at_ms",
  *                               "sealed_account_ids", "last_push_ms", "last_error"}],
  *                 "parked": [{"account_id", "reason"}],
- *                 "sources": [{"account_id", "vendor", "credential_type"}] | null,
+ *                 "sources": [{"account_id", "vendor", "credential_type", "proxy": {"type", "host", "port"} | null}] | null,
  *                 "ui_mode": "loopback|public|tunnel", "ui_port": 7470,   // while the page runs; the port for loopback
  *                 "tunnel": "connected",              // only with the config's tunnel section
  *                 "boot": {"code", "held", "first_ms", "last_ms", "count", "compose_hash"} | null,
@@ -24,6 +24,10 @@
  *
  * `sources` (2026-10-29) is what the credential source lists at the daemon's last poll, for the panel's "adopt N
  * accounts": per account its vendor and its credential type, as the source's metadata states them (the daemon's `list`, never `credential`). Null while the source cannot be read.
+ *
+ * Each source account's `proxy` (2026-11-12) is the proxy its source declares, by type, host and port only (never its
+ * user name or password), null for none: the console makes the panel account leave through a matching panel proxy, so
+ * a relay writes an account's proxy once, in its source. Left out for an account whose proxy the connector would not seal.
  *
  * `boot` (S58) is the token service's latest refusal of a booting VM (`PullTokenBoot`), null once a token was issued
  * after it, so the panel can say why a boot waits or stopped.
@@ -207,6 +211,7 @@ function sourceAccounts(accounts: readonly DaemonSourceAccount[], panelId: (vend
       account_id: a.id,
       vendor: a.vendor,
       credential_type: types.includes(a.credentialType) ? a.credentialType : null,
+      ...(a.proxy === undefined ? {} : { proxy: a.proxy === null ? null : { type: a.proxy.type, host: a.proxy.host, port: BigInt(a.proxy.port) } }),
     });
     if (out.length === STACK_AGENT_SOURCES_MAX) break;
   }

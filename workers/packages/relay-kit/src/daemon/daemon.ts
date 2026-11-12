@@ -51,12 +51,12 @@ import { decideRefusal } from "./refusals.ts";
 import { ReleaseListError, ReleaseRegistry, fetchReleaseList, releaseListHasOsMeasurements, type VerifiedReleaseList } from "./releases.ts";
 import { DaemonSchedulerPool, type PoolAccount } from "./scheduler-pool.ts";
 import { EMPTY_DAEMON_STATE } from "./state.ts";
-import { DaemonTransportError, type DaemonStackInstance, type DaemonStackInstanceView, type StackBindingChoice, type StackInstanceValues, type DaemonAlert, type DaemonAttestResult, type DaemonControl, type DaemonControlLoad, type DaemonHealth, type DaemonHealthReason, type DaemonLogEvent, type DaemonReleaseListStatus, type DaemonReplicaStatus, type DaemonStackSecondaryStatus, type DaemonState, type DaemonStateLoad, type DaemonStatus, type RelayDaemon, type RelayDaemonOptions, type ReleaseRefusal, type StackReleaseDecision } from "./types.ts";
+import { DaemonTransportError, type DaemonStackInstance, type DaemonStackInstanceView, type StackBindingChoice, type StackInstanceValues, type DaemonAlert, type DaemonAttestResult, type DaemonControl, type DaemonControlLoad, type DaemonHealth, type DaemonHealthReason, type DaemonLogEvent, type DaemonReleaseListStatus, type DaemonReplicaStatus, type DaemonSourceProxy, type DaemonStackSecondaryStatus, type DaemonState, type DaemonStateLoad, type DaemonStatus, type RelayDaemon, type RelayDaemonOptions, type ReleaseRefusal, type StackReleaseDecision } from "./types.ts";
 import { normalizeHttpsOrigin, type CheckedVerifiedReport } from "../verified-report.ts";
 import { tunnelOriginOf } from "../lane-origin.ts";
 import { attestationMismatch, stackBootDecision } from "./stack-boot.ts";
 import { DaemonVersionError, VersionLedger } from "./versions.ts";
-import type { SourceAccount, SourceCredential, SourceSnapshot } from "../source/types.ts";
+import type { SourceAccount, SourceCredential, SourceEgress, SourceSnapshot } from "../source/types.ts";
 
 /** The policy registry GET (the lane's M22 document); the one route that proves a policy is installed. */
 export const POLICY_REGISTRY_PREFIX = "/v1/aci/relay-policy/";
@@ -236,6 +236,16 @@ export function egressOf(planned: PlannedAccount, read: SourceCredential): Egres
   };
   const parsed = egressSchema.safeParse(candidate);
   return parsed.success ? parsed.data : "invalid";
+}
+
+/**
+ * The proxy a source account declares, as the agent status reports it (`DaemonSourceAccount.proxy`): its type, host and
+ * port only, null for none, undefined when those fail the connector's own rules (it would not be sealed).
+ */
+export function sourceProxyOf(declared: SourceEgress | undefined): DaemonSourceProxy | null | undefined {
+  if (declared === undefined) return null;
+  const parsed = egressSchema.safeParse({ type: declared.type, host: declared.host, port: declared.port });
+  return parsed.success ? { type: parsed.data.type, host: parsed.data.host, port: parsed.data.port } : undefined;
 }
 
 /** The daemon implementation; `createRelayDaemon` is the one constructor. */
@@ -679,7 +689,10 @@ class RelayDaemonImpl implements RelayDaemon {
       parked: this.#parked.list(),
       sources: this.#sourceHealthy
         ? [...this.#planned.values()]
-            .map((planned) => ({ sourceId: planned.account.sourceId, vendor: planned.vendor, credentialType: planned.credentialType }))
+            .map((planned) => {
+              const proxy = sourceProxyOf(planned.account.egress);
+              return { sourceId: planned.account.sourceId, vendor: planned.vendor, credentialType: planned.credentialType, ...(proxy === undefined ? {} : { proxy }) };
+            })
             .sort((left, right) => (left.sourceId < right.sourceId ? -1 : left.sourceId > right.sourceId ? 1 : 0))
         : null,
       releases: this.#releases.status(atMs),

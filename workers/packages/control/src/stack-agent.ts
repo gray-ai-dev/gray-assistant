@@ -1,5 +1,6 @@
 import { jcsBytes } from "@gray/attest";
 import type { Json } from "@gray/json";
+import { EGRESS_TYPES } from "@gray/relay-connector/egress";
 import { z } from "zod";
 import { STACK_ID_PATTERN, STACK_VENDORS } from "./stack.ts";
 import { TOKEN_SERVICE_CODES } from "./stack-provision-words.ts";
@@ -114,12 +115,30 @@ const bootSchema = z
   .refine((b) => b.first_ms <= b.last_ms, { message: "first_ms is not after last_ms", path: ["first_ms"] });
 export type StackAgentBoot = z.infer<typeof bootSchema>;
 
+/**
+ * A source account's proxy (`sources[].proxy`): what the lane compares of a panel proxy with the sealed egress member.
+ * The host is checked as a panel proxy's is by the console, per account, so one host it would refuse does not refuse
+ * the whole status.
+ */
+const sourceProxySchema = z
+  .object({
+    type: z.enum(EGRESS_TYPES),
+    host: z.string().min(1).max(255).regex(/^[!-~]+$/),
+    port: z.number().int().min(1).max(65535),
+  })
+  .strict();
+export type StackAgentSourceProxy = z.infer<typeof sourceProxySchema>;
+
 /** One account the agent's source lists. `credential_type` null when the source does not say. */
 const sourceSchema = z
   .object({
     account_id: accountId,
     vendor: z.enum(STACK_AGENT_SOURCE_VENDORS),
     credential_type: z.enum(STACK_AGENT_CREDENTIAL_TYPES).nullable(),
+    // The proxy the source declares for the account (its type, host and port; the user name and password stay on the
+    // relay's machine and in the VM), null for none. Absent from an older gray-assistant, and for an account whose
+    // proxy it would not seal: the console then leaves the account's proxy as it is (`syncSourceProxies`).
+    proxy: sourceProxySchema.nullable().optional(),
     // Retired (gray-assistant before 1.4 names the relay login of an `oauth_login` account): taken, never read, and
     // dropped before the status is kept (`withoutRetiredAgentFields`).
     login: z.string().max(64).nullable().optional(),
