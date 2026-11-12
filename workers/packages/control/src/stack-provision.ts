@@ -73,46 +73,23 @@ export {
   type RelayAlertKind,
   type TokenServiceCode,
 };
+export {
+  ALL_PROVISION_STEPS,
+  PHASE2_DEPLOY_STEPS,
+  PHASE2_ROLLOUT_STEPS,
+  PHASE2_UPGRADE_STEPS,
+  PROVISION_STEPS,
+  provisionPlaceOf,
+  provisionStepsCounted,
+  provisionStepsOf,
+  RETIRED_PROVISION_STEP_WORDS,
+  type ProvisionStep,
+} from "./stack-provision-words.ts";
 
 // ------------------------------------------------------------------------------------------------- operations (P5)
 
-/** Each kind's steps, in the order the provisioner runs them; the panel shows "step N of M" from this list. */
-export const PROVISION_STEPS = {
-  deploy: ["check", "provision", "publish", "create", "watch"],
-  restart: ["check", "restart", "watch"],
-  delete: ["check", "unbind", "remove_vm", "unpublish"],
-  // docs/design/relay-zero-downtime.md: a second instance of the relay's app (replicate, then its boot watched, the old
-  // VM serving meanwhile), the deployment moved to it (shift), the old VM's requests finishing (drain), the old VM gone.
-  rollout: ["check", "replicate", "watch", "shift", "drain", "remove_old"],
-  // docs/design/relay-release-zero-downtime.md: as a rollout, the replica held (no value in its env) until `update` gives
-  // that instance the new release's compose and its own env.
-  upgrade: ["check", "replicate", "update", "watch", "shift", "drain", "remove_old"],
-} as const satisfies Record<ProvisionKind, readonly string[]>;
-/**
- * A phase-2 Deploy (docs/design/relay-no-always-on-host.md 3.2, 13.11 P5a-2): before the app is provisioned, `contract`
- * puts the relay's own contract on Base (deployed through the CREATE2 proxy, registered on Phala's DstackKms, the
- * guardian's pairing approvals submitted), whose address is the app id. A deploy queued for such a relay counts these.
- */
-export const PHASE2_DEPLOY_STEPS = ["check", "contract", "provision", "publish", "create", "watch"] as const;
-/**
- * P7 (docs/design/relay-no-always-on-host.md 13.4): a phase-2 VM's image rollout first waits for `copies`, Gray's copy of
- * the vault sealed for the designated image and of the boot box at the receipt's version, so the second instance can
- * open them; its Gray release move first waits for `awaiting_effective`, the release's compose hash effective on the
- * relay's contract, so the second instance's keys are released.
- */
-export const PHASE2_ROLLOUT_STEPS = ["check", "copies", "replicate", "watch", "shift", "drain", "remove_old"] as const;
-export const PHASE2_UPGRADE_STEPS = ["check", "awaiting_effective", "replicate", "update", "watch", "shift", "drain", "remove_old"] as const;
-export type ProvisionStep =
-  | (typeof PROVISION_STEPS)[ProvisionKind][number]
-  | (typeof PHASE2_DEPLOY_STEPS)[number]
-  | (typeof PHASE2_ROLLOUT_STEPS)[number]
-  | (typeof PHASE2_UPGRADE_STEPS)[number];
-
-/** The steps an operation of `kind` counts: a phase-2 Deploy's include `contract`, a rollout's `copies`, an upgrade's `awaiting_effective`. */
-export function provisionStepsOf(kind: ProvisionKind, phase2: boolean): readonly string[] {
-  if (!phase2) return PROVISION_STEPS[kind];
-  return kind === "deploy" ? PHASE2_DEPLOY_STEPS : kind === "rollout" ? PHASE2_ROLLOUT_STEPS : kind === "upgrade" ? PHASE2_UPGRADE_STEPS : PROVISION_STEPS[kind];
-}
+// The steps of each kind, their place and their words are closed word lists too: stack-provision-words.ts, re-exported
+// above.
 
 // ------------------------------------------------------------------------------------------------- release profile (P4)
 
