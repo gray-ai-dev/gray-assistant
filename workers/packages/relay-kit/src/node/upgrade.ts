@@ -8,7 +8,8 @@
  *   with jsonc-parser's `modify` (comments and layout kept, as `config set` does) and the result must pass the
  *   validation `run` and `doctor` apply (`parseRelayConfigText`). The new file is 0600, the old one kept as a backup.
  * - `compose.yaml`, when an `init --pair` of any kit wrote it: rewritten from `pairedComposeText` (init's template)
- *   with `image`, keeping its project name and its state volume's key, so the volume and the network stay.
+ *   with `image`, keeping its project name and its state volume's key, so the volume and the network stay. A file whose
+ *   agent ran all the time (`restart:`) gets a note: remove that container, which this kit's image cannot run.
  *
  * Running it again changes nothing. No value of the config is printed: the result names files and members only.
  */
@@ -20,6 +21,7 @@ import { RelayKitError } from "../errors.ts";
 import { INIT_FILES, PAIRED_COMPOSE_FILE, pairedComposeText, STATE_MOUNT } from "../init.ts";
 import { MAX_CONFIG_BYTES, parseRelayConfigText } from "./config-file.ts";
 import { readFileText, writePrivateFile } from "./files.ts";
+import { PHASE1_TEXT } from "./doctor.ts";
 
 /** The config file name of kits up to 1.1.1. */
 export const OLD_CONFIG_FILE = "gray-relay.jsonc";
@@ -31,6 +33,10 @@ const PATH_RENAMES: ReadonlyArray<readonly [string, string]> = [
 ];
 /** The first line of a compose file an `init --pair` wrote, under either name. */
 const OWN_COMPOSE = /^# gray-(relay|assistant)'s agent, written by `gray-(relay|assistant) init --pair`/u;
+/** A compose file of a kit whose agent ran all the time. */
+const ALWAYS_ON = /^\s+restart:\s*\S/mu;
+export const ALWAYS_ON_NOTE =
+  "compose.yaml used to run the agent all the time (docker compose up -d, restart: unless-stopped); this kit runs one container per command (docker compose run --rm --no-deps agent <command>) and has no run command. Remove the old container once, in this directory: docker compose rm -sf agent (the state volume stays), and do not start it with docker compose up again";
 const VOLUME_KEY = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/u;
 
 export interface UpgradeOptions {
@@ -156,6 +162,8 @@ export function upgradeWorkspace(options: UpgradeOptions): UpgradeResult {
     backups.push(backup);
     written.push(configPath);
   }
+  // A phase-1 pairing (no contract) cannot serve with this kit: it pairs again, and says so where the agent looks first.
+  if (loaded.daemon.pairing !== null && (loaded.daemon.chain ?? null) === null) notes.push(PHASE1_TEXT);
   if (current !== null && existsSync(oldPath)) notes.push(`${oldPath} is left as it is: ${INIT_FILES.config} is the config this kit reads`);
 
   const composePath = join(directory, PAIRED_COMPOSE_FILE);
@@ -180,6 +188,9 @@ export function upgradeWorkspace(options: UpgradeOptions): UpgradeResult {
         writeLike(composePath, composeNext, 0o644, composeOwner, notes);
         written.push(composePath);
       }
+      // Kits up to 1.4.5 ran the agent all the time (`docker compose up -d`, `restart: unless-stopped`, the image's `run`).
+      // This kit has no `run`: a container that project left would restart for ever on "unknown command".
+      if (ALWAYS_ON.test(composeText)) notes.push(ALWAYS_ON_NOTE);
     }
   }
   return { directory, relayId: loaded.daemon.relayId, found: current === null ? OLD_CONFIG_FILE : INIT_FILES.config, written, backups, members: members.map((m) => m.path.join(".")), project, notes };

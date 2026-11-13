@@ -67,4 +67,5 @@ WORKDIR /var/lib/gray-assistant
 STOPSIGNAL SIGTERM
 
 ENTRYPOINT ["node", "/opt/gray-assistant/relay-kit/dist/node/cli/gray-assistant.mjs"]
-CMD ["run", "--config", "/etc/gray-assistant/gray-assistant.jsonc"]
+# No command runs all the time (kit 1.4.6 removed `run`): with no arguments the image prints its commands and exits 0.
+CMD ["--help"]

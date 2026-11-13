@@ -198,13 +198,16 @@ export function durationText(ms: number): string {
   return hours === 0 ? `${days} day${days === 1 ? '' : 's'}` : `${days} day${days === 1 ? '' : 's'} ${hours} hour${hours === 1 ? '' : 's'}`;
 }
 
-/** A moment in the reader's zone as Gray's panel writes it: "2:02 PM" today, else "Oct 29, 2:02 PM" (the year only when it isn't this year's). */
+/**
+ * A moment in the reader's zone, naming it, as Gray's panel writes it: "2:02 PM UTC" today, else "Oct 29, 2:02 PM UTC"
+ * (the year only when it isn't this year's). The kit's output and the API say UTC, so a time without its zone misleads.
+ */
 export function clockText(ms: number, now: number): string {
   const date = new Date(ms), today = new Date(now);
   // As Gray's panel writes a moment (relay-stack-state.ts clockText): the time alone today, else with its day.
-  if (date.toDateString() === today.toDateString()) return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  if (date.toDateString() === today.toDateString()) return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' });
   const sameYear = date.getFullYear() === today.getFullYear();
-  return date.toLocaleString('en-US', { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }), hour: 'numeric', minute: '2-digit' });
+  return date.toLocaleString('en-US', { month: 'short', day: 'numeric', ...(sameYear ? {} : { year: 'numeric' }), hour: 'numeric', minute: '2-digit', timeZoneName: 'short' });
 }
 
 /** A countdown like "14:05" for the device code. */

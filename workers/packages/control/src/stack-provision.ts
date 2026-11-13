@@ -737,6 +737,8 @@ export function kitOutdatedWords(needed: string | null, published: PublishedKitR
 }
 
 /** A step's own failures the provisioner names (closed codes), each with its words for the panel. */
+/** `no_vm` refusing a Delete: the table's words are a Restart's (and a rollout's), which a Delete's would misname. */
+export const NO_VM_TO_DELETE_WORDS: FailureWords = { title: "There is no VM to delete.", fix: "Nothing to do: Deploy makes one when you need it.", side: "relay" };
 export const STEP_FAILURE_WORDS: Readonly<Record<string, FailureWords>> = {
   not_admitted: { title: "Your workspace is not an approved supplier yet.", fix: "Gray reviews supplier applications; Deploy works once yours is approved.", side: "gray" },
   no_quota: { title: "Your relay has no VM quota.", fix: "Ask Gray for a VM on the relay's VM page; Gray's operators decide it.", side: "gray" },

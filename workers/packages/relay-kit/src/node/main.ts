@@ -405,7 +405,10 @@ async function upgradeCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   for (const note of result.notes) io.stdout(`note: ${note}\n`);
   if (result.written.length === 0) io.stdout("nothing to change: the kit is already this version's\n");
   // Nothing runs on the host, so the next step is a check; the next `deliver` or `accounts push` reports the new version to Gray.
-  const next = result.project === null ? [] : ["docker compose run --rm --no-deps agent --version", "docker compose run --rm --no-deps agent doctor"];
+  const { ALWAYS_ON_NOTE } = await import("./upgrade.ts");
+  // An agent the old kit ran all the time goes first: this kit's image cannot run it, so it would restart for ever.
+  const stopOld = result.notes.includes(ALWAYS_ON_NOTE) ? ["docker compose rm -sf agent"] : [];
+  const next = result.project === null ? [] : [...stopOld, "docker compose run --rm --no-deps agent --version", "docker compose run --rm --no-deps agent doctor"];
   for (const line of next) io.stdout(`next, in the kit directory: ${line}\n`);
   printJson(io, {
     command: "upgrade",

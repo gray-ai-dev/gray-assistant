@@ -97,7 +97,10 @@ export function TableRow({ className, inactive, href, onClick, ...rest }: HTMLAt
     onClick?.(event);
     if (event.defaultPrevented || event.button !== 0 || (event.target as Element).closest('a, button, input, select, textarea, label, [role="button"]')) return;
     if (window.getSelection()?.toString()) return;
-    if (event.metaKey || event.ctrlKey) window.open(href, '_blank', 'noopener'); else location.assign(href);
+    if (event.metaKey || event.ctrlKey) window.open(href, '_blank', 'noopener');
+    // A plain path of the app (a Provide page) opens in place, as its link does; anything else is a navigation.
+    else if (href.startsWith('/') && !href.startsWith('//')) { history.pushState(null, '', href); window.dispatchEvent(new PopStateEvent('popstate')); }
+    else location.assign(href);
   } : onClick;
   return <tr className={cx(inactive && 'ui-row--inactive', href && 'ui-row--link', className) || undefined} onClick={open} {...rest} />;
 }

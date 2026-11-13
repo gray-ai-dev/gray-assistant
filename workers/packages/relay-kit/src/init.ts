@@ -476,7 +476,10 @@ name: ${JSON.stringify(name)}
 services:
   agent:
     image: ${JSON.stringify(image)}
-    restart: unless-stopped
+    # No restart policy and a profile: \`docker compose run\` starts the service for one command (naming it enables its
+    # profile), and a \`docker compose up -d\` starts nothing, so no agent keeps restarting on a host.
+    profiles:
+      - cli
     read_only: true
     user: "10001:10001"
     # Core dumps can contain a credential; no swap keeps the relay's secrets out of a swap file.

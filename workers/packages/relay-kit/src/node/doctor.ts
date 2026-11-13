@@ -621,6 +621,10 @@ function checkLaneRegistration(doctor: Doctor, config: LoadedRelayConfig, origin
   }
 }
 
+/** A pairing without a contract (no `chain` member): what `doctor` and `upgrade` say about it. */
+export const PHASE1_TEXT =
+  "this relay is still on phase 1 (its pairing made no release contract: the config has no chain member) and must pair again to phase 2; its VM cannot connect to Gray until then. Delete the relay's VM if it has one (the console's VM tab, Delete VM; the relay's settings stay), apply the relay-stack document with relay_stack.registry_user for a pairing code, and run the answer's pairing.command from the directory that holds this kit directory (relay-workspace): it pairs again with this relay-key.json (relay-stack.md section 10)";
+
 /**
  * Phase 2 with no agent on this host: a config with a `chain` and no fresh status snapshot (`agentRunning`). Returns the
  * reason the host agent's lines are skipped, naming a snapshot left from before the move stale with its age; null while
@@ -730,6 +734,10 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     const fingerprint = key === null ? null : relayKeyFingerprint(bytesToHex(key.publicKey));
     if (fingerprint !== null && fingerprint !== pairing.fingerprint) {
       doctor.add("pairing", "fail", `values from Gray's pairing at ${pairing.pairedAt} (${pairing.gray}) for key ${pairing.fingerprint}, but ${config.daemon.keyPath} is key ${fingerprint}: pair this key (gray-assistant init --pair <code> --key <relay-key.json>) or restore the paired one`);
+    } else if ((config.daemon.chain ?? null) === null) {
+      // Phase 1 (no contract of its own): kits from 1.4.6 run nothing on the host, and Gray runs relays on phase 2, so
+      // the VM cannot connect until the relay pairs again (rehearsal of 2026-11-13: a kit-1.1.1 relay read "pairing OK").
+      doctor.add("pairing", "fail", `${PHASE1_TEXT} (paired at ${pairing.pairedAt}, key ${pairing.fingerprint})`);
     } else {
       doctor.add("pairing", "ok", `values from Gray's pairing at ${pairing.pairedAt} (${pairing.gray}), key ${pairing.fingerprint}`);
     }
