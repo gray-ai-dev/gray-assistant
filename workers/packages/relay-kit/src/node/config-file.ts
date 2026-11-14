@@ -8,12 +8,13 @@
  * name the member path and never echo a value (a config can hold a path, and a bad path can be a
  * secret's location).
  */
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
+import { dirname, isAbsolute, resolve, sep } from "node:path";
 import { isObject, type JsonObject } from "@gray/json";
 import { parse, printParseErrorCode, type ParseError } from "jsonc-parser";
 import { parseRelayDaemonConfig, type RelayDaemonConfig } from "../daemon/config.ts";
 import { RelayKitError } from "../errors.ts";
+import { KIT_MOUNT } from "../init.ts";
 import { readFileText } from "./files.ts";
 import { parseSourceConfig } from "./source/config.ts";
 import type { ResolvedSourceConfig } from "./source/config-types.ts";
@@ -70,8 +71,40 @@ function resolveNested(value: JsonObject, key: string, base: string, members: re
   for (const member of members) resolveMember(nested as JsonObject, member, base);
 }
 
-/** Resolve every path member the config has, in one place, against the config file's directory. */
-export function resolveConfigPaths(raw: JsonObject, directory: string): JsonObject {
+/** Whether anything is at `path` (a file, a directory, a link, even a dangling one); never follows a link. */
+function present(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Where `chain.guardian_key` is, and every place looked at, in order.
+ *
+ * An absolute path is that path. A relative one (`init --pair` writes "guardian-key.json") names a file of the kit
+ * directory: first beside the config file, as every other relative member; when nothing is there, the same relative
+ * path under the kit's mount in the compose container (`KIT_MOUNT`). The kit's compose.yaml mounts the config file alone
+ * at /etc/gray-assistant/ and the whole kit directory at `KIT_MOUNT`, so beside the config the container has no key
+ * (found 2026-11-14: `releases approve` failed in the container without `--config /run/secrets/gray-assistant.jsonc`).
+ * A file beside the config always wins, whatever it is; with neither, the path is the one beside the config.
+ */
+export function resolveGuardianKeyPath(value: string, directory: string, kitMount: string = KIT_MOUNT): { readonly path: string; readonly searched: readonly string[] } {
+  if (isAbsolute(value)) return { path: value, searched: [value] };
+  const beside = resolve(directory, value);
+  const mounted = resolve(kitMount, value);
+  // A relative path that leaves the mount (`../x`) names nothing of the kit there.
+  const searched = mounted === beside || !mounted.startsWith(`${resolve(kitMount)}${sep}`) ? [beside] : [beside, mounted];
+  return { path: searched.find(present) ?? beside, searched };
+}
+
+/**
+ * Resolve every path member the config has, in one place, against the config file's directory (`chain.guardian_key`
+ * by `resolveGuardianKeyPath`, which also looks under the kit's mount).
+ */
+export function resolveConfigPaths(raw: JsonObject, directory: string, kitMount: string = KIT_MOUNT): JsonObject {
   const out: JsonObject = { ...raw };
   resolveMember(out, "key", directory);
   resolveMember(out, "policy_bundle", directory);
@@ -83,7 +116,11 @@ export function resolveConfigPaths(raw: JsonObject, directory: string): JsonObje
   const stack = out["stack"];
   if (isObject(stack)) resolveNested(stack, "registry", directory, ["password_file"]);
   resolveNested(out, "tunnel", directory, ["server_ca", "frpc", "caddy", "data_dir"]);
-  resolveNested(out, "chain", directory, ["guardian_key"]);
+  const chain = out["chain"];
+  if (isObject(chain)) {
+    const guardianKey = chain["guardian_key"];
+    if (typeof guardianKey === "string" && guardianKey.length > 0) out["chain"] = { ...chain, guardian_key: resolveGuardianKeyPath(guardianKey, directory, kitMount).path };
+  }
   const tunnel = out["tunnel"];
   if (isObject(tunnel)) {
     resolveNested(tunnel, "acme", directory, ["ca_root"]);

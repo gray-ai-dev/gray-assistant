@@ -4,18 +4,27 @@
  * `GET /v8/management/credentials` lists credentials with non-secret state; the adapter maps
  * provider → vendor, `status`/`disabled`/`next_retry_after` → the lane's status, the modification
  * and refresh timestamps → an opaque `changeMark`, and (when the server exposes it) `proxy_url` →
- * `egress`. `GET /v8/management/credentials/download?name=<file>` returns the auth file, whose
+ * `egress`. Every account serves every model of its vendor (`models: "*"`): the list carries no
+ * models, and the only per-credential list, `GET /credentials/models?name=`, is CLIProxyAPI's own
+ * model registry for that client (its built-in catalog after `oauth-model-alias` and
+ * `excluded-models`), the names its customers call rather than the vendor's names Gray's routes
+ * send (`upstream_model`); restricting an account to them would take it out of a route whose
+ * vendor's name an alias renamed. On Gray the relay's routes say which models it serves.
+ * `GET /v8/management/credentials/download?name=<file>` returns the auth file, whose
  * provider-specific token fields become the credential. CLIProxyAPI runs its own proactive refresh
  * loop, so `refresh` is `"proactive"`; the daemon never calls a vendor token endpoint.
  *
  * Pinned reference: router-for-me/CLIProxyAPI commit
- * `20c9095cac089c6a8e40554debe4dd8a19d4c14f` (2026-10-20):
- * - `docs/management-api-v8.md` lines 83-118: the routes and the bearer management key.
- * - `internal/api/server_routes.go` 139-148: `GET /` message used before a token is sent.
- * - `internal/api/server_management_v8.go` 43-47: `GET /credentials`, `GET /credentials/download`.
- * - `internal/api/handlers/management/auth_files.go` 104-175, 219-228, 647-799: the list answer.
- * - `internal/api/handlers/management/auth_files_crud.go` 27-50: the download answer (raw auth JSON).
- * - `internal/auth/claude/token.go` 19-56 and `internal/auth/codex/token.go` 230-252: the auth files.
+ * `ad8bdd3f20bef44f0684b8a6096a216b2c76040d` (2026-10-27), the commit the reference port builds:
+ * - `docs/management-api-v8.md` lines 1-17 and 85-125: the routes and the bearer management key.
+ * - `internal/api/server_routes.go` 140-150: `GET /` message used before a token is sent.
+ * - `internal/api/server_management_v8.go` 45-49: `GET /credentials`, `GET /credentials/models`,
+ *   `GET /credentials/download`.
+ * - `internal/api/handlers/management/auth_files.go` 106-176, 221-230, 649-803: the list answer
+ *   (`buildAuthFileEntryLocked`: no `models`, `weight`, `max_concurrency` or `proxy_url` member);
+ *   335-381: `GetAuthFileModels`, the registry's models for one credential.
+ * - `internal/api/handlers/management/auth_files_crud.go` 28-50: the download answer (raw auth JSON).
+ * - `internal/auth/claude/token.go` 19-56 and `internal/auth/codex/token.go` 230-262: the auth files.
  * - `sdk/cliproxy/auth/metadata_keys.go` 23-24 and `internal/watcher/synthesizer/file.go` 151-228:
  *   `proxy_url` is an auth-file member; the pinned list does not include it.
  *
@@ -38,7 +47,6 @@ import { detectSourceSoftware } from "./detect.ts";
 import { parseEgressUrl, type ParsedEgress } from "./egress.ts";
 import { fetchJson, joinSourceUrl, withQuery } from "./http-client.ts";
 import {
-  MODEL_ID,
   PRINTABLE_CREDENTIAL,
   SOURCE_ID,
   SOURCE_TAG,
@@ -68,7 +76,6 @@ const listEntrySchema = z.object({
   expires_at: z.union([z.string(), z.number(), z.null()]).optional(),
   expires_at_ms: z.union([z.number(), z.null()]).optional(),
   credential_expires_at_ms: z.union([z.number(), z.null()]).optional(),
-  models: z.union([z.array(z.string()), z.literal("*")]).optional(),
   max_concurrency: z.number().optional(),
 });
 
@@ -153,17 +160,6 @@ function statusOf(
   return { status: "limited", limitedUntilMs };
 }
 
-function modelsOf(entry: z.infer<typeof listEntrySchema>, detail: string): readonly string[] | "*" {
-  if (entry.models === undefined) return "*";
-  if (entry.models === "*") return "*";
-  const models = [...entry.models];
-  if (models.length === 0 || models.length > 256) throw new RelayKitError("source_shape_changed", `${detail}.models`);
-  for (const model of models) {
-    if (!MODEL_ID.test(model)) throw new RelayKitError("source_shape_changed", `${detail}.models`);
-  }
-  return models;
-}
-
 function changeMarkOf(entry: z.infer<typeof listEntrySchema>, detail: string, expiryMs: number | undefined, proxy: ParsedEgress | undefined): string {
   // The modification timestamps are opaque signals here: Go writes them as RFC3339, but a future
   // release may change the text and the mark should still track it rather than fail the snapshot.
@@ -244,7 +240,9 @@ export function parseCliproxyCredentialList(value: unknown, maxAccounts: number,
       sourceId,
       vendor: provider.vendor,
       credentialType: provider.credentialType,
-      models: modelsOf(entry.data, detail),
+      // Every model of the vendor: see the header (no list member names models; a `models` a
+      // release adds is stripped with the other unknown members, never read as a restriction).
+      models: "*",
       weight,
       maxConcurrency: BigInt(entry.data.max_concurrency ?? 1),
       status: sourceStatus as SourceAccountStatus,

@@ -41,9 +41,14 @@ function hasLaneSection(configPath: string): boolean {
   return isObject(raw) && get(raw, "lane") !== undefined;
 }
 
+/** `releaseContentForCheck`'s answer for a compose while no stack VM is adopted: there is nothing to compare its content with yet. */
+export const NO_STACK_VM = "no_stack_vm";
+
 /**
- * `releases check`'s content part: null when the config has no `lane` section (no signed list to read), else the result.
- * `list` replaces the fetch (tests).
+ * `releases check`'s content part: null when the config has no `lane` section (no signed list to read); `NO_STACK_VM`
+ * for a compose while `stack.instance` is "gray" and no VM of this contract is adopted yet (the compose's rules name
+ * the KMS of the VM's instance, which `deliver` adopts; before the first Deploy and deliver only the contract's state
+ * can be compared); else the result. `list` replaces the fetch (tests).
  */
 export async function releaseContentForCheck(
   context: ChainContext,
@@ -51,16 +56,18 @@ export async function releaseContentForCheck(
   hash: string,
   nowMs: number,
   list?: (config: LoadedRelayConfig) => Promise<ReleaseList>,
-): Promise<ReleaseContentResult | null> {
+): Promise<ReleaseContentResult | typeof NO_STACK_VM | null> {
   if (!hasLaneSection(context.configPath)) return null;
   const config = loadRelayConfigFile(context.configPath);
+  const { adoptedPhase2Vm, phase2Vm } = await import("./deliver.ts");
+  // An OS image is checked by its own texts; a compose needs the VM's instance.
+  if (kind === "compose" && adoptedPhase2Vm(config, context) === null) return NO_STACK_VM;
   let signed: ReleaseList;
   if (list !== undefined) signed = await list(config);
   else {
     const { releaseListForCommand } = await import("./release-control.ts");
     signed = (await releaseListForCommand(config, nowMs)).list;
   }
-  const { phase2Vm } = await import("./deliver.ts");
   try {
     return checkReleaseContent(signed, kind, hash, () => releaseExpectationOf(config, phase2Vm(config, context).instance));
   } catch (error) {

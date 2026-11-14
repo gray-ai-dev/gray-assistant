@@ -7,7 +7,7 @@
  * Gray's relayer (P5 adds the route that takes it); and with `--submit --rpc <url>` sends the `...BySig` transaction from
  * the guardian key itself (it pays; the chain id must be the config's). Nothing here prints the key.
  */
-import { closeSync, fsyncSync, openSync } from "node:fs";
+import { closeSync, fsyncSync, lstatSync, openSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { get, isObject, parsePlain, type Json, type JsonObject } from "@gray/json";
 import { bytesToLowerHex, ed25519Sign } from "@gray/attest";
@@ -22,7 +22,8 @@ import { GUARDIAN_KEY_FILE, guardianKeyValue, parseGuardianKeyValue, type Guardi
 import { agreedChain, hasCode, listReleases, releaseState, releaseStateJson, settingsState, signerNonce, switchState, type AgreedChain, type ReleaseState } from "../chain/releases.ts";
 import { checkedRpcUrl, httpRequestFn, rpcClient, rpcLabel, type RpcOptions } from "../chain/rpc.ts";
 import { RelayKitError } from "../errors.ts";
-import { loadRelayConfigFile, parseJsoncText } from "./config-file.ts";
+import { KIT_MOUNT } from "../init.ts";
+import { loadRelayConfigFile, parseJsoncText, resolveGuardianKeyPath } from "./config-file.ts";
 import { editRelayConfig } from "./config-edit.ts";
 import { buildKeyFromText } from "./scheduler-load.ts";
 import { defaultPost, type StackPost } from "./stack.ts";
@@ -39,19 +40,51 @@ const MAX_ACTION_LIFETIME_SECONDS = 30n * 24n * 60n * 60n;
 export interface ChainContext {
   readonly configPath: string;
   readonly chain: ChainConfig;
+  /** Where the guardian key is read (`resolveGuardianKeyPath`): the first place of `guardianKeySearched` that holds a file. */
   readonly guardianKeyPath: string;
+  /** Every place `chain.guardian_key` is looked for, in order: one for an absolute path, else beside the config and under the kit's mount. */
+  readonly guardianKeySearched: readonly string[];
 }
 
-/** The config's `chain` member, or null when the config has none (a phase-1 kit). The rest of the config is not judged here. */
-export function readChainContext(configPath: string): ChainContext | null {
+/**
+ * The config's `chain` member, or null when the config has none (a phase-1 kit). The rest of the config is not judged
+ * here. `kitMount` is where the compose container has the kit directory (the tests name another).
+ */
+export function readChainContext(configPath: string, kitMount: string = KIT_MOUNT): ChainContext | null {
   const raw = parseJsoncText(readFileText(configPath, "relay config", MAX_FILE_BYTES), "relay config");
   if (!isObject(raw as Json)) throw new RelayKitError("usage", "invalid relay config: not an object");
   const member = get(raw as Json, "chain");
   if (member === undefined) return null;
   const chain = parseChainConfig(member);
-  const base = dirname(resolve(configPath));
-  const guardianKeyPath = isAbsolute(chain.guardianKey) ? chain.guardianKey : resolve(base, chain.guardianKey);
-  return { configPath, chain, guardianKeyPath };
+  const guardianKey = resolveGuardianKeyPath(chain.guardianKey, dirname(resolve(configPath)), kitMount);
+  return { configPath, chain, guardianKeyPath: guardianKey.path, guardianKeySearched: guardianKey.searched };
+}
+
+/** Where the relay puts a guardian key file so every command finds it: `chain.guardian_key` in the kit directory. */
+export function guardianKeyPlace(context: ChainContext): string {
+  if (isAbsolute(context.chain.guardianKey)) return context.chain.guardianKey;
+  return `${context.chain.guardianKey} in the kit directory, beside gray-assistant.jsonc`;
+}
+
+/**
+ * The config's guardian key, for the commands that sign with it (approve, reject, delay, pause, unpause): the file at
+ * `guardianKeyPath`, which must be `chain.guardian`'s. When no place holds a file the refusal names every place looked at.
+ */
+export function readContextGuardianKey(context: ChainContext): GuardianKeyFile {
+  const found = context.guardianKeySearched.some((path) => {
+    try {
+      lstatSync(path);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  if (!found) {
+    const [beside, mounted] = context.guardianKeySearched;
+    const where = mounted === undefined ? `no file at ${beside}` : `no file at ${beside} (beside the config) or at ${mounted} (the kit directory as compose.yaml mounts it)`;
+    throw new RelayKitError("io", `cannot read the guardian key (chain.guardian_key is ${JSON.stringify(context.chain.guardianKey)}): ${where}; put it at ${guardianKeyPlace(context)}`);
+  }
+  return readGuardianKeyFile(context.guardianKeyPath, context.chain.guardian);
 }
 
 /** Read `guardian-key.json` (0600, a regular file) and check it is the configured guardian. */
@@ -156,12 +189,17 @@ export function upgradeVerdict(hash: Hex): { readonly ok: boolean; readonly deta
   return { ok: true, detail: `an upgrade Gray publishes: from ${upgrade.from} to implementation ${upgrade.version} at ${upgrade.to} (code ${upgrade.codeHash}), ${upgrade.data === "0x" ? "no call" : `call ${upgrade.data}`}` };
 }
 
-/** `releases list`: every proposal since `chain.from_block` (or `--from-block`), with its state. */
+/**
+ * `releases list`: every proposal since `--from-block`, else `chain.from_block`, with its state. A config without a
+ * start is refused with what works without one: `init --pair` writes none (the contract is deployed later, at Deploy,
+ * and does not record its block), and reading back from the head without one is 100 log requests, which the public
+ * Base endpoints refuse (HTTP 429 after about ten; measured 2026-11-14).
+ */
 export async function chainReleasesList(context: ChainContext, options: ChainCommandOptions & { readonly fromBlock?: bigint }): Promise<{ readonly block: bigint; readonly releases: readonly ReleaseState[] }> {
   const chain = await openChain(context, options);
   if (!(await hasCode(chain, context.chain.contract))) throw new RelayKitError("chain_refused", `no contract at ${context.chain.contract} yet (Gray deploys it at Deploy)`);
   const fromBlock = options.fromBlock ?? context.chain.fromBlock;
-  if (fromBlock === null) throw new RelayKitError("usage", "releases list reads the contract's events from its deployment block: set chain.from_block, or give --from-block");
+  if (fromBlock === null) throw new RelayKitError("usage", "releases list reads the contract's events from a start block, and this config names none: give --from-block <n> or set chain.from_block (a block shortly before your relay's first Deploy). To see what waits for your approval without it, run gray-assistant doctor (its releases_pending line), or gray-assistant releases check <hash> for one release");
   return { block: chain.block, releases: await listReleases(chain, context.chain.contract, fromBlock) };
 }
 
@@ -207,7 +245,7 @@ export async function chainGuardianAction(
   const guardian = context.chain.guardian;
   const deadline = actionDeadline(request.deadline, options.nowMs);
   const givenNonce = nonceFlag(request.nonce);
-  const key = readGuardianKeyFile(context.guardianKeyPath, guardian);
+  const key = readContextGuardianKey(context);
   const submitUrl = request.submit ? checkedRpcUrl(request.submit.rpc, "--rpc") : null;
 
   const chain = await openChain(context, options);
@@ -281,7 +319,7 @@ export async function chainSetDelay(
   const guardian = context.chain.guardian;
   const deadline = actionDeadline(request.deadline, options.nowMs);
   const givenNonce = nonceFlag(request.nonce);
-  const key = readGuardianKeyFile(context.guardianKeyPath, guardian);
+  const key = readContextGuardianKey(context);
   const submitUrl = request.submit ? checkedRpcUrl(request.submit.rpc, "--rpc") : null;
   const chain = await openChain(context, options);
   if (!(await hasCode(chain, contract))) throw new RelayKitError("chain_refused", `no contract at ${contract} yet (Gray deploys it at Deploy)`);
@@ -463,6 +501,29 @@ export async function chainChecksFor(context: ChainContext, composeHash: Hex | n
     options,
   );
   return { result, json: chainCheckJson(result) as JsonObject };
+}
+
+/**
+ * For `doctor`: which of the given releases (Gray's signed list's compose and OS image hashes) wait for the guardian on
+ * the config's contract: proposed, not yet effective, and neither vetoed nor removed. Read as every command here reads
+ * it, from the two endpoints, which must agree; no contract yet means nothing waits (the pairing's approvals cover the
+ * first release).
+ */
+export async function pendingReleasesFor(
+  context: ChainContext,
+  candidates: { readonly compose: readonly Hex[]; readonly osImage: readonly Hex[] },
+  options: RpcOptions & { readonly nowMs?: number } = {},
+): Promise<{ readonly block: bigint; readonly pending: readonly ReleaseState[] }> {
+  const chain = await openChain(context, { ...options, nowMs: options.nowMs ?? Date.now() });
+  const contract = context.chain.contract;
+  if (!(await hasCode(chain, contract))) return { block: chain.block, pending: [] };
+  const pending: ReleaseState[] = [];
+  const named: (readonly [ReleaseKind, Hex])[] = [...candidates.compose.map((hash) => ["compose", hash] as const), ...candidates.osImage.map((hash) => ["os_image", hash] as const)];
+  for (const [kind, hash] of named) {
+    const state = await releaseState(chain, contract, kind, hash);
+    if (state.proposedAt !== 0n && !state.effective && !state.vetoed && !state.removed) pending.push(state);
+  }
+  return { block: chain.block, pending };
 }
 
 export { APP_AUTH_DELAY_SECONDS, releaseStateJson };

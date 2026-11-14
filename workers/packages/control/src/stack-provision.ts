@@ -736,9 +736,19 @@ export function kitOutdatedWords(needed: string | null, published: PublishedKitR
   };
 }
 
-/** A step's own failures the provisioner names (closed codes), each with its words for the panel. */
+/**
+ * A gray-assistant command that signs with the relay's guardian key (`releases approve|reject|delay`, `pause`,
+ * `unpause`), as a relay runs it in its kit directory. `--config` names the config where the kit's compose mounts the
+ * kit directory (relay-kit init.ts: KIT_MOUNT, INIT_FILES.config): the config's `chain.guardian_key` is relative to the
+ * config file, and the default config path (/etc/gray-assistant/, the config file alone) has no key beside it, so the
+ * command without it ends in "cannot read guardian key" (staging, 2026-11-14).
+ */
+export const KIT_GUARDIAN_CONFIG = "/run/secrets/gray-assistant.jsonc";
+export const kitGuardianRun = (command: string): string => `docker compose run --rm --no-deps agent ${command} --config ${KIT_GUARDIAN_CONFIG}`;
+
 /** `no_vm` refusing a Delete: the table's words are a Restart's (and a rollout's), which a Delete's would misname. */
 export const NO_VM_TO_DELETE_WORDS: FailureWords = { title: "There is no VM to delete.", fix: "Nothing to do: Deploy makes one when you need it.", side: "relay" };
+/** A step's own failures the provisioner names (closed codes), each with its words for the panel. */
 export const STEP_FAILURE_WORDS: Readonly<Record<string, FailureWords>> = {
   not_admitted: { title: "Your workspace is not an approved supplier yet.", fix: "Gray reviews supplier applications; Deploy works once yours is approved.", side: "gray" },
   no_quota: { title: "Your relay has no VM quota.", fix: "Ask Gray for a VM on the relay's VM page; Gray's operators decide it.", side: "gray" },
@@ -798,7 +808,69 @@ export const STEP_FAILURE_WORDS: Readonly<Record<string, FailureWords>> = {
   release_vetoed: { title: "Your relay's contract vetoed (or removed) the Gray release this move needed.", fix: "Your VM keeps its release and serves. Gray proposes the next release.", side: "relay" },
   release_not_proposed: { title: "The Gray release this move needs is not proposed on your relay's contract yet.", fix: "Your VM keeps its release and serves. Gray proposes it, and tries again.", side: "gray" },
   internal: { title: "Something failed on Gray's side.", fix: "Gray's operators have been told. Retry later.", side: "gray" },
+  // A phase-2 relay's first Deploy boots the release it paired on, even superseded, unless Phala closed its KMS node to
+  // new VMs (2026-11-12; RELAY_CHAIN_KMS_CLOSED_IDS): then a newer release effective on the relay's contract.
+  // `<compose hash>` is the release Gray proposed there, which the panel names.
+  release_retired_proposed: {
+    title: "The Gray release this relay paired on can no longer be deployed.",
+    fix:
+      "Phala retired the key service node it runs on for new VMs. Gray proposed release <compose hash> on your relay's contract: approve it with your guardian, in gray-assistant's kit directory " +
+      `(${kitGuardianRun("releases approve <compose hash>")}), or wait for your release delay to pass. Then Deploy: Gray reads your contract when you do.`,
+    side: "relay",
+  },
+  // The pairing's release is on a key service node closed to new VMs and the relay's contract is not on chain (no
+  // Deploy made it), so Gray can propose nothing there: a new pairing takes the current release.
+  release_retired_pair_again: {
+    title: "The Gray release this relay paired on can no longer be deployed.",
+    fix:
+      "Phala retired the key service node it runs on for new VMs, and your relay's contract is not on chain yet (no Deploy has made it), so no newer release can be approved there. " +
+      "Pair gray-assistant again: the new pairing takes Gray's current release, and nothing is lost (the relay has no VM and nothing on chain; its settings stay). " +
+      "Apply with relay_stack.registry_user: the answer's pairing.command pairs the kit directory you have (relay-workspace, with its relay-key.json) again. Then apply again: it queues Deploy.",
+    side: "relay",
+  },
+  release_retired_unproposed: {
+    title: "The Gray release this relay paired on can no longer be deployed.",
+    fix: "Phala retired the key service node it runs on for new VMs, and Gray has not proposed a newer release on your relay's contract yet. Gray's operators have been told: Gray proposes one, you approve it with your guardian (or wait for your release delay to pass), then Deploy.",
+    side: "gray",
+  },
+  // The provisioner's own look at the contract before it boots a release other than the pairing's.
+  release_not_effective: {
+    title: "The Gray release this Deploy boots is not in effect on your relay's contract.",
+    fix: "Nothing was started. Approve it with your guardian (releases approve with its hash, in gray-assistant's kit directory; your relay's Releases page names it) or wait for your release delay to pass, then Deploy.",
+    side: "relay",
+  },
 };
+
+/**
+ * Phala's error code (`ERR-02-030`) a refused request names, as a failure's closed detail (`phala_err_02_030`): the
+ * deployment's `failure_detail` takes closed lower-case words only, and the code is what tells one refusal from another.
+ * Phala's message stays in the step's audit (lane_stack_provision_steps). Null when the text names no code.
+ */
+export type PhalaErrorDetail = `phala_err_${string}`;
+export const PHALA_ERROR_DETAIL = /^phala_err_\d{2}_\d{3}$/;
+export function phalaErrorDetailOf(text: string): PhalaErrorDetail | null {
+  const m = /\bERR-(\d{2})-(\d{3})\b/.exec(text);
+  return m === null ? null : `phala_err_${m[1]}_${m[2]}`;
+}
+
+/** Plain words for the Phala error codes Gray has met (seen 2026-11-12: ERR-02-030 on `POST /cvms/provision`). */
+export const PHALA_ERROR_WORDS: Readonly<Record<string, FailureWords>> = {
+  phala_err_02_030: {
+    title: "The cloud provider no longer takes new VMs on the key service node this release uses.",
+    fix: "Phala retired that node for new deployments (Phala error ERR-02-030). Gray's operators have been told: Gray moves the release to another node, and Deploy boots it once it is in effect on your relay's contract.",
+    side: "gray",
+  },
+};
+
+/** `phala_refused`'s words with its detail: a known Phala code's own, else the general ones naming the code. */
+export function phalaRefusedWords(detail: string | null): FailureWords {
+  const base = STEP_FAILURE_WORDS.phala_refused!;
+  if (detail === null || !PHALA_ERROR_DETAIL.test(detail)) return base;
+  const known = PHALA_ERROR_WORDS[detail];
+  if (known !== undefined) return known;
+  const code = detail.slice("phala_".length).toUpperCase().replaceAll("_", "-");
+  return { ...base, fix: `Phala answered ${code}. ${base.fix}` };
+}
 
 // ------------------------------------------------------------------------------------------------- containers (P8)
 
@@ -1029,6 +1101,13 @@ export interface ProvisionPlan {
     readonly instanceType: string;
     readonly imageOs: string;
     /**
+     * Phase 2: the release's OS image hash, 64 lower hex (the profile's `os_image_hash`), which the VM measures and the
+     * relay's contract must hold in effect. A phase-2 Deploy boots the pairing's release while it is current, else a newer
+     * one effective on the contract, so this may differ from `chain.osImageHash`. Absent or null: phase 1, or a console
+     * from before it (the chain's is used).
+     */
+    readonly osImageHash?: string | null;
+    /**
      * Relay standard v1.7 item 9: the relay's latest signed agent status lists this profile's compose hash
      * (`accepted_compose`). The console plans only an accepted profile; the provisioner refuses `release_not_accepted`
      * before any VM is made for a plan that does not say so.
@@ -1047,7 +1126,8 @@ export interface ProvisionPlan {
   /**
    * Phase 2 (docs/design/relay-no-always-on-host.md 13.11 P5a-2): a Deploy of a relay whose pairing gave a guardian part
    * (lane_stack_relay_guardians), with the phase-2 switch on for it. The app id is `contract`; the profile is the release
-   * the guardian approved. Absent or null: phase 1.
+   * the guardian approved at pairing while it is current, else a newer release effective on the contract (the chain part
+   * stays the pairing's: the contract's address and the approvals are the pairing's). Absent or null: phase 1.
    */
   readonly chain?: ProvisionChain | null;
   /**
@@ -1136,7 +1216,7 @@ export interface ProvisionerStoreRpc {
   finish(input: {
     readonly opId: string;
     readonly outcome: "succeeded" | "failed";
-    readonly failure: { readonly code: string; readonly class: BootFailureClass | null; readonly step: string | null; readonly detail: TokenServiceCode | "other" | null } | null;
+    readonly failure: { readonly code: string; readonly class: BootFailureClass | null; readonly step: string | null; readonly detail: TokenServiceCode | "other" | PhalaErrorDetail | null } | null;
   }): Promise<void>;
   watched(): Promise<readonly { readonly relayId: string; readonly cvmId: string }[]>;
   /**

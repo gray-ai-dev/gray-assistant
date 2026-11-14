@@ -52,7 +52,7 @@ import { SCHEDULER_ENDPOINTS } from "../endpoints.ts";
 import { RelayKitError } from "../errors.ts";
 import { RELAY_ID_PLACEHOLDER } from "../init.ts";
 import { attestLane, loadQuoteVerifier } from "./attest.ts";
-import { loadRelayConfigFile, type LoadedRelayConfig } from "./config-file.ts";
+import { configArgumentFor, loadRelayConfigFile, type LoadedRelayConfig } from "./config-file.ts";
 import { isGroupOrOtherReadable, readPrivateFile } from "./files.ts";
 import { httpsRequestOnce } from "./https.ts";
 import { probePeerTunnel } from "./peer-tunnel.ts";
@@ -70,6 +70,7 @@ import { osImageProvenance, type QuoteVerifier, type StackBootResult } from "@gr
 import { createHash } from "node:crypto";
 import type { Hex } from "viem";
 import type { ChainCheckResult } from "../chain/checks.ts";
+import type { ReleaseState } from "../chain/releases.ts";
 import type { TunnelConfig } from "../daemon/config.ts";
 import type { LaneBinding } from "../lane-binding.ts";
 import type { DaemonStackInstance } from "../daemon/types.ts";
@@ -104,6 +105,26 @@ export interface DoctorOptions {
    * Defaults to reading the config's `chain` RPCs; the tests pass a fixed answer.
    */
   readonly chainCheck?: (composeHash: Hex, osImageHash: Hex | null) => Promise<ChainCheckResult>;
+  /**
+   * Phase 2: which of these releases of Gray's signed list wait for the guardian on the relay's contract (proposed, not
+   * yet effective, neither vetoed nor removed). Defaults to reading the config's `chain` RPCs (`pendingReleasesFor`);
+   * the tests pass a fixed answer.
+   */
+  readonly pendingReleases?: (candidates: PendingCandidates) => Promise<PendingReleases>;
+  /** Where the compose container has the kit directory (`KIT_MOUNT`); the tests name another. */
+  readonly kitMount?: string;
+}
+
+/** Gray's listed compose and OS image hashes, as `0x` hex. */
+export interface PendingCandidates {
+  readonly compose: readonly Hex[];
+  readonly osImage: readonly Hex[];
+}
+
+/** The releases that wait for the guardian, at the block both RPCs have. */
+export interface PendingReleases {
+  readonly block: bigint;
+  readonly pending: readonly ReleaseState[];
 }
 
 const DAY_MS = 86_400_000;
@@ -652,6 +673,59 @@ function chainCheckOf(options: DoctorOptions, config: LoadedRelayConfig): ((comp
   };
 }
 
+/**
+ * Phase 2: the guardian key where the guardian's commands read it (`readContextGuardianKey`: beside the config, else
+ * under the kit's mount). Without it `releases approve|reject|delay`, `pause` and `unpause` sign nothing, so a key that
+ * is missing, unsafe, not a guardian key or not `chain.guardian`'s is a FAIL with the command's own refusal.
+ */
+async function checkGuardianKey(doctor: Doctor, options: DoctorOptions): Promise<void> {
+  try {
+    const { readChainContext, readContextGuardianKey } = await import("./chain.ts");
+    const context = readChainContext(options.configPath, options.kitMount);
+    if (context === null) return;
+    const key = readContextGuardianKey(context);
+    doctor.add("guardian_key", "ok", `guardian key ${context.guardianKeyPath}: ${key.address}, the config's chain.guardian; releases approve, reject and delay, pause and unpause sign with it`);
+  } catch (error) {
+    const reason = error instanceof RelayKitError ? (error.detail ?? error.code) : "the guardian key could not be read";
+    doctor.add("guardian_key", "fail", `${reason}; until it is readable, releases approve, reject and delay, pause and unpause cannot sign`);
+  }
+}
+
+/**
+ * Phase 2: the releases of Gray's signed list that wait for the guardian on the relay's contract, in one line with the
+ * commands that check and approve each. A contract that cannot be read is a warning that says so, never a FAIL: the
+ * origin lines judge the release that runs.
+ */
+async function checkPendingReleases(doctor: Doctor, options: DoctorOptions, release: VerifiedReleaseList, nowMs: number): Promise<void> {
+  const hex = (hash: string): Hex => `0x${hash}` as Hex;
+  const candidates: PendingCandidates = { compose: release.list.composeHashes.map(hex), osImage: release.list.osImageHashes.map(hex) };
+  let answer: PendingReleases;
+  try {
+    if (options.pendingReleases !== undefined) answer = await options.pendingReleases(candidates);
+    else {
+      const { pendingReleasesFor, readChainContext } = await import("./chain.ts");
+      const context = readChainContext(options.configPath, options.kitMount);
+      if (context === null) return;
+      answer = await pendingReleasesFor(context, candidates, { nowMs });
+    }
+  } catch (error) {
+    const reason = error instanceof RelayKitError ? `${error.code}${error.detail === null ? "" : `: ${error.detail}`}` : "an RPC endpoint could not be read";
+    doctor.add("releases_pending", "warn", `the relay's contract could not be read (${reason}), so whether a release waits for your approval is not known; gray-assistant releases check <hash> reads one`);
+    return;
+  }
+  if (answer.pending.length === 0) {
+    doctor.add("releases_pending", "ok", `no release of Gray's signed list waits for your approval on the relay's contract (block ${answer.block})`);
+    return;
+  }
+  const config = configArgumentFor(options.configPath);
+  const each = answer.pending.map((state) => {
+    const kind = state.kind === "os_image" ? " --kind os_image" : "";
+    const at = new Date(Number(state.effectiveAt) * 1000).toISOString();
+    return `${state.kind === "compose" ? "compose" : "OS image"} ${state.hash} takes effect at ${at} unless you veto it: check it with \`gray-assistant releases check ${state.hash}${kind}${config}\`, let it in now with \`gray-assistant releases approve ${state.hash}${kind}${config}\``;
+  });
+  doctor.add("releases_pending", "warn", `${answer.pending.length === 1 ? "1 release Gray proposed waits" : `${answer.pending.length} releases Gray proposed wait`} for your approval on the relay's contract (block ${answer.block}): ${each.join("; ")}`);
+}
+
 /** Run every check. It never throws for a failed check; only a programming error would escape. */
 export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   const doctor = new Doctor();
@@ -700,6 +774,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   if (config.daemon.scheduler.adminTokenFile !== null) {
     checkSecretFile(doctor, "admin_token_permissions", config.daemon.scheduler.adminTokenFile, "admin token file");
   }
+  if ((config.daemon.chain ?? null) !== null) await checkGuardianKey(doctor, options);
   // S23: the relay-stack origin runs no policy module; a relay with no other origin needs no bundle.
   const policyPath = policyOrigins(config.daemon).length === 0 ? null : config.daemon.policyBundlePath;
   if (policyPath === null) {
@@ -876,6 +951,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     }
   }
   checkPairingReleases(doctor, config, release, controlView);
+  if (release !== null && (config.daemon.chain ?? null) !== null) await checkPendingReleases(doctor, options, release, nowMs);
   let quoteVerifier: QuoteVerifier | null = null;
   try {
     quoteVerifier = await loadQuoteVerifier({ ...(options.verifierModule === undefined ? {} : { verifierModule: options.verifierModule }), ...(options.pccs === undefined ? {} : { pccs: options.pccs }) });

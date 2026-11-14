@@ -231,7 +231,7 @@ export function phase2Vm(config: LoadedRelayConfig, chain: ChainContext): { read
  * adopts it once its quote proves it (found 2026-11-10: a Delete, a new pairing and a Deploy left `deliver` refusing the
  * old app with nothing the relay could do about it).
  */
-function adoptedPhase2Vm(config: LoadedRelayConfig, chain: ChainContext): { readonly origin: string; readonly instance: LaneBinding } | null {
+export function adoptedPhase2Vm(config: LoadedRelayConfig, chain: ChainContext): { readonly origin: string; readonly instance: LaneBinding } | null {
   const stack = config.daemon.stack;
   if (stack !== null && stack.instanceSource === "gray" && stack.laneOrigin === null) {
     const inspected = inspectControlFile(controlFileBeside(config.daemon.stateFile));

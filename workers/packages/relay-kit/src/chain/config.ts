@@ -27,7 +27,7 @@ export interface ChainConfig {
   readonly rpc: readonly [string, string];
   readonly proposer: Address;
   readonly guardian: Address;
-  /** The guardian key file as written (relative to the config's directory). */
+  /** The guardian key file as written: absolute, or relative to the kit directory (beside the config, or under the kit's mount in the compose container; `resolveGuardianKeyPath`). */
   readonly guardianKey: string;
   readonly contract: Address;
   readonly dstackKms: Address;

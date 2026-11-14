@@ -126,6 +126,8 @@ export interface CliIo {
   readonly sleep: (ms: number) => Promise<void>;
   /** The process environment; `init --pair` reads `GRAY_ASSISTANT_IMAGE`, which the published image sets. */
   readonly env: Readonly<Record<string, string | undefined>>;
+  /** Where the compose container has the kit directory (`KIT_MOUNT`, the default); the tests name another. */
+  readonly kitMount?: string;
 }
 
 function defaultIo(): CliIo {
@@ -374,8 +376,8 @@ async function dispatch(args: ParsedArgs, io: CliIo): Promise<number> {
   if (command === "source") return sourceCommand(args, io);
   if (command === "doctor") return doctorCommand(args, io);
   if (command === "upgrade") return upgradeCommand(args, io);
-  if (command === "pause") return chainSwitchCommand(args, io, "pause", await requireChainContext(args, "pause"));
-  if (command === "unpause") return chainSwitchCommand(args, io, "unpause", await requireChainContext(args, "unpause"));
+  if (command === "pause") return chainSwitchCommand(args, io, "pause", await requireChainContext(args, "pause", io));
+  if (command === "unpause") return chainSwitchCommand(args, io, "unpause", await requireChainContext(args, "unpause", io));
   if (command === "releases") return releasesCommand(args, io);
   if (command === "keys") return keysCommand(args, io);
   if (command === "stack") return stackCommand(args, io);
@@ -1024,6 +1026,7 @@ async function doctorCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   const report = await runDoctor({
     configPath: configPathOf(args),
     nowMs,
+    ...(io.kitMount === undefined ? {} : { kitMount: io.kitMount }),
     ...(args.flags.has("ca") ? { ca: readFileText(args.flags.get("ca") as string, "CA certificate", 1024 * 1024) } : {}),
     ...(args.flags.has("verifier-module") ? { verifierModule: args.flags.get("verifier-module") as string } : {}),
   });
@@ -1210,7 +1213,7 @@ async function deliverCli(args: ParsedArgs, io: CliIo, action: "deliver" | "acco
   assertFlags(args, waits ? ["config", "no-wait", "timeout"] : ["config"]);
   assertPositionals(args, action === "deliver" ? 1 : action === "rollout" ? 3 : 2);
   const command = action === "deliver" ? "deliver" : action === "accounts" ? "accounts push" : action === "registry" ? "registry set" : `stack ${action}`;
-  const chain = await requireChainContext(args, command);
+  const chain = await requireChainContext(args, command, io);
   const timeout = args.flags.get("timeout");
   if (timeout !== undefined && !/^[1-9][0-9]{0,5}$/.test(timeout)) throw new RelayKitError("usage", "--timeout is whole seconds");
   const { loadRelayConfigFile } = await import("./config-file.ts");
@@ -1265,8 +1268,8 @@ async function debugCommand(args: ParsedArgs, io: CliIo): Promise<number> {
 async function releasesCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   const verb = args.positionals[1];
   // The releases on the relay's contract, all signed by the guardian or read from both RPCs.
-  if (verb === "list" || verb === "check" || verb === "approve" || verb === "reject") return chainReleasesCommand(args, io, verb, await requireChainContext(args, `releases ${verb}`));
-  if (verb === "delay") return releasesDelayCommand(args, io, await requireChainContext(args, "releases delay"));
+  if (verb === "list" || verb === "check" || verb === "approve" || verb === "reject") return chainReleasesCommand(args, io, verb, await requireChainContext(args, `releases ${verb}`, io));
+  if (verb === "delay") return releasesDelayCommand(args, io, await requireChainContext(args, "releases delay", io));
   throw new RelayKitError("usage", "releases takes `list`, `check <hash>`, `approve <hash>`, `reject <hash>` or `delay <hours>`");
 }
 
@@ -1531,17 +1534,17 @@ function composeImageOf(args: ParsedArgs, io: CliIo): string | null {
   return image === "" ? null : image;
 }
 
-async function chainContextOf(args: ParsedArgs) {
+async function chainContextOf(args: ParsedArgs, io: CliIo) {
   const { readChainContext } = await import("./chain.ts");
   const path = configPathOf(args);
   if (!existsSync(path)) {
     throw new RelayKitError("io", `no relay config at ${path}: pass --config <file> or set GRAY_ASSISTANT_CONFIG`);
   }
-  return readChainContext(path);
+  return readChainContext(path, io.kitMount);
 }
 
-async function requireChainContext(args: ParsedArgs, command: string) {
-  const context = await chainContextOf(args);
+async function requireChainContext(args: ParsedArgs, command: string, io: CliIo) {
+  const context = await chainContextOf(args, io);
   if (context === null) {
     throw new RelayKitError("usage", `${command} acts on the relay's contract, and this config has no chain member (chain_id, rpc, proposer, guardian, contract): pair the relay again with init --pair`);
   }
@@ -1597,8 +1600,14 @@ async function chainReleasesCommand(args: ParsedArgs, io: CliIo, verb: "list" | 
       return upgrade.ok ? 0 : 1;
     }
     // P6: the release's own content, from Gray's signed list, checked here (the compose's text and policy, or the OS image's texts).
-    const { releaseContentForCheck, releaseContentJson } = await import("./release-content.ts");
+    const { NO_STACK_VM, releaseContentForCheck, releaseContentJson } = await import("./release-content.ts");
     const content = await releaseContentForCheck(context, checked.state.kind, checked.state.hash, io.now());
+    if (content === NO_STACK_VM) {
+      // Not a failure: before the first Deploy and deliver there is no VM whose KMS the compose's rules could name.
+      io.stdout("gray-assistant releases check: there is no stack VM yet, so only the release's state on the contract (above) can be compared; its content is checked once `gray-assistant deliver` has adopted the VM Gray deploys\n");
+      printPlainJson(io, { command: "releases check", contract: context.chain.contract, block: checked.block.toString(), release: chain.releaseStateJson(checked.state), verdict: checked.verdict, content: null, content_unchecked: NO_STACK_VM });
+      return 0;
+    }
     if (content === null) {
       io.stdout("the release's content is not checked: the config has no lane section (lane.release_list and lane.release_public_key, the signed list to read it from)\n");
     } else {
@@ -1663,7 +1672,7 @@ async function keysCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   if (verb !== "set-guardian" && verb !== "set-recovery") throw new RelayKitError("usage", "keys takes set-guardian <address> or set-recovery <address>, with --key <recovery-key.json>");
   assertFlags(args, ["config", "key", "deadline", "nonce", "submit", "rpc", "print"]);
   assertPositionals(args, 3);
-  const context = await requireChainContext(args, `keys ${verb}`);
+  const context = await requireChainContext(args, `keys ${verb}`, io);
   const chain = await import("./chain.ts");
   const which = verb === "set-guardian" ? "guardian" : "recovery";
   const outcome = await chain.chainSetKey(context, {
@@ -1679,7 +1688,7 @@ async function keysCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   if (outcome.transaction?.block != null) {
     io.stdout(
       which === "guardian"
-        ? `chain.guardian is now ${outcome.json["new_address"]}: put its key file at chain.guardian_key (${context.chain.guardianKey}) before the next approve, veto or deliver\n`
+        ? `chain.guardian is now ${outcome.json["new_address"]}: put its key file at chain.guardian_key (${chain.guardianKeyPlace(context)}) before the next approve, veto or deliver\n`
         : "keep the new recovery key's file offline, as the old one; the old key changes nothing any more\n",
     );
   }

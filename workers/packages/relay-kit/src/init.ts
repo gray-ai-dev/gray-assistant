@@ -307,7 +307,7 @@ export interface PairedConfigOptions {
     readonly rpc: readonly [string, string];
     readonly proposer: string;
     readonly guardian: string;
-    /** Relative to the config's directory. */
+    /** Relative: a file of the kit directory (beside the config, or under KIT_MOUNT in the compose container). */
     readonly guardianKey: string;
     readonly contract: string;
     readonly dstackKms: string;
