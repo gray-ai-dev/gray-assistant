@@ -300,12 +300,17 @@ export const RELAY_ALERT_KINDS = [
   "relay_failing",
   "relay_ejected",
   "relay_violation",
+  "vm_reclaimed",
+  "vm_decided",
   ...RELAY_RELEASE_NOTICE_KINDS,
 ] as const;
 /**
  * The kinds a relay cannot turn off (docs/design/relay-ejection.md): Gray took the relay out of routing for a
  * non-compliant change to a request or an answer, which only Gray's operators undo (`relay_ejected`), or, while the
- * console runs LANE_STACK_EJECTION=record, recorded such a change and left the relay routing (`relay_violation`).
+ * console runs LANE_STACK_EJECTION=record, recorded such a change and left the relay routing (`relay_violation`); and
+ * Gray's operators deleted the relay's VM (`vm_reclaimed`, told once when the delete ends, with their reason); and
+ * Gray's operators approved or refused the VM the relay asked for (`vm_decided`, told once per decision: the wait is
+ * hours to a day, long after the agent's setup session ended, and nothing else tells the relay it can go on).
  */
 /**
  * A gray-assistant command as the relay's host runs it: the kit is a docker compose project and nothing of it runs
@@ -316,8 +321,23 @@ export const RELAY_ALERT_KINDS = [
 export const KIT_RUN = "docker compose run --rm --no-deps agent";
 export const kitRun = (command: string): string => `${KIT_RUN} ${command}`;
 
-export const RELAY_ALERT_REQUIRED_KINDS = ["relay_ejected", "relay_violation"] as const satisfies readonly (typeof RELAY_ALERT_KINDS)[number][];
+export const RELAY_ALERT_REQUIRED_KINDS = ["relay_ejected", "relay_violation", "vm_reclaimed", "vm_decided"] as const satisfies readonly (typeof RELAY_ALERT_KINDS)[number][];
 export type RelayAlertKind = (typeof RELAY_ALERT_KINDS)[number];
+/**
+ * Gray's operators reclaimed a relay's VM (`vm_reclaimed`; POST /api/v1/ops/lane-stacks/{relay}/vm/reclaim): what the
+ * relay keeps and how it comes back, in the notice (the console's message, the e-mail and the webhook) after the
+ * operators' reason. The panel's VM tab and Overview say the same beside Deploy (frontend relay-stack-provision.ts).
+ */
+/**
+ * Gray's operators decided the VM a relay asked for (`vm_decided`; provision.ts `decideQuota`): the notice's title by
+ * the decision, and what to do. A refusal's message carries the operators' reason before it.
+ */
+export const VM_APPROVED_TITLE = "Gray approved your relay's VM";
+export const VM_REFUSED_TITLE = "Gray did not approve your relay's VM";
+export const VM_APPROVED_FIX = "Press Deploy on the VM tab, or have your agent apply the relay again.";
+export const VM_REFUSED_FIX = "Ask Gray before asking again.";
+export const VM_RECLAIMED_KEPT = "Your relay's record, models, prices and pairing are kept.";
+export const VM_RECLAIMED_FIX = "When you are ready, press Deploy on the VM tab (or have your agent apply the relay again), then deliver your accounts again.";
 /**
  * What to do about the VM's lease past its renewal (`lease_expiring`), in the alert's e-mail and webhook; the panel's
  * Overview, Credentials and Alerts say the same (frontend relay-stack-health.ts, whose test holds the two together).

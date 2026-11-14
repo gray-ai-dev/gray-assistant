@@ -23,7 +23,19 @@ export function SegmentedControl<T extends string>({ options, value, onValueChan
   className?: string;
   'aria-label': string;
 }) {
-  return <ToggleGroup className={cx('ui-segmented', size === 'sm' && 'ui-segmented--sm', className)} value={[value]} disabled={disabled}
+  // More segments than a phone is wide: the pill scrolls sideways, and the pressed segment is brought whole into
+  // view whenever it changes (the page itself is not scrolled). Without it a page opened on its last segment showed
+  // the first ones and cut the pressed one off (Settings › API tokens on a phone, review of 2026-11-14).
+  const pill = useRef<HTMLElement | null>(null);
+  const holdPill = useCallback((node: HTMLElement | null) => { pill.current = node; }, []);
+  useLayoutEffect(() => {
+    const box = pill.current, current = box?.querySelector<HTMLElement>('[data-pressed], [aria-pressed="true"]');
+    if (!box || !current) return;
+    const left = current.getBoundingClientRect().left - box.getBoundingClientRect().left + box.scrollLeft, right = left + current.offsetWidth;
+    if (box.scrollLeft > left) box.scrollLeft = left;
+    else if (box.scrollLeft < right - box.clientWidth) box.scrollLeft = right - box.clientWidth;
+  }, [value, options.length]);
+  return <ToggleGroup ref={holdPill} className={cx('ui-segmented', size === 'sm' && 'ui-segmented--sm', className)} value={[value]} disabled={disabled}
     onValueChange={next => pick(value, next, onValueChange)} {...aria}>
     {options.map(option => <Toggle key={option.value} value={option.value} className="ui-segmented__item" aria-label={option['aria-label']}
       disabled={option.disabled}>{option.icon}{option.label}</Toggle>)}

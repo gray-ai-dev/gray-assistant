@@ -19,6 +19,9 @@
 .ui-multi-select__detail { display: block; color: var(--muted); font-size: var(--text-meta); }
 @media (max-width: 600px) {
   .ui-chips__input { font-size: max(16px, var(--text-control)); }
-  .ui-chip__remove { width: 28px; height: 28px; }
+  /* The mark fills its chip's height and takes a 44px target around it (DESIGN.md, Interaction states): the area
+     reaches a little over the chip's own text and the gap after it, where no other control is. */
+  .ui-chip__remove { position: relative; width: 34px; height: 34px; }
+  .ui-chip__remove::after { content: ""; position: absolute; inset: -5px; }
 }
 }

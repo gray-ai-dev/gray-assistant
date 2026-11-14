@@ -61,6 +61,13 @@ function words(tokens: readonly { content: string; style?: CSSProperties }[]): R
 
 function CodeContent({ code, language, byWord = false }: { code: string; language: CodeLanguage; byWord?: boolean }) {
   const lines = useTokens(code, language);
+  // Several commands, each wrapped at its spaces: every source line is a block of its own whose wrapped rows hang two
+  // characters in (`ui-code__line`), so a wrapped command never reads as the next one.
+  if (byWord && code.includes('\n')) {
+    const rows = lines ? lines.map(line => line.map(token => ({ content: token.content, style: token.htmlStyle as CSSProperties }))) : code.split('\n').map(line => [{ content: line }]);
+    // The line break stays in the text (a copy by selection, a reader of the text): at a block's end it adds no row.
+    return <code>{rows.map((row, index) => <span key={index} className="ui-code__line">{row.some(token => token.content) ? words(row) : ' '}{index < rows.length - 1 ? '\n' : null}</span>)}</code>;
+  }
   if (!lines) return <code>{byWord ? words([{ content: code }]) : code}</code>;
   return <code>{lines.map((line, index) => <span key={index}>
     {byWord ? words(line.map(token => ({ content: token.content, style: token.htmlStyle as CSSProperties })))
@@ -138,8 +145,13 @@ export type CodeBlockProps = {
   copyIcon?: boolean;
   /** Muted note under the code. */
   footer?: ReactNode;
-  /** Wrap long lines instead of scrolling (logs, JSON responses). A one-line command wraps at its spaces by itself; `false` keeps it on one scrolling line. */
-  wrap?: boolean;
+  /**
+   * Wrap long lines instead of scrolling (logs, JSON responses). A one-line command wraps at its spaces by itself,
+   * with or without a header; `false` keeps it on one scrolling line. `"words"`: several commands, each wrapped at its
+   * spaces with its wrapped rows indented, so that a long one (an image reference, a one-time code at its end) is read
+   * in full without scrolling.
+   */
+  wrap?: boolean | 'words';
   maxHeight?: string;
   /** Accessible name for the scrollable code region. */
   label?: string;
@@ -159,7 +171,9 @@ export function CodeBlock({ code, language, title, level = 2, icon, description,
   // read without scrolling, on a phone too.
   const line = !header && copy && !bare && !code.includes('\n');
   const iconOnly = line && copyIcon === true && !footer;
-  const byWord = line && wrap === undefined;
+  // A one-line command under a header (a description, a title) wraps the same way: on a phone its last words were
+  // cut off behind a scroll nobody sees (review of 2026-11-14).
+  const byWord = wrap === 'words' || (wrap === undefined && !code.includes('\n') && (line || (header && language === 'bash')));
   const Heading = `h${level}` as const;
   return <section className={cx('ui-code', line && 'ui-code--line', iconOnly && 'ui-code--line-icon', bare && 'ui-code--bare', className)} aria-label={label ?? (typeof title === 'string' ? title : undefined)}
     style={maxHeight ? { '--ui-code-max-height': maxHeight } as CSSProperties : undefined}>
@@ -171,7 +185,7 @@ export function CodeBlock({ code, language, title, level = 2, icon, description,
       <div className="ui-code__tools">{tools}{copy && <CopyButton code={code} label={copyLabel} />}</div>
     </div>}
     {!header && copy && !bare && !line && <div className="ui-code__corner"><CopyButton code={code} label={copyLabel} /></div>}
-    <pre className={cx('ui-code__pre', wrap && 'ui-code__pre--wrap', byWord && 'ui-code__pre--words')} data-language={language} tabIndex={0} translate="no"><CodeContent code={code} language={language} byWord={byWord} /></pre>
+    <pre className={cx('ui-code__pre', wrap === true && 'ui-code__pre--wrap', byWord && 'ui-code__pre--words')} data-language={language} tabIndex={0} translate="no"><CodeContent code={code} language={language} byWord={byWord} /></pre>
     {line && <div className="ui-code__end"><CopyButton code={code} label={copyLabel} iconOnly={iconOnly} /></div>}
     {footer && <p className="ui-code__footer">{footer}</p>}
   </section>;

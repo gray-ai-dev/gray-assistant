@@ -19,6 +19,12 @@ import {
   RELAY_RELEASE_NOTICE_KINDS,
   RELEASE_MOVE_BLOCKS,
   TOKEN_SERVICE_CODES,
+  VM_APPROVED_FIX,
+  VM_APPROVED_TITLE,
+  VM_RECLAIMED_FIX,
+  VM_REFUSED_FIX,
+  VM_REFUSED_TITLE,
+  VM_RECLAIMED_KEPT,
   type ReleaseMoveBlock,
   type RelayReleaseNoticeKind,
   type BootEvent,
@@ -65,6 +71,12 @@ export {
   RELAY_RELEASE_NOTICE_KINDS,
   RELEASE_MOVE_BLOCKS,
   TOKEN_SERVICE_CODES,
+  VM_APPROVED_FIX,
+  VM_APPROVED_TITLE,
+  VM_RECLAIMED_FIX,
+  VM_REFUSED_FIX,
+  VM_REFUSED_TITLE,
+  VM_RECLAIMED_KEPT,
   type ReleaseMoveBlock,
   type RelayReleaseNoticeKind,
   type BootEvent,
@@ -756,6 +768,40 @@ export function kitOutdatedWords(needed: string | null, published: PublishedKitR
 export const KIT_GUARDIAN_CONFIG = "/run/secrets/gray-assistant.jsonc";
 export const kitGuardianRun = (command: string): string => `${kitRun(command)} --config ${KIT_GUARDIAN_CONFIG}`;
 
+/**
+ * `no_quota` by what the relay's quota is: asked and not decided yet is a wait for Gray, refused is Gray's answer; the
+ * table's words ("has no VM quota", "Ask Gray for a VM") are for a relay that never asked (staging rehearsal of
+ * 2026-11-14: a relay that had asked was told to ask).
+ */
+export const QUOTA_REQUESTED_WORDS: FailureWords = {
+  title: "Gray's operators are deciding your VM request.",
+  fix: "Nothing to do until they decide: Gray leaves a message on the relay's Messages page then, and Deploy works once they approve.",
+  side: "gray",
+};
+/**
+ * Said once, before `QUOTA_REQUESTED_WORDS`, by the Deploy that handed a relay's unused automatic approval back to Gray's
+ * operators (the console's `handBackQuota`: the approval held no place any more, never deployed within
+ * LANE_STACK_AUTO_VM_HOLD_DAYS or its VM deleted, and every automatic VM was taken since). After it the relay reads the
+ * wait for Gray it read before its approval.
+ */
+export const QUOTA_HANDED_BACK = "Your VM's automatic approval no longer holds a place, and every automatically approved VM is taken now, so Gray's operators decide it.";
+export const QUOTA_REFUSED_WORDS: FailureWords = { title: "Gray did not approve a VM for this relay.", fix: "Ask Gray before asking again.", side: "gray" };
+export const noQuotaWords = (quotaState: string | null | undefined): FailureWords | null => (quotaState === "requested" ? QUOTA_REQUESTED_WORDS : quotaState === "refused" ? QUOTA_REFUSED_WORDS : null);
+
+/**
+ * `retry_later` (the console's LANE_STACK_DEPLOY_RETRY_SECONDS): a Deploy asked within the wait after the relay's last
+ * Deploy ended in failure. The panel's words leave the seconds to its Deploy button, which counts them down; the
+ * agent's sentence, and a refused request's message, name them (`secondsLeft`).
+ */
+export const DEPLOY_RETRY_LATER = "retry_later";
+export const DEPLOY_RETRY_LATER_WORDS: FailureWords = {
+  title: "The last Deploy just failed, so Deploy waits a moment.",
+  fix: "The Deploy button shows the seconds left. If the failure says what you need to do, do that first: deploying again without it fails the same way.",
+  side: "relay",
+  agent: "Ask for Deploy again in <seconds> s. If the last failure names something for you to do, do that first: a Deploy asked again without it fails the same way.",
+};
+export const deployRetryLaterWords = (secondsLeft: number): FailureWords & { agent: string } => ({ ...DEPLOY_RETRY_LATER_WORDS, agent: DEPLOY_RETRY_LATER_WORDS.agent!.replace("<seconds>", String(secondsLeft)) });
+
 /** `no_vm` refusing a Delete: the table's words are a Restart's (and a rollout's), which a Delete's would misname. */
 export const NO_VM_TO_DELETE_WORDS: FailureWords = { title: "There is no VM to delete.", fix: "Nothing to do: Deploy makes one when you need it.", side: "relay" };
 /** A step's own failures the provisioner names (closed codes), each with its words for the panel. */
@@ -809,6 +855,8 @@ export const STEP_FAILURE_WORDS: Readonly<Record<string, FailureWords>> = {
   dns_failed: { title: "The lane's DNS records could not be written.", fix: "Gray's operators have been told. Retry later.", side: "gray" },
   no_vm: { title: "There is no VM to restart.", fix: "Deploy first.", side: "relay" },
   busy: { title: "Another Deploy, Restart or Delete is still running.", fix: "Wait for it to finish; the timeline shows its progress.", side: "relay" },
+  // A Deploy asked again too soon after one that failed (`deployRetryLaterWords` names the seconds).
+  [DEPLOY_RETRY_LATER]: DEPLOY_RETRY_LATER_WORDS,
   // P7 (docs/design/relay-no-always-on-host.md 13.4): a phase-2 rollout or release move that stops before a second VM.
   vault_not_uploaded: {
     title: "Your VM had not stored its vault for the new image at Gray, so no second VM was started.",
@@ -949,6 +997,11 @@ export const RELAY_ALERT_WORDS: Readonly<Record<RelayAlertKind, { readonly title
   relay_failing: { title: "Most requests to your relay are failing", resolved: "Requests to your relay are completing again" },
   relay_ejected: { title: "Gray took your relay out of routing", resolved: "Gray put your relay back into routing" },
   relay_violation: { title: "Gray found your relay changing a request or an answer", resolved: "Gray closed its report of a change by your relay" },
+  // Told once, when the operators' delete of the VM ends; never resolved, `resolved` is not sent.
+  vm_reclaimed: { title: "Gray reclaimed your relay's VM", resolved: "" },
+  // Told once per decision of Gray's operators on the VM the relay asked for (the message's own title says which:
+  // VM_APPROVED_TITLE, VM_REFUSED_TITLE); never resolved, `resolved` is not sent.
+  vm_decided: { title: "Gray approved or refused your relay's VM", resolved: "" },
   // Phase 2's release notices (P5b-2): told once each, never resolved; `resolved` is not sent.
   relay_release_proposed: { title: "Gray proposed a release for your relay", resolved: "" },
   relay_release_reminder: { title: "A proposed Gray release takes effect in 2 days", resolved: "" },

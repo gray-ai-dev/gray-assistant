@@ -17,6 +17,8 @@
 @media (hover: hover) and (pointer: fine) { .ui-date-field__button[data-hovered] { background: var(--muted-surface); color: var(--text); } }
 .ui-date-field__button[data-focus-visible] { outline: 2px solid var(--focus-color); outline-offset: -2px; }
 .ui-date-field__button[data-pressed] { transform: scale(0.97); }
+/* On a phone the 30px mark keeps its look and takes a 44px target around it, inside the field's own 44px row. */
+@media (max-width: 600px) { .ui-date-field__button { position: relative; } .ui-date-field__button::after { content: ""; position: absolute; inset: -7px; } }
 
 .ui-date-popover { z-index: 250; padding: 12px; border: 1px solid var(--strong-border); border-radius: var(--radius-card); background: var(--surface); color: var(--text); box-shadow: 0 8px 24px rgb(0 0 0 / 12%); outline: none; }
 .ui-date-popover[data-entering] { animation: ui-date-pop 150ms var(--ease-out); }
