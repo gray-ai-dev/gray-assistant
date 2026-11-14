@@ -12,7 +12,9 @@
 .ui-toast__title { font-weight: var(--weight-medium); overflow-wrap: anywhere; }
 .ui-toast__description { color: var(--muted); font-size: var(--text-support); line-height: var(--leading-body); overflow-wrap: anywhere; }
 .ui-toast__action { flex: none; height: var(--control-height-sm); padding: 0 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); font: inherit; font-size: var(--text-control); font-weight: var(--weight-medium); cursor: pointer; }
-.ui-toast__close { order: 1; display: flex; flex: none; align-items: center; justify-content: center; width: 24px; height: 24px; margin: -2px -6px 0 0; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; }
+.ui-toast__close { order: 1; display: flex; flex: none; align-items: center; justify-content: center; width: 24px; height: 24px; margin: -2px -6px 0 0; padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--muted); cursor: pointer; position: relative; }
+/* On a phone the 24px mark keeps its look and takes a 44px target around it (DESIGN.md, Interaction states). */
+@media (max-width: 600px) { .ui-toast__close::after { content: ""; position: absolute; inset: -10px; } }
 @media (hover: hover) and (pointer: fine) {
   .ui-toast__close:hover { background: var(--muted-surface); color: var(--text); }
   .ui-toast__action:hover { background: var(--muted-surface); border-color: var(--strong-border); }

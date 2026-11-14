@@ -307,11 +307,20 @@ export const RELAY_ALERT_KINDS = [
  * non-compliant change to a request or an answer, which only Gray's operators undo (`relay_ejected`), or, while the
  * console runs LANE_STACK_EJECTION=record, recorded such a change and left the relay routing (`relay_violation`).
  */
+/**
+ * A gray-assistant command as the relay's host runs it: the kit is a docker compose project and nothing of it runs
+ * between commands, so each is one container in the kit directory (the kit's AGENTS.md). Every command Gray gives a
+ * relay (a notice's `command`, a refusal's, the Set up checklist's) is spelled through this; no `gray-assistant`
+ * binary is on the host's PATH.
+ */
+export const KIT_RUN = "docker compose run --rm --no-deps agent";
+export const kitRun = (command: string): string => `${KIT_RUN} ${command}`;
+
 export const RELAY_ALERT_REQUIRED_KINDS = ["relay_ejected", "relay_violation"] as const satisfies readonly (typeof RELAY_ALERT_KINDS)[number][];
 export type RelayAlertKind = (typeof RELAY_ALERT_KINDS)[number];
 /**
  * What to do about the VM's lease past its renewal (`lease_expiring`), in the alert's e-mail and webhook; the panel's
  * Overview, Credentials and Alerts say the same (frontend relay-stack-health.ts, whose test holds the two together).
  */
-export const LEASE_OVERDUE_FIX = "gray-assistant normally renews it well before then. Past it the VM serves no account. Run gray-assistant doctor on your relay's host.";
-export const LEASE_EXPIRED_FIX = "The VM serves no account until gray-assistant renews it. Run gray-assistant doctor on your relay's host.";
+export const LEASE_OVERDUE_FIX = `gray-assistant normally renews it well before then. Past it the VM serves no account. On your relay's host, in gray-assistant's kit directory, run ${kitRun("doctor")}.`;
+export const LEASE_EXPIRED_FIX = `The VM serves no account until gray-assistant renews it. On your relay's host, in gray-assistant's kit directory, run ${kitRun("doctor")}.`;

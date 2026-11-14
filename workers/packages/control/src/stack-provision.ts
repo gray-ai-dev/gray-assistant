@@ -7,6 +7,8 @@ import {
   BOOT_EVENTS,
   BOOT_FAILURE_CLASSES,
   DEPLOYMENT_STATES,
+  KIT_RUN,
+  kitRun,
   LEASE_EXPIRED_FIX,
   LEASE_OVERDUE_FIX,
   PROVISION_ENV_SOURCES,
@@ -51,6 +53,8 @@ export {
   BOOT_EVENTS,
   BOOT_FAILURE_CLASSES,
   DEPLOYMENT_STATES,
+  KIT_RUN,
+  kitRun,
   LEASE_EXPIRED_FIX,
   LEASE_OVERDUE_FIX,
   PROVISION_ENV_SOURCES,
@@ -474,6 +478,12 @@ export interface FailureWords {
   readonly fix: string;
   /** Gray's own problem: Gray's operators were alerted and the relay waits; the relay's: Retry after the fix. */
   readonly side: "relay" | "gray";
+  /**
+   * The fix as an agent reads it (the setup API, an apply's refusal): one complete sentence with the command to run,
+   * where `fix` is the panel's, which shows the release, the command and the pairing as parts of their own. Absent:
+   * `fix` serves both.
+   */
+  readonly agent?: string;
 }
 
 export const BOOT_FAILURE_WORDS: Readonly<Record<BootFailureClass, FailureWords>> = {
@@ -550,14 +560,14 @@ export const TOKEN_SERVICE_CODE_WORDS: Readonly<Record<TokenServiceCode, TokenSe
     title: "The registry token gray-assistant hands out has expired.",
     fix: "Make a new read-only pull token, put it in stack.registry.password_file, set stack.registry.expires_at and restart gray-assistant. The waiting boot then goes on.",
     side: "relay",
-    command: "gray-assistant doctor",
+    command: kitRun("doctor"),
     waits: true,
   },
   relay_image_unlisted: {
     title: "This image is not in your relay_images list.",
     fix: "Add it to stack.relay_images and restart gray-assistant, then run gray-assistant stack rollout with it. The waiting boot then goes on.",
     side: "relay",
-    command: "gray-assistant stack rollout <image>",
+    command: kitRun("stack rollout <image>"),
     waits: true,
   },
   verifier_busy: {
@@ -594,7 +604,7 @@ export const TOKEN_SERVICE_CODE_WORDS: Readonly<Record<TokenServiceCode, TokenSe
     title: "The VM was deployed for another relay key or token address than gray-assistant has.",
     fix: "If you paired gray-assistant again after Deploy, Deploy again; otherwise check stack.token_url (gray-assistant doctor).",
     side: "relay",
-    command: "gray-assistant doctor",
+    command: kitRun("doctor"),
     waits: false,
   },
   report_data_mismatch: gray("The VM's attestation is not bound to this boot."),
@@ -603,7 +613,7 @@ export const TOKEN_SERVICE_CODE_WORDS: Readonly<Record<TokenServiceCode, TokenSe
     title: "gray-assistant cannot read Gray's release list.",
     fix: "Check that gray-assistant's host reaches the internet (gray-assistant doctor, release_list). If it does, the problem is on Gray's side. The waiting boot then goes on.",
     side: "relay",
-    command: "gray-assistant doctor",
+    command: kitRun("doctor"),
     waits: true,
   },
   compose_not_listed: gray("The VM runs a Gray release your release list does not name."),
@@ -611,14 +621,14 @@ export const TOKEN_SERVICE_CODE_WORDS: Readonly<Record<TokenServiceCode, TokenSe
     title: "You rejected the Gray release this VM runs.",
     fix: "Accept it on the gray-assistant page (gray-assistant ui) under Releases, or on the host, then retry the boot.",
     side: "relay",
-    command: "gray-assistant releases accept <compose hash>",
+    command: kitRun("releases accept <compose hash>"),
     waits: false,
   },
   release_not_accepted: {
     title: "This Gray release waits for your acceptance.",
     fix: "Accept it on the gray-assistant page (gray-assistant ui) under Releases, or on the host. The waiting boot then goes on.",
     side: "relay",
-    command: "gray-assistant releases accept <compose hash>",
+    command: kitRun("releases accept <compose hash>"),
     waits: true,
   },
   os_image_missing: gray("The VM's OS image is not in Gray's release list."),
@@ -627,7 +637,7 @@ export const TOKEN_SERVICE_CODE_WORDS: Readonly<Record<TokenServiceCode, TokenSe
     title: "You rejected the VM's OS image.",
     fix: "Accept it on the gray-assistant page (gray-assistant ui) under Releases, or on the host, then retry the boot.",
     side: "relay",
-    command: "gray-assistant releases accept <os image hash>",
+    command: kitRun("releases accept <os image hash>"),
     waits: false,
   },
   os_image_dev: gray("The VM runs a development OS image."),
@@ -636,7 +646,7 @@ export const TOKEN_SERVICE_CODE_WORDS: Readonly<Record<TokenServiceCode, TokenSe
     title: "The VM's OS image waits for your acceptance.",
     fix: "Accept it on the gray-assistant page (gray-assistant ui) under Releases, or on the host. The waiting boot then goes on.",
     side: "relay",
-    command: "gray-assistant releases accept <os image hash>",
+    command: kitRun("releases accept <os image hash>"),
     waits: true,
   },
   os_image_retiring: gray("The VM's OS image is being retired."),
@@ -645,14 +655,14 @@ export const TOKEN_SERVICE_CODE_WORDS: Readonly<Record<TokenServiceCode, TokenSe
     title: "The VM is not the lane instance gray-assistant holds.",
     fix: "gray-assistant takes the instance from Gray after Deploy (gray-assistant doctor, stack_instance); a config with stack.instance \"config\" names it in lane.instances.",
     side: "relay",
-    command: "gray-assistant doctor",
+    command: kitRun("doctor"),
     waits: false,
   },
   key_provider_mismatch: {
     title: "The VM took its keys from another key service than gray-assistant expects.",
     fix: "gray-assistant takes the instance from Gray after Deploy (gray-assistant doctor, stack_instance); a config with stack.instance \"config\" names it in lane.instances.",
     side: "relay",
-    command: "gray-assistant doctor",
+    command: kitRun("doctor"),
     waits: false,
   },
   release_not_stack: gray("The VM runs a Gray release that is not for relay VMs."),
@@ -668,7 +678,7 @@ export const TOKEN_SERVICE_CODE_WORDS: Readonly<Record<TokenServiceCode, TokenSe
     title: "gray-assistant could not write its pull-token record.",
     fix: "Check the disk and the directory of stack.issue_log on gray-assistant's host. The waiting boot then goes on.",
     side: "relay",
-    command: "gray-assistant doctor",
+    command: kitRun("doctor"),
     waits: true,
   },
 };
@@ -744,7 +754,7 @@ export function kitOutdatedWords(needed: string | null, published: PublishedKitR
  * command without it ends in "cannot read guardian key" (staging, 2026-11-14).
  */
 export const KIT_GUARDIAN_CONFIG = "/run/secrets/gray-assistant.jsonc";
-export const kitGuardianRun = (command: string): string => `docker compose run --rm --no-deps agent ${command} --config ${KIT_GUARDIAN_CONFIG}`;
+export const kitGuardianRun = (command: string): string => `${kitRun(command)} --config ${KIT_GUARDIAN_CONFIG}`;
 
 /** `no_vm` refusing a Delete: the table's words are a Restart's (and a rollout's), which a Delete's would misname. */
 export const NO_VM_TO_DELETE_WORDS: FailureWords = { title: "There is no VM to delete.", fix: "Nothing to do: Deploy makes one when you need it.", side: "relay" };
@@ -758,7 +768,7 @@ export const STEP_FAILURE_WORDS: Readonly<Record<string, FailureWords>> = {
   // Relay standard v1.7 item 9: a wait, not a failure. The VM is not made until gray-assistant reports the release accepted.
   release_not_accepted: {
     title: "Your relay has not accepted the Gray release the VM would run.",
-    fix: "Accept it on the gray-assistant page (gray-assistant ui) under Releases, or on the relay's host (gray-assistant releases accept <compose hash>). gray-assistant reports it within a minute; then Deploy.",
+    fix: `Accept it on the gray-assistant page (gray-assistant ui) under Releases, or in the kit directory on the relay's host (${kitRun("releases accept <compose hash>")}). gray-assistant reports it within a minute; then Deploy.`,
     side: "relay",
   },
   // A wait too: Gray has no list of the relay's accepted releases since it paired. gray-assistant sends one with its first
@@ -813,7 +823,8 @@ export const STEP_FAILURE_WORDS: Readonly<Record<string, FailureWords>> = {
   // `<compose hash>` is the release Gray proposed there, which the panel names.
   release_retired_proposed: {
     title: "The Gray release this relay paired on can no longer be deployed.",
-    fix:
+    fix: "It can't start new VMs any more. Gray proposed a newer release on your relay's contract: approve it with your guardian, then Deploy.",
+    agent:
       "Phala retired the key service node it runs on for new VMs. Gray proposed release <compose hash> on your relay's contract: approve it with your guardian, in gray-assistant's kit directory " +
       `(${kitGuardianRun("releases approve <compose hash>")}), or wait for your release delay to pass. Then Deploy: Gray reads your contract when you do.`,
     side: "relay",
@@ -822,7 +833,8 @@ export const STEP_FAILURE_WORDS: Readonly<Record<string, FailureWords>> = {
   // Deploy made it), so Gray can propose nothing there: a new pairing takes the current release.
   release_retired_pair_again: {
     title: "The Gray release this relay paired on can no longer be deployed.",
-    fix:
+    fix: "It can't start new VMs any more. Pair gray-assistant again: the new pairing takes Gray's current release. Nothing is lost: the relay has no VM yet, and its settings stay.",
+    agent:
       "Phala retired the key service node it runs on for new VMs, and your relay's contract is not on chain yet (no Deploy has made it), so no newer release can be approved there. " +
       "Pair gray-assistant again: the new pairing takes Gray's current release, and nothing is lost (the relay has no VM and nothing on chain; its settings stay). " +
       "Apply with relay_stack.registry_user: the answer's pairing.command pairs the kit directory you have (relay-workspace, with its relay-key.json) again. Then apply again: it queues Deploy.",
@@ -830,7 +842,8 @@ export const STEP_FAILURE_WORDS: Readonly<Record<string, FailureWords>> = {
   },
   release_retired_unproposed: {
     title: "The Gray release this relay paired on can no longer be deployed.",
-    fix: "Phala retired the key service node it runs on for new VMs, and Gray has not proposed a newer release on your relay's contract yet. Gray's operators have been told: Gray proposes one, you approve it with your guardian (or wait for your release delay to pass), then Deploy.",
+    fix: "It can't start new VMs any more, and Gray has not proposed a newer release on your relay's contract yet. Gray's operators have been told. There is nothing to do on your side until Gray proposes one.",
+    agent: "Phala retired the key service node it runs on for new VMs, and Gray has not proposed a newer release on your relay's contract yet. Gray's operators have been told: Gray proposes one, you approve it with your guardian (or wait for your release delay to pass), then Deploy.",
     side: "gray",
   },
   // The provisioner's own look at the contract before it boots a release other than the pairing's.

@@ -39,11 +39,32 @@ function useTokens(code: string, language: CodeLanguage) {
   return tokens && tokens.code === code && tokens.language === language ? tokens.lines : null;
 }
 
-function CodeContent({ code, language }: { code: string; language: CodeLanguage }) {
+/**
+ * A command's tokens as words: what stands between two spaces is one unbreakable box (`ui-code__word`), so the line
+ * wraps at its spaces and never inside `--config` or a path; a word longer than the whole line (a 64-character hash on
+ * a phone) wraps inside its own box. Each piece keeps its token's colour.
+ */
+function words(tokens: readonly { content: string; style?: CSSProperties }[]): ReactNode[] {
+  const out: ReactNode[] = [];
+  let word: ReactNode[] = [];
+  const flush = () => { if (word.length) { out.push(<span key={out.length} className="ui-code__word">{word}</span>); word = []; } };
+  for (const token of tokens) {
+    for (const piece of token.content.split(/(\s+)/)) {
+      if (!piece) continue;
+      if (/^\s+$/.test(piece)) { flush(); out.push(piece); }
+      else word.push(<span key={word.length} className={token.style ? 'ui-token' : undefined} style={token.style}>{piece}</span>);
+    }
+  }
+  flush();
+  return out;
+}
+
+function CodeContent({ code, language, byWord = false }: { code: string; language: CodeLanguage; byWord?: boolean }) {
   const lines = useTokens(code, language);
-  if (!lines) return <code>{code}</code>;
+  if (!lines) return <code>{byWord ? words([{ content: code }]) : code}</code>;
   return <code>{lines.map((line, index) => <span key={index}>
-    {line.map((token, part) => <span key={part} className="ui-token" style={token.htmlStyle as CSSProperties}>{token.content}</span>)}
+    {byWord ? words(line.map(token => ({ content: token.content, style: token.htmlStyle as CSSProperties })))
+      : line.map((token, part) => <span key={part} className="ui-token" style={token.htmlStyle as CSSProperties}>{token.content}</span>)}
     {index < lines.length - 1 ? '\n' : null}
   </span>)}</code>;
 }
@@ -117,7 +138,7 @@ export type CodeBlockProps = {
   copyIcon?: boolean;
   /** Muted note under the code. */
   footer?: ReactNode;
-  /** Wrap long lines instead of scrolling (logs, JSON responses). */
+  /** Wrap long lines instead of scrolling (logs, JSON responses). A one-line command wraps at its spaces by itself; `false` keeps it on one scrolling line. */
   wrap?: boolean;
   maxHeight?: string;
   /** Accessible name for the scrollable code region. */
@@ -133,9 +154,12 @@ export function CodeBlock({ code, language, title, level = 2, icon, description,
   // in it; a lone copy button sits in the corner of the code instead.
   const header = title != null || description != null || tools != null;
   // One line of code with only its copy button (a command): the button at the line's end, or under it when the line is
-  // long; `copyIcon` makes it an icon pinned at the top right, beside a line of any length.
+  // long; `copyIcon` makes it an icon pinned at the top right, beside a line of any length. A command wraps (at its
+  // spaces, never inside a word that fits a line) unless `wrap` says otherwise, so its last words (`--config …`) are
+  // read without scrolling, on a phone too.
   const line = !header && copy && !bare && !code.includes('\n');
   const iconOnly = line && copyIcon === true && !footer;
+  const byWord = line && wrap === undefined;
   const Heading = `h${level}` as const;
   return <section className={cx('ui-code', line && 'ui-code--line', iconOnly && 'ui-code--line-icon', bare && 'ui-code--bare', className)} aria-label={label ?? (typeof title === 'string' ? title : undefined)}
     style={maxHeight ? { '--ui-code-max-height': maxHeight } as CSSProperties : undefined}>
@@ -147,7 +171,7 @@ export function CodeBlock({ code, language, title, level = 2, icon, description,
       <div className="ui-code__tools">{tools}{copy && <CopyButton code={code} label={copyLabel} />}</div>
     </div>}
     {!header && copy && !bare && !line && <div className="ui-code__corner"><CopyButton code={code} label={copyLabel} /></div>}
-    <pre className={cx('ui-code__pre', wrap && 'ui-code__pre--wrap')} data-language={language} tabIndex={0} translate="no"><CodeContent code={code} language={language} /></pre>
+    <pre className={cx('ui-code__pre', wrap && 'ui-code__pre--wrap', byWord && 'ui-code__pre--words')} data-language={language} tabIndex={0} translate="no"><CodeContent code={code} language={language} byWord={byWord} /></pre>
     {line && <div className="ui-code__end"><CopyButton code={code} label={copyLabel} iconOnly={iconOnly} /></div>}
     {footer && <p className="ui-code__footer">{footer}</p>}
   </section>;

@@ -113,6 +113,11 @@ export interface DoctorOptions {
   readonly pendingReleases?: (candidates: PendingCandidates) => Promise<PendingReleases>;
   /** Where the compose container has the kit directory (`KIT_MOUNT`); the tests name another. */
   readonly kitMount?: string;
+  /**
+   * Gray's unread messages for the relay (`./messages.ts` `readKitMessages`, one signed request to `stack.report_origin`);
+   * `clock` reads this host's time when the answer arrives. The tests pass a fixed answer.
+   */
+  readonly messages?: (clock: () => number) => Promise<import("./messages.ts").MessagesRead>;
 }
 
 /** Gray's listed compose and OS image hashes, as `0x` hex. */
@@ -126,6 +131,10 @@ export interface PendingReleases {
   readonly block: bigint;
   readonly pending: readonly ReleaseState[];
 }
+
+/** What a missing or unreadable accounts file of the `file` source is fixed with (`./accounts-import.ts`). */
+export const ACCOUNTS_IMPORT_HINT =
+  "put your accounts.json in the kit directory and run `gray-assistant accounts import /run/secrets/accounts.json` (the container sees the kit directory there), or pipe it: `docker compose run --rm --no-deps -T agent accounts import - < accounts.json`; it is checked and written here as 0600";
 
 const DAY_MS = 86_400_000;
 const CLOCK_SKEW_LIMIT_MS = 10_000;
@@ -152,7 +161,7 @@ function ownerText(stat: { uid: number; gid: number }): string {
 }
 
 /** Check one secret file against the loader's rule and print what it is and what it must be. */
-function checkSecretFile(doctor: Doctor, id: string, path: string, what: string): void {
+function checkSecretFile(doctor: Doctor, id: string, path: string, what: string, missing: string | null = null): void {
   try {
     const stat = lstatSync(path);
     const actual = `${what} ${path}: mode ${modeText(stat.mode)}, ${ownerText(stat)}`;
@@ -162,7 +171,7 @@ function checkSecretFile(doctor: Doctor, id: string, path: string, what: string)
     if (isGroupOrOtherReadable(stat.mode)) return doctor.add(id, "fail", `${actual}; group/other readable (${required})`);
     doctor.add(id, "ok", `${actual}; ${required}`);
   } catch {
-    doctor.add(id, "fail", `${what} ${path}: missing (required 0600, owned by the agent's user)`);
+    doctor.add(id, "fail", `${what} ${path}: missing (required 0600, owned by the agent's user)${missing === null ? "" : `; ${missing}`}`);
   }
 }
 
@@ -380,8 +389,63 @@ export async function checkPeerTunnel(doctor: { add(id: string, status: DoctorSt
   return true;
 }
 
+/** This host's clock against Gray's (the `Date` of Gray's answer to the messages request): the clock lines' third reference. */
+export interface GrayClock {
+  /** This host's clock minus Gray's, in ms, when Gray's answer arrived (an HTTP date is whole seconds, so up to a second high). */
+  readonly hostAheadMs: number;
+}
+
+/** A host clock within this of Gray's is right: an HTTP date's second, the answer's way back, and room. */
+const HOST_CLOCK_LIMIT_MS = 5_000;
+
+/**
+ * What a clock sample means (kit 1.6.2). `skewMs` is this host's clock minus the VM's, both read when the VM's answer
+ * arrived; `gray` is this host's clock against Gray's, null when Gray's clock was not read; `refusedBeyondS` is the
+ * difference at which something is refused (the limits the VM and the scheduler really apply; `CLOCK_SKEW_LIMIT_MS` is
+ * only this line's own early warning).
+ *
+ * - Within ±10 s: OK.
+ * - Past it with this host's clock right by Gray's: the VM's clock is off. A WARN, not the relay's FAIL: the relay
+ *   cannot set a VM's clock and has nothing to do.
+ * - Past it with this host's clock off Gray's: a FAIL that says how to set it.
+ * - Past it with no reading of Gray's clock: a FAIL as before, that says how to tell which side it is.
+ */
+export function clockVerdict(origin: string, skewMs: number, gray: GrayClock | null, refusedBeyondS: number): { readonly status: DoctorStatus; readonly message: string } {
+  const seconds = (ms: number): string => (Math.abs(ms) / 1000).toFixed(1);
+  const within = `nothing is refused for it: a delivery, a sign-in or a signed call is refused only when the two clocks are more than ${refusedBeyondS} s apart, and customers' requests do not depend on it`;
+  if (Math.abs(skewMs) <= CLOCK_SKEW_LIMIT_MS) return { status: "ok", message: `${origin}: relay clock − TEE clock = ${Math.round(skewMs)} ms (limit ±${CLOCK_SKEW_LIMIT_MS} ms)` };
+  const past = Math.abs(skewMs) > refusedBeyondS * 1000;
+  if (gray === null) {
+    return {
+      status: "fail",
+      message: `${origin}: relay clock − TEE clock = ${Math.round(skewMs)} ms (limit ±${CLOCK_SKEW_LIMIT_MS} ms), and Gray's clock could not be read to tell which side is off. Check this host's clock first (timedatectl status, or date -u against a clock you trust; turn NTP on: timedatectl set-ntp true). If this host is right, it is the VM's clock, not yours: nothing for you to do, and do not restart the VM for it. ${past ? `The two are more than ${refusedBeyondS} s apart, so the VM refuses this host's deliveries and sign-ins as stale until the clock that is off is set right` : `Until then ${within}`}`,
+    };
+  }
+  // The VM's clock against Gray's, from the two samples this host took.
+  const vmAheadMs = gray.hostAheadMs - skewMs;
+  const hostRight = Math.abs(gray.hostAheadMs) <= HOST_CLOCK_LIMIT_MS;
+  if (hostRight) {
+    return {
+      status: "warn",
+      message: `${origin}: the VM's clock is ${seconds(vmAheadMs)} s ${vmAheadMs > 0 ? "ahead of" : "behind"} Gray's, and this host's agrees with Gray's (within ${seconds(gray.hostAheadMs)} s): the VM's clock, not yours; nothing for you to do, and do not restart the VM for it. ${past ? `It is more than ${refusedBeyondS} s off, so the VM refuses deliveries and sign-ins as stale until Gray sets it right: tell Gray` : `${within[0]!.toUpperCase()}${within.slice(1)}`}`,
+    };
+  }
+  const vmToo = Math.abs(vmAheadMs) > CLOCK_SKEW_LIMIT_MS ? ` The VM's clock is ${seconds(vmAheadMs)} s ${vmAheadMs > 0 ? "ahead of" : "behind"} Gray's as well; that one is not yours to set.` : "";
+  return {
+    status: "fail",
+    message: `${origin}: this host's clock is ${seconds(gray.hostAheadMs)} s ${gray.hostAheadMs > 0 ? "ahead of" : "behind"} Gray's (relay clock − TEE clock = ${Math.round(skewMs)} ms, limit ±${CLOCK_SKEW_LIMIT_MS} ms): set this host's clock right, then run doctor again. Turn NTP on (timedatectl set-ntp true; with chrony: chronyc makestep); in a VM, WSL or Docker Desktop, sync the machine under it. ${past ? `The two clocks are more than ${refusedBeyondS} s apart: the VM refuses this host's deliveries and sign-ins as stale until it is set` : `Until then ${within}`}.${vmToo}`,
+  };
+}
+
+/** Where a clock sample is judged: this host's clock now (not the run's start), Gray's clock, and the refusal window. */
+interface ClockContext {
+  readonly hostNow: () => number;
+  readonly gray: GrayClock | null;
+  readonly refusedBeyondS: number;
+}
+
 /** True when a request pinned to the attested key answered: the clock sample doubles as the tunnel's pin check. */
-async function checkClock(doctor: Doctor, origin: string, spkiSha256: string | null, nowMs: number, ca: string | undefined): Promise<RelayKitError | null> {
+async function checkClock(doctor: Doctor, origin: string, spkiSha256: string | null, clock: ClockContext, ca: string | undefined): Promise<RelayKitError | null> {
   if (spkiSha256 === null) {
     doctor.add(`clock:${origin}`, "skip", `${origin}: no verified TLS key, clock not sampled`);
     return new RelayKitError("tls_spki_mismatch", "no verified TLS key");
@@ -396,6 +460,9 @@ async function checkClock(doctor: Doctor, origin: string, spkiSha256: string | n
       timeoutMs: 10_000,
       maxResponseBytes: 64 * 1024,
     });
+    // This host's clock when the answer arrived: the run began seconds ago (the source, the release list, the
+    // attestation), and comparing the VM's date with the run's start made every VM look that much ahead.
+    const hostMs = clock.hostNow();
     const date = response.headers["date"];
     const text = Array.isArray(date) ? date[0] : date;
     const teeMs = typeof text === "string" ? Date.parse(text) : Number.NaN;
@@ -404,9 +471,8 @@ async function checkClock(doctor: Doctor, origin: string, spkiSha256: string | n
       doctor.add(`clock:${origin}`, "skip", `${origin}: /healthz carried no parseable Date header, so the TEE clock was not compared (Gray's side; no action needed)`);
       return null;
     }
-    const skew = nowMs - teeMs;
-    const status: DoctorStatus = Math.abs(skew) > CLOCK_SKEW_LIMIT_MS ? "fail" : "ok";
-    doctor.add(`clock:${origin}`, status, `${origin}: relay clock − TEE clock = ${skew} ms (limit ±${CLOCK_SKEW_LIMIT_MS} ms)`);
+    const verdict = clockVerdict(origin, hostMs - teeMs, clock.gray, clock.refusedBeyondS);
+    doctor.add(`clock:${origin}`, verdict.status, verdict.message);
     return null;
   } catch (error) {
     const code = error instanceof RelayKitError ? error.code : "io";
@@ -730,6 +796,9 @@ async function checkPendingReleases(doctor: Doctor, options: DoctorOptions, rele
 export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   const doctor = new Doctor();
   const nowMs = options.nowMs ?? Date.now();
+  // This host's clock at any later moment of the run (a clock sample is taken seconds after the run began); a fixed
+  // clock (`--now`, the tests) stays fixed.
+  const hostNow = options.nowMs !== undefined ? (): number => nowMs : (): number => Date.now();
   let config: LoadedRelayConfig;
   try {
     config = loadRelayConfigFile(options.configPath);
@@ -766,8 +835,11 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     const code = error instanceof RelayKitError ? error.code : "io";
     doctor.add("key_content", "fail", `relay key ${config.daemon.keyPath}: ${code}`);
   }
+  // Gray's messages for the relay, read now: the answer's Date is Gray's clock, which the clock lines below compare
+  // this host's with; the `messages` line itself is the run's last.
+  const messages = await readMessages(options, config, key, nowMs, hostNow);
   if (config.source.kind === "file") {
-    checkSecretFile(doctor, "accounts_permissions", config.source.path, "accounts file");
+    checkSecretFile(doctor, "accounts_permissions", config.source.path, "accounts file", ACCOUNTS_IMPORT_HINT);
   } else {
     checkSecretFile(doctor, "token_permissions", config.source.tokenFile, "source token file");
   }
@@ -840,7 +912,9 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
         snapshot = await source.list(AbortSignal.timeout(config.source.requestTimeoutMs));
       } catch (error) {
         const code = error instanceof RelayKitError ? error.code : "io";
-        doctor.add("source_accounts", "fail", `the source answered the probe but its account list failed (${code})`);
+        // The file source with no file yet (a kit just paired) or one that does not read: the import puts it in place.
+        const importHint = config.source.kind === "file" && (code === "io" || code === "unsafe_key_file") ? `; ${ACCOUNTS_IMPORT_HINT}` : "";
+        doctor.add("source_accounts", "fail", `the source answered the probe but its account list failed (${code})${importHint}`);
         doctor.add("source_credential", "skip", "the source list failed; no credential was read");
       }
       if (snapshot !== null) {
@@ -978,7 +1052,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
       continue;
     }
     const checked = await checkOrigin(doctor, config, release, quoteVerifier, controlView, origin, nowMs, options.ca, chainCheckOf(options, config));
-    const pinned = checked.ok ? await checkClock(doctor, origin, checked.spkiSha256, nowMs, options.ca) : null;
+    const pinned = checked.ok ? await checkClock(doctor, origin, checked.spkiSha256, { hostNow, gray: messages.gray, refusedBeyondS: (config.daemon.chain ?? null) !== null ? 300 : 60 }, options.ca) : null;
     if (tunnel === null) continue;
     if (!checked.ok) {
       doctor.add(`vm_pin:${origin}`, "fail", "the TLS key inside the tunnel is not bound by a valid attestation report of this relay's VM; gray-assistant sends it nothing");
@@ -1025,7 +1099,25 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   await checkStack(doctor, config, key, nowMs, options.ca, controlView, idle);
   if (idle === null) await checkTunnel(doctor, config, nowMs, options.ca);
   else if (config.daemon.tunnel !== null) doctor.add("tunnel", "skip", idle);
+  if (messages.line !== null) doctor.add("messages", messages.line.status, messages.line.message);
   return { ok: !doctor.failed, lines: doctor.lines };
+}
+
+/**
+ * Gray's unread messages for the relay (`./messages.ts`, kit 1.6.2), for the `messages` line: WARN with the count and
+ * the newest one's title when something is unread, OK with none, and a SKIP that says why when they could not be read
+ * (never a FAIL: the relay's VM serves without them). No line without a `stack` section. Also this host's clock against
+ * the `Date` of Gray's answer, whatever the answer was.
+ */
+async function readMessages(options: DoctorOptions, config: LoadedRelayConfig, key: RelayKeyFile | null, nowMs: number, hostNow: () => number): Promise<{ readonly line: { readonly status: DoctorStatus; readonly message: string } | null; readonly gray: GrayClock | null }> {
+  if (config.daemon.stack === null) return { line: null, gray: null };
+  if (key === null) return { line: { status: "skip", message: "the relay key is unavailable, so Gray's messages for the relay were not read" }, gray: null };
+  const { readKitMessages, unreadSummary } = await import("./messages.ts");
+  const read = await (options.messages ?? ((clock) => readKitMessages({ config, seed: key.seed, nowMs }, clock)))(hostNow);
+  const gray = read.grayDateMs === null || read.receivedMs === null ? null : { hostAheadMs: read.receivedMs - read.grayDateMs };
+  if (!read.ok) return { line: { status: "skip", message: `Gray's messages for the relay could not be read (${read.reason}); \`gray-assistant messages\` reads them, and the relay's Messages page in Gray's console lists them` }, gray };
+  if (read.answer.unread === 0) return { line: { status: "ok", message: "no unread message from Gray for the relay" }, gray };
+  return { line: { status: "warn", message: `${unreadSummary(read.answer)}: run \`gray-assistant messages\`, tell the relay's operator what they say, then \`gray-assistant messages --seen\`` }, gray };
 }
 
 /** The SHA-256 of the SPKI the public name presents from here, through DNS and the rendezvous; rejects when TLS fails. */
@@ -1384,4 +1476,5 @@ export const DOCTOR_LINE_IDS = [
   "tunnel_certificate",
   "tunnel_public",
   "tunnel_ct",
+  "messages",
 ] as const;

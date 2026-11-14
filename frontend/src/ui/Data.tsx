@@ -1,4 +1,4 @@
-import { Children, type CSSProperties, type HTMLAttributes, type MouseEvent, type ReactNode, type TdHTMLAttributes, type ThHTMLAttributes } from 'react';
+import { Children, Fragment, isValidElement, type CSSProperties, type HTMLAttributes, type MouseEvent, type ReactNode, type TdHTMLAttributes, type ThHTMLAttributes } from 'react';
 import { Collapsible } from '@cloudflare/kumo/primitives/collapsible';
 import { Progress as BaseProgress } from '@cloudflare/kumo/primitives/progress';
 import { ArrowDown, ArrowUp, CaretDown, Check, X } from '../components/icons';
@@ -58,10 +58,16 @@ function StatChange({ delta }: { delta: StatDelta }) {
   return <span className="ui-stat__delta" data-tone={tone}>{!flat && <Arrow size={12} aria-hidden="true" />}{flat ? 'No change' : amount} {delta.period}</span>;
 }
 
+/** How many stats a group holds, the ones inside fragments counted each. */
+function statCount(children: ReactNode): number {
+  return Children.toArray(children).reduce<number>((sum, child) => sum + (isValidElement(child) && child.type === Fragment ? statCount((child.props as { children?: ReactNode }).children) : 1), 0);
+}
+
 /** Stats side by side; `cards` puts each on its own bordered surface, for a report's headline figures. */
 export function StatGroup({ className, children, cards, style, ...rest }: HTMLAttributes<HTMLDivElement> & { cards?: boolean }) {
-  // At most four a row, and rows as even as the count allows: six figures sit 3 + 3, not 5 + 1.
-  const count = Children.toArray(children).length;
+  // At most four a row, and rows as even as the count allows: six figures sit 3 + 3, not 5 + 1. A fragment's stats
+  // count each (a page that groups two behind one condition has four figures, not three: 4 across, never 3 + 1).
+  const count = statCount(children);
   const columns = Math.max(1, Math.ceil(count / Math.ceil(count / 4)));
   return <div className={cx('ui-stat-group', cards && 'ui-stat-group--cards', className)} style={{ '--stat-columns': columns, ...style } as CSSProperties} {...rest}>{children}</div>;
 }

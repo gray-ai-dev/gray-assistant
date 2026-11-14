@@ -19,6 +19,7 @@ import { checkRelayContract, chainCheckJson, kitErrorIn } from "../chain/checks.
 import { parseChainConfig, type ChainConfig } from "../chain/config.ts";
 import { bySigCalldata, signedActionJson, signedActionSigner, signGuardianAction, type GuardianAction, type GuardianMessageContext } from "../chain/guardian.ts";
 import { GUARDIAN_KEY_FILE, guardianKeyValue, parseGuardianKeyValue, type GuardianKeyFile } from "../chain/guardian-key.ts";
+import { chainStartFileBeside, noteContractCode, readChainStart } from "./chain-start.ts";
 import { agreedChain, hasCode, listReleases, releaseState, releaseStateJson, settingsState, signerNonce, switchState, type AgreedChain, type ReleaseState } from "../chain/releases.ts";
 import { checkedRpcUrl, httpRequestFn, rpcClient, rpcLabel, type RpcOptions } from "../chain/rpc.ts";
 import { RelayKitError } from "../errors.ts";
@@ -44,6 +45,8 @@ export interface ChainContext {
   readonly guardianKeyPath: string;
   /** Every place `chain.guardian_key` is looked for, in order: one for an absolute path, else beside the config and under the kit's mount. */
   readonly guardianKeySearched: readonly string[];
+  /** `chain-start.json` beside the config's state file (`./chain-start.ts`: where `releases list` starts); null without a `state_file`. */
+  readonly startFile: string | null;
 }
 
 /**
@@ -57,7 +60,17 @@ export function readChainContext(configPath: string, kitMount: string = KIT_MOUN
   if (member === undefined) return null;
   const chain = parseChainConfig(member);
   const guardianKey = resolveGuardianKeyPath(chain.guardianKey, dirname(resolve(configPath)), kitMount);
-  return { configPath, chain, guardianKeyPath: guardianKey.path, guardianKeySearched: guardianKey.searched };
+  // The state file as the config loader resolves it: a relative path is the config's directory's.
+  const stateFile = get(raw as Json, "state_file");
+  const startFile = typeof stateFile === "string" && stateFile !== "" ? chainStartFileBeside(resolve(dirname(resolve(configPath)), stateFile)) : null;
+  return { configPath, chain, guardianKeyPath: guardianKey.path, guardianKeySearched: guardianKey.searched, startFile };
+}
+
+/** Whether there is code at the context's contract, noted for `releases list`'s start (`./chain-start.ts`). */
+async function contractHasCode(context: ChainContext, chain: AgreedChain): Promise<boolean> {
+  const has = await hasCode(chain, context.chain.contract);
+  noteContractCode(context.startFile, context.chain.contract, context.chain.chainId, chain.block, has);
+  return has;
 }
 
 /** Where the relay puts a guardian key file so every command finds it: `chain.guardian_key` in the kit directory. */
@@ -190,24 +203,27 @@ export function upgradeVerdict(hash: Hex): { readonly ok: boolean; readonly deta
 }
 
 /**
- * `releases list`: every proposal since `--from-block`, else `chain.from_block`, with its state. A config without a
- * start is refused with what works without one: `init --pair` writes none (the contract is deployed later, at Deploy,
- * and does not record its block), and reading back from the head without one is 100 log requests, which the public
- * Base endpoints refuse (HTTP 429 after about ten; measured 2026-11-14).
+ * `releases list`: every proposal since `--from-block`, else `chain.from_block`, else the start the kit noted itself
+ * (`./chain-start.ts`: the last block it read the contract without code, before it first read it with code), with its
+ * state. With none of the three it is refused with what works without one: `init --pair` writes none (the contract is
+ * deployed later, at Deploy, and does not record its block), and reading back from the head without one is 100 log
+ * requests, which the public Base endpoints refuse (HTTP 429 after about ten; measured 2026-11-14).
  */
-export async function chainReleasesList(context: ChainContext, options: ChainCommandOptions & { readonly fromBlock?: bigint }): Promise<{ readonly block: bigint; readonly releases: readonly ReleaseState[] }> {
+export async function chainReleasesList(context: ChainContext, options: ChainCommandOptions & { readonly fromBlock?: bigint }): Promise<{ readonly block: bigint; readonly fromBlock: bigint; readonly releases: readonly ReleaseState[] }> {
   const chain = await openChain(context, options);
-  if (!(await hasCode(chain, context.chain.contract))) throw new RelayKitError("chain_refused", `no contract at ${context.chain.contract} yet (Gray deploys it at Deploy)`);
-  const fromBlock = options.fromBlock ?? context.chain.fromBlock;
-  if (fromBlock === null) throw new RelayKitError("usage", "releases list reads the contract's events from a start block, and this config names none: give --from-block <n> or set chain.from_block (a block shortly before your relay's first Deploy). To see what waits for your approval without it, run gray-assistant doctor (its releases_pending line), or gray-assistant releases check <hash> for one release");
-  return { block: chain.block, releases: await listReleases(chain, context.chain.contract, fromBlock) };
+  if (!(await contractHasCode(context, chain))) throw new RelayKitError("chain_refused", `no contract at ${context.chain.contract} yet (Gray deploys it at Deploy)`);
+  // `--from-block`, else the config's, else the start this kit noted itself (the last block it read the contract without code).
+  const noted = context.startFile === null ? null : readChainStart(context.startFile, context.chain.contract, context.chain.chainId).fromBlock;
+  const fromBlock = options.fromBlock ?? context.chain.fromBlock ?? noted;
+  if (fromBlock === null) throw new RelayKitError("usage", "releases list reads the contract's events from a start block, and none is known: the config names no chain.from_block, and this kit first read the contract when it was already deployed, so it noted no block before the deployment: give --from-block <n> or set chain.from_block (a block shortly before your relay's first Deploy; the Deploy's transaction on a Base explorer names it). To see what waits for your approval without it, run gray-assistant doctor (its releases_pending line), or gray-assistant releases check <hash> for one release");
+  return { block: chain.block, fromBlock, releases: await listReleases(chain, context.chain.contract, fromBlock) };
 }
 
 /** `releases check <hash>`: the hash's state on the contract, agreed by both endpoints, and what it means for the relay. */
 export async function chainReleaseCheck(context: ChainContext, hashText: string, kind: string | undefined, options: ChainCommandOptions): Promise<{ readonly block: bigint; readonly state: ReleaseState; readonly verdict: string }> {
   const hash = releaseHash(hashText);
   const chain = await openChain(context, options);
-  if (!(await hasCode(chain, context.chain.contract))) throw new RelayKitError("chain_refused", `no contract at ${context.chain.contract} yet (Gray deploys it at Deploy)`);
+  if (!(await contractHasCode(context, chain))) throw new RelayKitError("chain_refused", `no contract at ${context.chain.contract} yet (Gray deploys it at Deploy)`);
   const state = await kindOnChain(chain, context.chain.contract, hash, kindFlag(kind));
   return { block: chain.block, state, verdict: releaseVerdict(state, nowSeconds(options.nowMs)) };
 }
@@ -330,7 +346,7 @@ export async function chainSetDelay(
   let stopped: ReleaseState[] | null = [];
   if (request.seconds > settings.delay) {
     const now = nowSeconds(options.nowMs);
-    const fromBlock = context.chain.fromBlock;
+    const fromBlock = context.chain.fromBlock ?? (context.startFile === null ? null : readChainStart(context.startFile, context.chain.contract, context.chain.chainId).fromBlock);
     stopped =
       fromBlock === null
         ? null
@@ -500,6 +516,8 @@ export async function chainChecksFor(context: ChainContext, composeHash: Hex | n
     { chainId: context.chain.chainId, contract: context.chain.contract, proposer: context.chain.proposer, guardian: context.chain.guardian, dstackKms: context.chain.dstackKms, releaseDelaySeconds: context.chain.releaseDelaySeconds, composeHash, osImageHash },
     options,
   );
+  // What both endpoints read of the code at the agreed block, noted for `releases list`'s start.
+  if (result.block !== null && result.reading !== null) noteContractCode(context.startFile, context.chain.contract, context.chain.chainId, result.block, result.reading.codeHash !== null);
   return { result, json: chainCheckJson(result) as JsonObject };
 }
 
@@ -516,7 +534,7 @@ export async function pendingReleasesFor(
 ): Promise<{ readonly block: bigint; readonly pending: readonly ReleaseState[] }> {
   const chain = await openChain(context, { ...options, nowMs: options.nowMs ?? Date.now() });
   const contract = context.chain.contract;
-  if (!(await hasCode(chain, contract))) return { block: chain.block, pending: [] };
+  if (!(await contractHasCode(context, chain))) return { block: chain.block, pending: [] };
   const pending: ReleaseState[] = [];
   const named: (readonly [ReleaseKind, Hex])[] = [...candidates.compose.map((hash) => ["compose", hash] as const), ...candidates.osImage.map((hash) => ["os_image", hash] as const)];
   for (const [kind, hash] of named) {

@@ -423,6 +423,9 @@
 .ui-code__pre:focus-visible { outline: 2px solid var(--focus-color); outline-offset: -2px; }
 .ui-code__pre code { font: inherit; overflow-wrap: normal; }
 .ui-code__pre--wrap code { overflow-wrap: anywhere; }
+/* A command: it wraps at its spaces; a word is one box, and only one longer than the line wraps inside itself. */
+.ui-code__pre--words { white-space: pre-wrap; }
+.ui-code__word { display: inline-block; max-width: 100%; vertical-align: top; white-space: pre-wrap; overflow-wrap: anywhere; }
 .ui-code__footer { margin: 0; padding: var(--space-3) var(--space-4); border-top: 1px solid var(--border); background: var(--muted-surface); color: var(--muted); font-size: var(--text-support); line-height: var(--leading-body); }
 .ui-code--bare { border: 0; border-radius: 0; background: transparent; }
 .ui-code--bare .ui-code__pre { padding: 0; }

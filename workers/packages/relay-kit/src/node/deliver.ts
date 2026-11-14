@@ -424,6 +424,8 @@ function vmRefusal(status: number, code: string | null, what: "boot box" | "acco
     case "vault_unavailable":
     case "vault_write_failed":
       return `the VM could not keep the ${what} now (${code}); run the command again in a minute`;
+    case "vault_not_serving":
+      return `the VM that answered is not the relay's serving one (vault_not_serving): Gray is still finishing a Deploy or rollout (a second VM takes over, the first drains), and nothing was kept. Nothing is wrong with the ${what}: run the command again in a few minutes; \`gray-assistant doctor\` shows the VM once it serves`;
     case "boot_box_unsupported":
       return "the VM keeps no boot box (boot_box_unsupported): it is not a phase-2 VM";
     default:
@@ -433,8 +435,49 @@ function vmRefusal(status: number, code: string | null, what: "boot box" | "acco
   return `the VM refused the ${what} (${status}${code === null ? "" : ` ${code}`})`;
 }
 
-/** Run one delivery command (see the module comment). Returns the exit code. */
+/** The VM's refusal of a delivery while Gray moves the relay to another VM (entry.ts, vault.ts: 409, nothing kept). */
+const NOT_SERVING = "vault_not_serving";
+/** One run's outcome: its exit code, or that the VM answered `vault_not_serving` before it kept anything of this run. */
+type DeliverOutcome = number | { readonly retry: typeof NOT_SERVING; readonly what: "boot box" | "accounts" };
+
+/**
+ * Run one delivery command (see the module comment). Returns the exit code.
+ *
+ * A VM that answers 409 `vault_not_serving` is not the relay's serving one: right after a first `deliver` or a rollout
+ * Gray is still handing over from one VM to the other (the entry may still reach the one that drains, or the new one has
+ * not been named serving yet), and the refusal keeps nothing. It passes by itself, so the command says why it waits and
+ * runs again from the attestation (the serving VM is another boot, with other keys) every `DELIVER_WAIT_POLL_MS`, for
+ * as long as a restart is waited for (`--timeout`, by default `DELIVER_WAIT_DEFAULT_MS`). `--no-wait` runs once.
+ * Found on staging, 2026-11-14: `accounts push` straight after a first `deliver` was refused with the bare code.
+ */
 export async function deliverCommand(options: DeliverOptions): Promise<number> {
+  const { io } = options;
+  const name = COMMAND_NAMES[options.action];
+  const timeoutMs = options.timeoutMs ?? DELIVER_WAIT_DEFAULT_MS;
+  const startedMs = io.now();
+  for (let attempt = 1; ; attempt += 1) {
+    const outcome = await deliverOnce(options);
+    if (typeof outcome === "number") return outcome;
+    const waitedMs = io.now() - startedMs;
+    const say = (line: string): void => io.stderr(`gray-assistant ${name}: ${line}\n`);
+    const refused = (message: string): number => {
+      say(message);
+      io.stdout(`${toJsonString({ command: name.replace(" ", "."), ok: false, relay_id: options.config.daemon.relayId, code: NOT_SERVING, waited_s: BigInt(Math.round(waitedMs / 1000)) })}\n`);
+      return 1;
+    };
+    const state = `the VM that answered is not the relay's serving one (409 ${NOT_SERVING}): Gray is still finishing a Deploy or rollout (a second VM takes over and the first drains), and the VM kept nothing of the ${outcome.what}`;
+    if (!options.wait) return refused(`${state}. Nothing is wrong with the ${outcome.what}: run the command again in a few minutes (without --no-wait it waits by itself)`);
+    if (waitedMs >= timeoutMs) {
+      return refused(`${state}. Waited ${Math.round(waitedMs / 1000)} s (${attempt} tries) and it still does not serve: run the command again in 10 minutes; if it is refused then too, the relay's VM page in Gray's console shows where the Deploy stands, and \`gray-assistant messages\` what Gray says about it`);
+    }
+    if (attempt === 1) say(`${state}. This passes by itself, usually within a few minutes: trying again every ${DELIVER_WAIT_POLL_MS / 1000} s, for up to ${Math.round(timeoutMs / 1000)} s`);
+    else say(`still not the serving VM after ${Math.round(waitedMs / 1000)} s; trying again`);
+    await io.sleep(Math.min(DELIVER_WAIT_POLL_MS, Math.max(1, timeoutMs - waitedMs)));
+  }
+}
+
+/** One run of a delivery command, from the attestation on. */
+async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
   const { config, io, action, seed } = options;
   const name = COMMAND_NAMES[action];
   const relayId = config.daemon.relayId;
@@ -659,6 +702,8 @@ export async function deliverCommand(options: DeliverOptions): Promise<number> {
     const sealed = await sealBootBoxDelivery(report, seed, { relayId, version: versionBase, box }, { nonce, quoteVerified: true, nowSecs: sealNowSecs });
     const answer = await post(BOOT_BOX_DELIVERY_PATH, sealed);
     if ("transport" in answer) return refuse(`transport_${answer.transport}`, `the boot box did not reach the VM through Gray's entry (${answer.transport}); run the command again`);
+    // Not the serving VM: nothing was kept, and the serving one is another boot. The command runs again.
+    if (answer.status === 409 && errorCodeOf(answer.body) === NOT_SERVING) return { retry: NOT_SERVING, what: "boot box" };
     if (answer.status !== 200) return refuse(errorCodeOf(answer.body) ?? `http_${answer.status}`, vmRefusal(answer.status, errorCodeOf(answer.body), "boot box"));
     try {
       const value = parseStrictBytes(answer.body);
@@ -696,6 +741,9 @@ export async function deliverCommand(options: DeliverOptions): Promise<number> {
     const sealed = await sealCredentialBundle(report, seed, bundle, { nonce, quoteVerified: true, nowSecs: sealNowSecs });
     const answer = await post(LANE_ENDPOINTS.credentials, sealed);
     if ("transport" in answer) return refuse(`transport_${answer.transport}`, `the accounts did not reach the VM through Gray's entry (${answer.transport}); run the command again`);
+    // Not the serving VM. Only while this run sent no boot box before it: a box the VM kept is not sent twice, and
+    // that refusal then says what stands.
+    if (answer.status === 409 && errorCodeOf(answer.body) === NOT_SERVING && receipt === null) return { retry: NOT_SERVING, what: "accounts" };
     if (answer.status !== 200) return refuse(errorCodeOf(answer.body) ?? `http_${answer.status}`, vmRefusal(answer.status, errorCodeOf(answer.body), "accounts"));
     try {
       const value = parseStrictBytes(answer.body);
