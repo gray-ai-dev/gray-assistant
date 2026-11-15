@@ -140,7 +140,7 @@ function Unreachable({ error, onRetry }: { error: ApiError | null; onRetry: () =
       <Notice tone="danger" role="alert" actions={<Button size="sm" onClick={onRetry}>Try again</Button>}>
         {refusalText(error?.code ?? 'unreachable')}
       </Notice>
-      <CodeBlock language="bash" copyLabel="Copy command" description="Start it again on the relay’s machine (or gray-assistant run with ui.listen in its config):"
+      <CodeBlock language="bash" copyLabel="Copy command" description="Start it again on the relay’s machine:"
         code="gray-assistant ui" />
     </Stack>
   </Page>;

@@ -53,7 +53,7 @@ const NEXT_STEPS: Readonly<Record<string, string>> = {
   stack_accounts: "Rename each refused account in your source to its account ID in Gray's panel.",
   stack_account: "Give this account its account ID from Gray's panel in your source.",
   lane_registration: "Ask Gray to check this relay's registration; gray-assistant tries again every 5 minutes.",
-  agent_status: "Do what the line names: register the relay key, create the relay stack, sync the clock, or start gray-assistant run.",
+  agent_status: "Do what the line names: register the relay key, create the relay stack, or sync the clock.",
 };
 
 export function nextStepFor(line: Pick<DoctorLine, "id" | "status">): string | null {

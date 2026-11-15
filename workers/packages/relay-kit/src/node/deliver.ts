@@ -429,10 +429,10 @@ function vmRefusal(status: number, code: string | null, what: "boot box" | "acco
       return `the VM has seen a newer designation than this one (designation_seq_below): ${DESIGNATION_STATE_FILE} is behind; run the command again`;
     case "designation_signature_invalid":
     case "bad_relay_signature":
-      return `the VM did not accept the signature (${code}): relay-key.json is not the key the VM measured`;
+      return `the VM did not accept the signature (${code}): relay-key.json is not the key the VM measured. Run the command from the kit directory of the pairing this VM was deployed for; a relay paired again deletes its VM and Deploys again (relay-stack.md section 10)`;
     case "unknown_relay":
     case "boot_box_relay_mismatch":
-      return `the VM serves another relay (${code}): the config's relay_id is not the one the VM booted with`;
+      return `the VM serves another relay (${code}): the config's relay_id is not the one the VM booted with. Run the command with this relay's own gray-assistant.jsonc (the kit directory of its pairing)`;
     case "boot_box_replay":
       return "the VM took a later delivery in this boot (boot_box_replay): this machine's clock is behind; set it right and run the command again";
     case "relay_empty_slot":
@@ -445,12 +445,12 @@ function vmRefusal(status: number, code: string | null, what: "boot box" | "acco
     case "vault_not_serving":
       return `the VM that answered is not the relay's serving one (vault_not_serving): Gray is still finishing a Deploy or rollout (a second VM takes over, the first drains), and nothing was kept. Nothing is wrong with the ${what}: run the command again in a few minutes; \`gray-assistant doctor\` shows the VM once it serves`;
     case "boot_box_unsupported":
-      return "the VM keeps no boot box (boot_box_unsupported): it is not a phase-2 VM";
+      return "the VM keeps no boot box (boot_box_unsupported): its Gray release is older than this delivery. Delete the VM and Deploy again (relay-stack.md section 6); if the new VM answers the same, report this line to Gray";
     default:
       break;
   }
-  if (status === 404) return "the VM does not take boot boxes (404): its Gray release is older than phase 2's delivery";
-  return `the VM refused the ${what} (${status}${code === null ? "" : ` ${code}`})`;
+  if (status === 404) return "the VM does not take boot boxes (404): its Gray release is older than this delivery. Delete the VM and Deploy again (relay-stack.md section 6); if the new VM answers the same, report this line to Gray";
+  return `the VM refused the ${what} (${status}${code === null ? "" : ` ${code}`}). Run the command again in a minute; if it is refused the same way, report this line to Gray`;
 }
 
 /** The VM's refusal of a delivery while Gray moves the relay to another VM (entry.ts, vault.ts: 409, nothing kept). */
@@ -707,6 +707,15 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
             : "";
       io.stderr(`gray-assistant ${name}: left out a ${skipped.vendor} account${skipped.panelId === null ? "" : ` (${skipped.panelId})`}: ${skipped.reason}${hint}\n`);
     }
+    for (const said of accounts.notFollowed ?? []) {
+      const who = said.panelId === null ? `an account of ${said.vendor}` : `${said.panelId} (${said.vendor})`;
+      if (said.status !== null) {
+        io.stderr(`gray-assistant ${name}: note: the source lists ${who} as ${said.status}; Gray does not take an account's status from the source, so it is sealed and serves like the others. To keep it from serving, pause it on Gray (relay-stack.md section 9, "The panel's API": PATCH accounts with "status": "paused")\n`);
+      }
+      if (said.members.length > 0) {
+        io.stderr(`gray-assistant ${name}: note: the source names ${said.members.join(", ")} for ${who}; on Gray these are the panel account's own (every model of its vendor, weight 1, concurrency 10 when adopted), and the source's values are not used. Set them on Gray (relay-stack.md section 9, "The panel's API")\n`);
+      }
+    }
     if (accounts.accounts.length === 0 && accounts.listed > 0) {
       // Nothing is sent. A first delivery would start the relay's image with no account, which serves nothing while the
       // VM attests and every view says it runs (gray-prod-test-1, 2026-11-10: a login store that was not in the new
@@ -854,7 +863,7 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
     } catch {
       code = null;
     }
-    return refuse(code ?? `http_${answer.status}`, `the VM keeps the boot box, but Gray refused the restart request (${answer.status}${code === null ? "" : ` ${code}`})`, { request_id: request.request_id });
+    return refuse(code ?? `http_${answer.status}`, `the VM keeps the boot box, but Gray refused the restart request (${answer.status}${code === null ? "" : ` ${code}`}). Run the command again in a minute (the box is kept; only the restart is asked again); if it is refused the same way, report this line to Gray`, { request_id: request.request_id });
   }
   io.stdout(`gray-assistant ${name}: restart request ${request.request_id} recorded by Gray; the VM restarts onto ${box.designation.image} (${boot.running === null ? RESTART_WORDS.first : RESTART_WORDS.image})\n`);
   if (!options.wait) return done({ restart: "requested", request_id: request.request_id, waited: false });
@@ -955,7 +964,7 @@ async function phase2Restart(
   }
   if (answer.status !== 200 && answer.status !== 202) {
     const code = errorCodeOf(new TextEncoder().encode(answer.text));
-    return refuse(code ?? `http_${answer.status}`, `Gray refused the restart request (${answer.status}${code === null ? "" : ` ${code}`})`, { request_id: request.request_id });
+    return refuse(code ?? `http_${answer.status}`, `Gray refused the restart request (${answer.status}${code === null ? "" : ` ${code}`}). Run the command again in a minute; if it is refused the same way, report this line to Gray`, { request_id: request.request_id });
   }
   io.stdout(`gray-assistant ${name}: restart request ${request.request_id} recorded by Gray; the VM restarts (${RESTART_WORDS.restart})\n`);
   if (!options.wait) return done({ restart: "requested", request_id: request.request_id, waited: false });

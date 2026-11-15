@@ -4,11 +4,10 @@
 // accepted. The page answers: what waits for a decision,
 // how long until it is accepted anyway, and what is accepted or rejected now.
 import { useState } from 'react';
-import { Badge, Button, EmptyState, Inline, Menu, MenuItem, Notice, Page, PageHeader, Skeleton, Stack, StackedTable, TableBody, TableCell, TableHead, TableHeaderCell, TableRow, Text, VisuallyHidden, toast, useConfirm } from '../../ui';
+import { Badge, Button, EmptyState, Inline, InlineCode, Menu, MenuItem, Notice, Page, PageHeader, Skeleton, Stack, StackedTable, TableBody, TableCell, TableHead, TableHeaderCell, TableRow, Text, VisuallyHidden, toast, useConfirm } from '../../ui';
 import { ApiError, write, type RelayInfo, type Release, type ReleasesView } from '../api';
 import { LIVE_MS, useLocal, useNow } from '../data';
-import { clockText, durationText, refusalText, relativeTime, releaseName } from '../words';
-import { AgentNotice } from './parts';
+import { clockText, durationText, refusalText, relativeTime, relayCommand, releaseName } from '../words';
 
 type Decision = { label: string; tone: 'success' | 'info' | 'warning' | 'danger' | 'neutral'; detail: string };
 
@@ -59,7 +58,11 @@ export function ReleasesPage({ relay }: { relay: RelayInfo }) {
   return <Page>
     <Stack gap={6}>
       <PageHeader title="Releases" description={`New versions of the software in Gray’s VM. gray-assistant seals keys only to a release it accepts. ${mode}`} />
-      <AgentNotice relay={view?.relay ?? relay} what="It reads Gray’s release list once it runs." />
+      <Notice title="Your relay’s contract decides its releases">
+        A relay paired with a current kit has a release contract, and the contract decides which Gray releases its VM runs: <InlineCode>{relayCommand(view?.relay ?? relay, 'releases list')}</InlineCode> shows
+        them and your release delay, and <InlineCode>releases approve</InlineCode>, <InlineCode>releases reject</InlineCode> and <InlineCode>releases delay</InlineCode> act on it.
+        This page lists what an agent process on this host accepted. No kit runs one now, so the list stays empty.
+      </Notice>
       {failure && <Notice tone="danger" role="alert">{failure}</Notice>}
       {releases.error && <Notice tone="danger" role="alert" actions={<Button size="sm" onClick={() => void releases.reload()}>Try again</Button>}>Couldn’t read the releases: {refusalText(releases.error.code)}</Notice>}
       {view?.release_list?.last_error && <Notice tone="warning" title="Gray’s release list didn’t verify at the last read">

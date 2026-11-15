@@ -81,7 +81,8 @@ const accountSchema = z
     account_id: z.string().regex(RESOURCE_ID),
     vendor: z.enum(VENDORS),
     credential: z.union([credentialSchema, passwordCredentialSchema, signInCredentialSchema]),
-    status: z.enum(["active", "limited", "banned", "disabled"]).optional(),
+    // `paused` is the standard's word for it (the `http` source's): read as `disabled`, never a refused file.
+    status: z.enum(["active", "limited", "banned", "disabled", "paused"]).optional(),
     models: z.union([z.array(z.string().regex(MODEL_ID)).min(1).max(256), z.literal("*")]).optional(),
     weight: integer(1n, 1_000_000n).optional(),
     max_concurrency: integer(1n, 10_000n).optional(),
@@ -154,7 +155,7 @@ export function parseAccountsSourceValue(value: unknown, options: ParseAccountsO
     if (seen.has(data.account_id)) throw new RelayKitError("source_shape_changed", `accounts.${index}.account_id`);
     seen.add(data.account_id);
     const parsedEgress = data.egress === undefined ? undefined : parseEgressValue(data.egress, `accounts.${index}.egress`);
-    const status = (data.status ?? "active") as SourceAccountStatus;
+    const status = (data.status === "paused" ? "disabled" : (data.status ?? "active")) as SourceAccountStatus;
     let credential: Credential;
     let expires: number | undefined;
     let changeMark: string;

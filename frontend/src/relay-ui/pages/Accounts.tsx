@@ -1,20 +1,20 @@
 // Accounts: what the relay's source holds and where each account's key is, sealed for Gray's VM or on its way. The
-// page answers, in order: is gray-assistant sealing at all; can this page change the source; which accounts need a hand;
+// page answers, in order: what seals a change (the operator's `accounts push`: nothing of gray-assistant runs all the
+// time); can this page change the source; which accounts need a hand;
 // then every account with its credential, its sealed version, models and proxy. Keys are added, replaced and removed
 // here; they are never shown again once saved.
 import { useState } from 'react';
 import { Trash } from '../../components/icons';
 import {
-  Badge, Button, Drawer, EmptyState, Field, Inline, LinkButton, Menu, MenuItem, MenuSeparator, Notice, Page, PageHeader, SegmentedControl, Skeleton, Stack, StackedTable, Step, Steps,
+  Badge, Button, Drawer, EmptyState, Field, Inline, InlineCode, LinkButton, Menu, MenuItem, MenuSeparator, Notice, Page, PageHeader, SegmentedControl, Skeleton, Stack, StackedTable, Step, Steps,
   TableBody, TableCell, TableHead, TableHeaderCell, TableRow, Text, TextInput, VisuallyHidden, toast, useConfirm,
 } from '../../ui';
 import { ApiError, write, type Account, type AccountsView, type PastedCredentialType, type RelayInfo } from '../api';
 import { BUSY_MS, LIVE_MS, useLocal, useNow } from '../data';
 import { href } from '../router';
 import {
-  clockText, credentialLabel, credentialPhrase, fieldError, keyFits, keyHint, modelsPhrase, parkReason, recognizeKey, refusalText, relativeTime, VENDOR_LABEL,
+  clockText, credentialLabel, credentialPhrase, fieldError, keyFits, keyHint, modelsPhrase, parkReason, recognizeKey, refusalText, relativeTime, relayCommand, VENDOR_LABEL,
 } from '../words';
-import { AgentNotice } from './parts';
 
 export function AccountsPage({ relay }: { relay: RelayInfo }) {
   const accounts = useLocal<AccountsView>('accounts', { live: data => data?.accounts.some(account => account.sealed.state === 'waiting') ? BUSY_MS : LIVE_MS });
@@ -25,20 +25,20 @@ export function AccountsPage({ relay }: { relay: RelayInfo }) {
   const source = view?.source;
   const canEdit = !!source && source.kind === 'file' && source.writable && source.problem === null;
   const list = view?.accounts ?? [];
-  const pollSeconds = Math.round((view?.source_poll_ms ?? 30_000) / 1000);
+  const push = <InlineCode>{relayCommand(view?.relay ?? relay, 'accounts push')}</InlineCode>;
   const leftOut = list.filter(account => account.sealed.state === 'parked');
 
   async function remove(account: Account) {
     if (!await confirm({
       title: `Remove ${account.account_id}?`,
-      description: 'gray-assistant deletes its key from accounts.json and revokes it from Gray’s VM at its next poll. Gray’s panel keeps the account until you delete it there.',
+      description: 'gray-assistant deletes its key from accounts.json. Gray’s VM keeps the key until your next accounts push. Gray’s panel keeps the account until you delete it there.',
       confirmLabel: 'Remove account',
       tone: 'danger',
     })) return;
     setBusy(account.account_id);
     try {
       accounts.set(await write<AccountsView>('DELETE', `accounts/${encodeURIComponent(account.account_id)}`));
-      toast.success(`Removed ${account.account_id}.`, { description: 'gray-assistant revokes it from the VM at its next poll.' });
+      toast.success(`Removed ${account.account_id}.`, { description: 'Gray’s VM keeps its key until you run accounts push.' });
     } catch (error) {
       toast.error(`Couldn’t remove ${account.account_id}.`, { description: refusalText(error instanceof ApiError ? error.code : 'internal') });
     } finally {
@@ -48,14 +48,16 @@ export function AccountsPage({ relay }: { relay: RelayInfo }) {
 
   return <Page>
     <Stack gap={6}>
-      <PageHeader title="Accounts" description="The vendor accounts gray-assistant seals for Gray’s VM. Keys stay on the relay’s machine: gray-assistant seals each one for the VM itself."
+      <PageHeader title="Accounts" description="The vendor accounts gray-assistant seals for Gray’s VM when you run accounts push. Keys stay on the relay’s machine: gray-assistant seals each one for the VM itself."
         actions={source?.kind === 'file' && (canEdit
           ? <LinkButton variant="primary" href={href('/accounts/new')}>Add account</LinkButton>
           : <Button variant="primary" disabled title={source.problem ? 'Fix accounts.json first.' : 'accounts.json is read-only here.'}>Add account</Button>)} />
-      <AgentNotice relay={view?.relay ?? relay} />
+      {source?.kind === 'file' && <Notice title="A change here waits for accounts push">
+        Nothing reads accounts.json in the background: after you add, replace or remove a key, run {push} on the relay’s machine, and it seals every account for Gray’s VM.
+      </Notice>}
       {accounts.error && <Notice tone="danger" role="alert" actions={<Button size="sm" onClick={() => void accounts.reload()}>Try again</Button>}>Couldn’t read the accounts: {refusalText(accounts.error.code)}</Notice>}
       {source && source.kind !== 'file' && <Notice title="Accounts come from your relay software">
-        Add, change and remove accounts there{source.url ? ` (${source.url})` : ''}: gray-assistant reads them every {pollSeconds} seconds and seals each one itself. This page changes accounts only for the file source, accounts.json.
+        Add, change and remove accounts there{source.url ? ` (${source.url})` : ''}, then run {push} on the relay’s machine: gray-assistant reads them once and seals each one. Nothing reads your software in the background. This page changes accounts only for the file source, accounts.json.
       </Notice>}
       {source?.problem && <Notice tone="danger" role="alert" title="accounts.json can’t be read">
         gray-assistant refuses it as it is ({source.problem.detail}), so nothing in it is sealed and this page can’t change it. Fix that entry in {source.path}, then reload this page.
@@ -69,13 +71,13 @@ export function AccountsPage({ relay }: { relay: RelayInfo }) {
 
       {accounts.loading && <Skeleton rows={3} label="Loading the accounts" />}
       {view && source?.kind === 'file' && !source.problem && list.length === 0 && <EmptyState title="No accounts yet"
-        description="Add a vendor account with its key. gray-assistant writes it to accounts.json on the relay’s machine and seals it for Gray’s VM."
+        description="Add a vendor account with its key. gray-assistant writes it to accounts.json on the relay’s machine, and your next accounts push seals it for Gray’s VM."
         actions={canEdit && <LinkButton variant="primary" href={href('/accounts/new')}>Add account</LinkButton>} />}
       {list.length > 0 && <StackedTable label="Accounts" className="relay-ui-accounts">
         <TableHead><TableRow>
           <TableHeaderCell>Account</TableHeaderCell>
           <TableHeaderCell>Credential</TableHeaderCell>
-          <TableHeaderCell title="Whether gray-assistant has sealed the account’s current key for Gray’s VM, with the version of the message that carried it.">Sealed</TableHeaderCell>
+          <TableHeaderCell title="Whether gray-assistant has sealed the account’s current key for Gray’s VM, with the version of the message that carried it. Not known here after accounts push: the command prints what it sealed, and Gray’s panel shows it.">Sealed</TableHeaderCell>
           <TableHeaderCell>Models</TableHeaderCell>
           <TableHeaderCell>Proxy</TableHeaderCell>
           {canEdit && <TableHeaderCell kind="menu"><VisuallyHidden>Actions</VisuallyHidden></TableHeaderCell>}
@@ -91,7 +93,7 @@ export function AccountsPage({ relay }: { relay: RelayInfo }) {
               <span>{credentialPhrase(account)}</span>
               {account.credential_expires_at_ms !== null && <Text as="span" size="meta" tone="muted">Expires {clockText(account.credential_expires_at_ms, Date.now())}</Text>}
             </Stack></TableCell>
-            <TableCell data-label="Sealed" wide><SealedCell account={account} pollSeconds={pollSeconds} /></TableCell>
+            <TableCell data-label="Sealed" wide><SealedCell account={account} /></TableCell>
             <TableCell data-label="Models"><Text as="span" size="support" truncate className="relay-ui-models" title={account.models === '*' ? undefined : account.models.join(', ')}>{modelsPhrase(account.models)}</Text></TableCell>
             <TableCell data-label="Proxy">{account.proxy
               ? <Text as="span" size="support" truncate className="relay-ui-proxy">{account.proxy.type} · {account.proxy.host}:{account.proxy.port}</Text>
@@ -107,7 +109,7 @@ export function AccountsPage({ relay }: { relay: RelayInfo }) {
       </StackedTable>}
       {view && source?.kind === 'file' && source.path && <Text size="meta" tone="muted">Source: {source.path}{view.agent_last_poll_at_ms ? ` · gray-assistant last read it ${relativeTime(view.agent_last_poll_at_ms, Date.now())}` : ''}</Text>}
     </Stack>
-    {replacing && <ReplaceKey key={replacing.key} account={replacing.account} open={replaceOpen} onOpenChange={setReplaceOpen} onSaved={next => accounts.set(next)} pollSeconds={pollSeconds} />}
+    {replacing && <ReplaceKey key={replacing.key} account={replacing.account} open={replaceOpen} onOpenChange={setReplaceOpen} onSaved={next => accounts.set(next)} />}
   </Page>;
 }
 
@@ -117,7 +119,7 @@ function pasted(type: Account['credential_type']): type is PastedCredentialType 
 }
 
 /** Where the account's key is: sealed (with its version and when), on its way, left out (and why), or unknown. */
-function SealedCell({ account, pollSeconds }: { account: Account; pollSeconds: number }) {
+function SealedCell({ account }: { account: Account }) {
   const now = useNow(15_000);
   const sealed = account.sealed;
   if (sealed.state === 'sealed' || sealed.state === 'partly') return <Stack gap={1}>
@@ -130,18 +132,18 @@ function SealedCell({ account, pollSeconds }: { account: Account; pollSeconds: n
   </Stack>;
   if (sealed.state === 'waiting') return <Stack gap={1}>
     <span><Badge tone="info" dot>Waiting to seal</Badge></span>
-    <Text as="span" size="meta" tone="muted">{`Within ${pollSeconds} seconds.`}</Text>
+    <Text as="span" size="meta" tone="muted">At your next accounts push.</Text>
   </Stack>;
   if (sealed.state === 'parked') return <Stack gap={1}>
     <span><Badge tone="warning" dot>Left out</Badge></span>
     <Text as="span" size="meta" tone="muted">{parkReason(sealed.reason)}</Text>
   </Stack>;
-  // gray-assistant isn't running: the page's notice says so once, not every row.
-  return <span><Badge dot>Not sealed now</Badge></span>;
+  // No agent reports to this page (`accounts push` writes no status it reads), so it cannot say the key is not sealed.
+  return <span><Badge dot>Not known here</Badge></span>;
 }
 
 /** Replace one account's key in a side sheet; the key field starts empty and the old key is never shown. */
-function ReplaceKey({ account, open, onOpenChange, onSaved, pollSeconds }: { account: Account; open: boolean; onOpenChange(open: boolean): void; onSaved(view: AccountsView): void; pollSeconds: number }) {
+function ReplaceKey({ account, open, onOpenChange, onSaved }: { account: Account; open: boolean; onOpenChange(open: boolean): void; onSaved(view: AccountsView): void }) {
   const types = account.vendor === 'anthropic' ? (['api_key', 'oauth_access_token'] as const) : account.vendor === 'chatgpt_codex' ? (['oauth_access_token'] as const) : (['api_key'] as const);
   const [type, setType] = useState<PastedCredentialType>(pasted(account.credential_type) ? account.credential_type : types[0]);
   const [value, setValue] = useState('');
@@ -156,7 +158,7 @@ function ReplaceKey({ account, open, onOpenChange, onSaved, pollSeconds }: { acc
       onSaved(await write<AccountsView>('PUT', `accounts/${encodeURIComponent(account.account_id)}/credential`, { credential: { type, value } }));
       setValue('');
       onOpenChange(false);
-      toast.success(`Replaced ${account.account_id}’s key.`, { description: `gray-assistant seals it at its next read, within ${pollSeconds} seconds.` });
+      toast.success(`Replaced ${account.account_id}’s key.`, { description: 'Run accounts push to seal it for Gray’s VM.' });
     } catch (failure) {
       const refusal = failure instanceof ApiError ? failure : null;
       setError(refusal?.field ? { field: refusal.field, text: fieldError(refusal.field, refusal.code) } : { field: null, text: refusalText(refusal?.code ?? 'internal', refusal?.detail) });
@@ -179,7 +181,7 @@ function ReplaceKey({ account, open, onOpenChange, onSaved, pollSeconds }: { acc
       </Field>
       <Steps aria-label="What happens next">
         <Step title="gray-assistant writes the key to accounts.json"><Text size="support" tone="muted">On the relay’s machine, readable by gray-assistant’s user only.</Text></Step>
-        <Step title="It seals the key for Gray’s VM"><Text size="support" tone="muted">At its next read of the file, within {pollSeconds} seconds, with a new version.</Text></Step>
+        <Step title="You run accounts push"><Text size="support" tone="muted">It reads the file once and seals the key for Gray’s VM, with a new version. Nothing seals it before that.</Text></Step>
         <Step title="The VM uses the new key"><Text size="support" tone="muted">The old key stops being used once the VM has the new one.</Text></Step>
       </Steps>
     </Stack>

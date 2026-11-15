@@ -258,8 +258,9 @@ function usage(): string {
     "       gray-assistant accounts push [--config <config>] [--no-wait] [--timeout <seconds>]   (read the source once and seal the accounts to the VM;",
     "                                    waits and tries again while Gray is still moving the relay to its serving VM, 409 vault_not_serving)",
     "       gray-assistant accounts import <accounts.json> [--config <config>]   (the file source: check the file and put it where the source reads it, 0600;",
-    "                                    the file comes from the kit directory, which the container has at /run/secrets:",
-    "                                    docker compose run --rm --no-deps agent accounts import /run/secrets/accounts.json, then remove the copy in the kit directory)",
+    "                                    piped from anywhere: docker compose run --rm --no-deps -T agent accounts import - < accounts.json;",
+    "                                    or a copy in the kit directory, which the container has at /run/secrets:",
+    "                                    docker compose run --rm --no-deps agent accounts import /run/secrets/accounts.json, then remove that copy)",
     "       gray-assistant messages [--seen] [--config <config>]   (Gray's unread messages for the relay: a release to approve, the traffic window,",
     "                                    a VM or account problem; --seen marks them seen once the operator is told)",
     "       gray-assistant registry set [--config <config>] [--no-wait] [--timeout <seconds>]   (seal stack.registry's login anew, same designation)",
@@ -954,18 +955,21 @@ async function initPairCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   if (result.placeholders.includes("stack.registry.username")) left.push("set stack.registry.username to its user and stack.registry.expires_at to its expiry (YYYY-MM-DDTHH:MM:SSZ), if it has one");
   if (!result.image) left.push("set stack.relay_images to your image, pinned by digest (<registry>/<repository>@sha256:<64 hex>)");
   left.forEach((line, index) => io.stdout(`${index === 0 ? "next: " : "      "}${line}\n`));
-  // Joining trusts the releases Gray lists now: name each one the first boot may run without waiting.
+  // Gray's release list as the pairing read it. With a contract (the lines above) the contract decides what the VM may
+  // run: what it approves and its release delay were just said, and the list is only what `releases list` shows. The
+  // list's own acceptance (a delay counted on this host, `releases accept`) was the agent process's, which no kit runs
+  // any more: saying it here told every new relay of a rule and a command that do not exist (2026-11-15).
   const pairing = result.releases;
   if (pairing !== null) {
+    // What the config records of the list (`releases.accepted_at_pairing`), by name.
     for (const entry of pairing.accepted) {
       io.stdout(`accepted at pairing: ${entry.kind === "release" ? "release" : "OS image"} ${entry.name}, ${entry.kind === "release" ? "compose hash" : "hash"} ${entry.hash}\n`);
     }
-    if (pairing.accepted.length > 0) io.stdout("      gray-assistant takes these when it first reads Gray's list and tells Gray in its first report; every later release waits releases.delay_days (7)\n");
-    for (const hash of pairing.unverifiedOsImages) {
-      io.stdout(`not accepted: OS image ${hash}: its texts do not prove a production image; if you trust it, gray-assistant releases accept ${hash}\n`);
-    }
     if (pairing.listError !== null) {
-      io.stdout(`could not read Gray's release list (${pairing.listError}): nothing was accepted at pairing, so the current release waits 7 days from the agent's first sight, or accept it with gray-assistant releases accept once gray-assistant releases lists it\n`);
+      io.stdout(`note: Gray's release list did not read (${pairing.listError}); gray-assistant releases list reads it again${phase2 === null ? "" : ". The contract above decides what your VM may run either way"}\n`);
+    }
+    for (const hash of pairing.unverifiedOsImages) {
+      io.stdout(`note: Gray's list names an OS image whose texts do not prove a production image (${hash})${phase2 === null ? "" : `; the one your contract approves is ${phase2.osImageHash}`}\n`);
     }
   }
   const release = result.placeholders.filter((member) => member.startsWith("lane."));
@@ -1033,7 +1037,8 @@ async function accountsImportCommand(args: ParsedArgs, io: CliIo): Promise<numbe
   if (result.removed.length > 0) {
     io.stdout(`gray-assistant accounts import: the file there before also listed ${result.removed.join(", ")}: no longer in the source. An account added with \`login --vendor\` is in that file only: add it to yours and import again to keep it.\n`);
   }
-  io.stdout(`the copy at ${args.positionals[2] as string} is no longer needed: remove it from the kit directory (it holds the accounts' credentials)\n`);
+  // A file in the kit directory is a second copy of the credentials; a piped one (`-`) left none.
+  if ((args.positionals[2] as string) !== "-") io.stdout(`the copy at ${args.positionals[2] as string} is no longer needed: remove it from the kit directory (it holds the accounts' credentials)\n`);
   io.stdout("next: gray-assistant doctor (each account's state), then gray-assistant deliver (the first time) or gray-assistant accounts push\n");
   printJson(io, { command: "accounts import", ok: true, relay_id: result.relayId, path: result.path, accounts: BigInt(result.accounts), replaced: result.replaced });
   return 0;
@@ -1237,11 +1242,15 @@ async function loginVmCommand(args: ParsedArgs, io: CliIo): Promise<number> {
         return () => lines.close();
       },
       onCancel: (onCancel) => {
+        // SIGTERM too: in the kit's container the command is PID 1, which ignores a signal it has no handler for, so a
+        // `docker stop` (or a compose client that went away) left the sign-in open until its session expired.
         process.on("SIGINT", onCancel);
         process.on("SIGHUP", onCancel);
+        process.on("SIGTERM", onCancel);
         return () => {
           process.off("SIGINT", onCancel);
           process.off("SIGHUP", onCancel);
+          process.off("SIGTERM", onCancel);
         };
       },
     },

@@ -1,13 +1,13 @@
 // Add account: the one form where a key is typed. Gray's panel links here with the account's ID, vendor and models
 // (`/accounts/new?id=…&vendor=…&models=…`), so the operator only pastes the key. gray-assistant writes the account to
-// accounts.json on the relay's machine and seals it for Gray's VM at its next read.
+// accounts.json on the relay's machine; nothing of gray-assistant runs all the time, so the operator's next
+// `accounts push` reads the file and seals the key for Gray's VM.
 import { useMemo, useState } from 'react';
-import { Button, Field, Fieldset, FormGrid, Inline, LinkButton, Notice, Page, PageHeader, Panel, Section, SegmentedControl, SelectField, Skeleton, Stack, Step, Steps, Text, TextInput, toast } from '../../ui';
+import { Button, Field, Fieldset, FormGrid, Inline, InlineCode, LinkButton, Notice, Page, PageHeader, Panel, Section, SegmentedControl, SelectField, Skeleton, Stack, Step, Steps, Text, TextInput, toast } from '../../ui';
 import { ApiError, write, type AccountsView, type PastedCredentialType, type RelayInfo, type Vendor } from '../api';
 import { useLocal } from '../data';
 import { href, navigate } from '../router';
-import { CREDENTIAL_CHOICES, credentialLabel, fieldError, keyFits, keyHint, recognizeKey, refusalText, VENDOR_LABEL, VENDORS } from '../words';
-import { AgentNotice } from './parts';
+import { CREDENTIAL_CHOICES, credentialLabel, fieldError, keyFits, keyHint, recognizeKey, refusalText, relayCommand, VENDOR_LABEL, VENDORS } from '../words';
 
 type Form = { id: string; vendor: Vendor; type: PastedCredentialType; key: string; models: string; proxy: string };
 
@@ -32,7 +32,7 @@ export function AddAccountPage({ relay, query }: { relay: RelayInfo; query: URLS
   const taken = useMemo(() => new Set((accounts.data?.accounts ?? []).map(account => account.account_id)), [accounts.data]);
   const seen = recognizeKey(form.key);
   const fits = keyFits(form.vendor, form.type, seen);
-  const pollSeconds = Math.round((accounts.data?.source_poll_ms ?? 30_000) / 1000);
+  const push = relayCommand(accounts.data?.relay ?? relay, 'accounts push');
   const blocked = !!source && (source.kind !== 'file' || !source.writable || source.problem !== null);
   const idTaken = taken.has(form.id.trim());
 
@@ -51,7 +51,7 @@ export function AddAccountPage({ relay, query }: { relay: RelayInfo; query: URLS
         proxy: form.proxy.trim() || null,
       });
       set({ key: '' });
-      toast.success(`Added ${id}.`, { description: `gray-assistant seals its key at its next read, within ${pollSeconds} seconds.` });
+      toast.success(`Added ${id}.`, { description: 'Run accounts push to seal its key for Gray’s VM.' });
       navigate('/accounts', { replace: true });
     } catch (error) {
       const refusal = error instanceof ApiError ? error : null;
@@ -65,11 +65,10 @@ export function AddAccountPage({ relay, query }: { relay: RelayInfo; query: URLS
   return <Page size="narrow">
     <Stack gap={6}>
       <PageHeader back={{ href: '/accounts', label: 'Accounts' }} title="Add account"
-        description="The key stays on the relay’s machine: gray-assistant writes it to accounts.json and seals it for Gray’s VM itself. Gray’s website never sees it." />
+        description="The key stays on the relay’s machine: gray-assistant writes it to accounts.json, and your next accounts push seals it for Gray’s VM. Gray’s website never sees it." />
       {fromPanel && <Notice title={form.id ? 'Opened from Gray’s panel: paste the key' : 'Opened from Gray’s panel'}>{form.id ? null : 'Fill in the account and paste its key.'}</Notice>}
-      <AgentNotice relay={accounts.data?.relay ?? relay} what="The account waits in accounts.json until then." />
       {source && source.kind !== 'file' && <Notice tone="warning" title="Add it in your relay software instead">
-        This relay’s accounts come from its own software{source.url ? ` at ${source.url}` : ''}, not from accounts.json. Add the account there with the same ID{form.id ? ` (${form.id})` : ''}; gray-assistant reads it within {pollSeconds} seconds and seals it.
+        This relay’s accounts come from its own software{source.url ? ` at ${source.url}` : ''}, not from accounts.json. Add the account there with the same ID{form.id ? ` (${form.id})` : ''}, then run <InlineCode>{push}</InlineCode>: gray-assistant reads your software once and seals the account. Nothing reads it in the background.
       </Notice>}
       {source?.kind === 'file' && source.problem && <Notice tone="danger" role="alert" title="accounts.json can’t be read">Fix it first ({source.problem.detail}); this page won’t change a file gray-assistant refuses.</Notice>}
       {source?.kind === 'file' && !source.writable && !source.problem && <Notice tone="warning" title="accounts.json is read-only here">Its folder is mounted read-only for gray-assistant, so this page can’t add the account. Mount the folder writable, or add the entry by hand.</Notice>}
@@ -119,7 +118,7 @@ export function AddAccountPage({ relay, query }: { relay: RelayInfo; query: URLS
       {!blocked && <Section title="What happens next" level={2} size="sm">
         <Steps aria-label="What happens next">
           <Step title="gray-assistant writes it to accounts.json" aside="mode 0600" />
-          <Step title="gray-assistant seals the key for Gray’s VM" aside={`within ${pollSeconds} s`} />
+          <Step title="You run accounts push: it seals the key for Gray’s VM" />
           <Step title="Gray’s panel shows it serving" />
         </Steps>
       </Section>}

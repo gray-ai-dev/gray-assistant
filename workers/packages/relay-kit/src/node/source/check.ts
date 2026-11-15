@@ -19,6 +19,7 @@
  * reason and times.
  */
 import { randomBytes } from "node:crypto";
+import { isValidEgressCredential } from "@gray/relay-connector";
 import { RelayKitError } from "../../errors.ts";
 import { credentialParkReason } from "../../daemon/eligibility.ts";
 import type { SourceHttpConfig } from "./config-types.ts";
@@ -162,6 +163,9 @@ export async function checkHttpSource(config: SourceHttpConfig, deps: HttpAdapte
     if (expiry !== undefined && expiry <= now) problems.push(`expired ${new Date(expiry).toISOString()}: the software must refresh it before it expires`);
     if (expiry === undefined && account.credentialType === "oauth_access_token") warnings.push("no expires_at_ms: the agent cannot tell an expired subscription token before the vendor refuses it");
     if (answer.egressPassword !== undefined && account.egress?.username === undefined) problems.push("egress_password without a listed egress username");
+    // The sealed proxy takes printable ASCII without spaces, at most 255 characters; an account with another password is
+    // left out at the push (`invalid_egress_format`), so it is said here, where the routes are checked.
+    if (answer.egressPassword !== undefined && !isValidEgressCredential(answer.egressPassword)) problems.push("egress_password has a character a proxy password cannot carry here (printable ASCII without spaces, at most 255 characters)");
     if (problems.length > 0) add(id, "fail", problems.join("; "));
     else if (warnings.length > 0) add(id, "warn", warnings.join("; "));
     else {

@@ -153,7 +153,8 @@ ${options.releaseFreshnessPublicKey === undefined ? "" : `    // Gray's freshnes
   },
 
   // A release is accepted automatically after this many days counted from the relay's own first
-  // sight (never from a time Gray publishes). Use "manual" to require releases accept <id>.
+  // sight (never from a time Gray publishes). Not used by a relay with a release contract (\`chain\` below, every
+  // pairing now): the contract's release delay decides (gray-assistant releases delay <hours>).
   "releases": { "accept": "auto-after-delay", "delay_days": 7 },
 
   // ---- scheduler ---------------------------------------------------------------------------
@@ -188,7 +189,7 @@ ${options.releaseFreshnessPublicKey === undefined ? "" : `    // Gray's freshnes
   "replay_cap": 100000,          // signed scheduler nonces remembered per window
   // "affinity_cap": 64,          // conversation bindings kept in memory; default 4 x the pool size
   "state_file": "./state.json",  // atomic-rename state; only the agent writes it
-  "status_file": "./status.json" // status snapshot \`gray-assistant status\` reads; control.json sits beside state_file
+  "status_file": "./status.json" // status snapshot of an agent process (no kit runs one now; doctor reads an old one as stale); control.json sits beside state_file
 }
 `;
 }

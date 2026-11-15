@@ -33,10 +33,27 @@ export interface SkippedAccount {
   readonly credentialType?: string;
 }
 
+/**
+ * What the source says of an account that Gray does not take from the source: its status when it is not `active`
+ * (the account is sealed and adopted all the same), and the `models`, `weight` and `max_concurrency` it names (the
+ * panel account's own). Said by the command, so a relay that paused an account in its software, or weighted it there,
+ * does not learn from the vendor that Gray served it otherwise.
+ */
+export interface NotFollowed {
+  readonly vendor: Vendor;
+  readonly panelId: string | null;
+  /** `paused`, `banned`, …, when the source's status is not `active` (a `limited` one is the VM's own to find). */
+  readonly status: string | null;
+  /** The members the source names with a value other than the standard's default. */
+  readonly members: readonly ("models" | "weight" | "max_concurrency")[];
+}
+
 export interface ReadAccounts {
   /** The bundle's accounts, by panel id, sorted. */
   readonly accounts: readonly Account[];
   readonly skipped: readonly SkippedAccount[];
+  /** What the source says that Gray does not follow, per account; empty when there is nothing to say. */
+  readonly notFollowed?: readonly NotFollowed[];
   /** How many accounts the source listed. */
   readonly listed: number;
   /**
@@ -116,5 +133,12 @@ export async function readAccountsOnce(config: LoadedRelayConfig, deps: ReadAcco
     const proxy = sourceProxyOf(p.account.egress);
     return [{ sourceId: id, vendor: p.vendor, credentialType: p.credentialType, ...(proxy === undefined ? {} : { proxy }) }];
   });
-  return { accounts, skipped, listed: snapshot.accounts.length, sources };
+  const notFollowed = planned.flatMap((p): NotFollowed[] => {
+    const a = p.account;
+    const members = [...(a.models === "*" ? [] : ["models" as const]), ...(a.weight === 1n ? [] : ["weight" as const]), ...(a.maxConcurrency === 1n ? [] : ["max_concurrency" as const])];
+    // The source's `disabled` is the standard's `paused` (the file source writes one, the http source the other).
+    const status = a.status === "active" || a.status === "limited" ? null : a.status === "disabled" ? "paused" : a.status;
+    return status === null && members.length === 0 ? [] : [{ vendor: p.vendor, panelId: panelId(p.vendor, a.sourceId), status, members }];
+  });
+  return { accounts, skipped, listed: snapshot.accounts.length, sources, notFollowed };
 }

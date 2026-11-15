@@ -202,7 +202,7 @@ async function releasePendingText(
     return { accepted: true, text: atPairing.includes(composeHash) ? "accepted at pairing" : "accepted manually" };
   }
   if (config.daemon.releases.accept === "manual") {
-    return { accepted: false, text: "manual acceptance required: run `gray-assistant releases accept <id>`" };
+    return { accepted: false, text: "manual acceptance required (releases.accept is \"manual\"); this relay has no release contract and must pair again" };
   }
   if (first === undefined) {
     return { accepted: false, text: `pending: first seen now, acceptable in ${config.daemon.releases.delayDays}d from first sight (the relay's own clock)` };
@@ -264,6 +264,9 @@ async function checkOrigin(
       ca,
       quoteVerifier,
       expectedInstance,
+      // A relay with a contract: a VM still in the empty slot (deployed, nothing delivered yet) attests as its own
+      // commands take it. Without this the VM a relay is about to deliver to read as two FAIL lines.
+      ...((config.daemon.chain ?? null) !== null ? { allowEmptySlot: true } : {}),
     });
   } catch {
     doctor.add(`origin:${origin}`, "fail", `${origin}: the attestation request failed (network or TLS)`);
@@ -303,7 +306,13 @@ async function checkOrigin(
       : chain.ok
         ? { status: "ok" as const, text: `allowed by the relay's contract (block ${chain.block})` }
         : { status: "fail" as const, text: `the relay's contract does not allow it (${chain.reason}: ${chain.detail})` };
-    doctor.add(`origin:${origin}`, verdict.status, `${origin}: attested, compose ${composeHash.slice(0, 16)}…, release ${verdict.text}`);
+    const boot = result.verification.stackBoot;
+    const waits = boot !== null && boot.ok && boot.facts !== null && boot.facts.phase === "empty_slot";
+    doctor.add(
+      `origin:${origin}`,
+      verdict.status,
+      `${origin}: attested, compose ${composeHash.slice(0, 16)}…, release ${verdict.text}${waits ? "; the VM waits for its first delivery (gray-assistant deliver, or gray-assistant login <account> --vendor <vendor> when the relay's only accounts are subscriptions)" : ""}`,
+    );
     return { origin, ok: true, spkiSha256: result.spkiSha256, composeHash, tlsSpki: result.verification.tlsSpkiSha256 };
   }
   const accepted = await releasePendingText(
@@ -329,16 +338,18 @@ async function checkOrigin(
  * Gray's list). A paired config without one is a warning: its first release waits the delay.
  */
 function checkPairingReleases(doctor: Doctor, config: LoadedRelayConfig, release: VerifiedReleaseList | null, controlView: ControlView): void {
+  // A relay with a contract: the contract decides which releases its VM runs (the `releases_pending` and chain lines).
+  // The pairing's local list and its delay were the agent process's, which no kit runs any more; this line said
+  // "later releases wait 7d" on every run and named a command that does not exist.
+  if ((config.daemon.chain ?? null) !== null) {
+    doctor.add("release_pairing", "skip", "the relay's contract decides which Gray releases its VM runs (gray-assistant releases list shows them and your release delay); the pairing's own list is not used");
+    return;
+  }
   const hashes = config.daemon.releases.acceptedAtPairing;
   const pairing = config.daemon.pairing;
   if (hashes.length === 0) {
     if (pairing === null) return;
-    const delay = config.daemon.releases.delayDays;
-    doctor.add(
-      "release_pairing",
-      "warn",
-      `the pairing at ${pairing.pairedAt} recorded no release of Gray's list (it could not be read then), so the current release waits ${delay}d from the agent's first sight; to run it now, accept its compose hash and its OS image hash with gray-assistant releases accept once gray-assistant status lists them`,
-    );
+    doctor.add("release_pairing", "warn", `the pairing at ${pairing.pairedAt} recorded no release of Gray's list (it could not be read then); this relay has no release contract and must pair again (the pairing line says how)`);
     return;
   }
   const taken = new Set(controlView.control.acceptedAtPairing ?? []);
@@ -362,7 +373,7 @@ function checkPairingReleases(doctor: Doctor, config: LoadedRelayConfig, release
     return `${name} ${state}`;
   });
   const source = pairing === null ? "init --pair" : `the pairing at ${pairing.pairedAt}`;
-  doctor.add("release_pairing", "ok", `${source} accepted the releases Gray listed then: ${parts.join("; ")}; later releases wait ${config.daemon.releases.delayDays}d from the agent's first sight`);
+  doctor.add("release_pairing", "ok", `${source} accepted the releases Gray listed then: ${parts.join("; ")}`);
 }
 
 /**
