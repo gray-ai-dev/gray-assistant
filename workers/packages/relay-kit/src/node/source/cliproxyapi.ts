@@ -2,9 +2,19 @@
  * The CLIProxyAPI source: management API v8, read-only.
  *
  * `GET /v8/management/credentials` lists credentials with non-secret state; the adapter maps
- * provider → vendor, `status`/`disabled`/`next_retry_after` → the lane's status, the modification
- * and refresh timestamps → an opaque `changeMark`, and (when the server exposes it) `proxy_url` →
- * `egress`. Every account serves every model of its vendor (`models: "*"`): the list carries no
+ * provider → vendor, `status`/`disabled`/`next_retry_after` → the lane's status, and the modification
+ * and refresh timestamps → an opaque `changeMark`.
+ *
+ * An account's proxy is not in that list. CLIProxyAPI keeps it in the auth file (`proxy_url`) and reads it the way
+ * `sdk/proxyutil` `Parse` does: a URL is the account's own proxy, `direct` or `none` is no proxy, and an empty or
+ * missing member inherits the global `requests.proxy-url` of the config. So `list()` reads each selected account's
+ * auth file for that one member, and the config once when an account inherits, and declares the result as the
+ * account's `egress`: the account leaves the VM the way it leaves CLIProxyAPI. A proxy that cannot be read is never
+ * taken for "none": the read fails and names the member (`files.<n>.proxy_url`, `config.requests.proxy-url`), and
+ * `credential()` refuses an account whose proxy is no longer the one the list declared. Checked against the published
+ * image (v8.0.72, 2026-11-15; `test/source/fixtures/cliproxyapi-real/`): the list has no proxy member at all.
+ *
+ * Every account serves every model of its vendor (`models: "*"`): the list carries no
  * models, and the only per-credential list, `GET /credentials/models?name=`, is CLIProxyAPI's own
  * model registry for that client (its built-in catalog after `oauth-model-alias` and
  * `excluded-models`), the names its customers call rather than the vendor's names Gray's routes
@@ -26,7 +36,10 @@
  * - `internal/api/handlers/management/auth_files_crud.go` 28-50: the download answer (raw auth JSON).
  * - `internal/auth/claude/token.go` 19-56 and `internal/auth/codex/token.go` 230-262: the auth files.
  * - `sdk/cliproxy/auth/metadata_keys.go` 23-24 and `internal/watcher/synthesizer/file.go` 151-228:
- *   `proxy_url` is an auth-file member; the pinned list does not include it.
+ *   `proxy_url` is an auth-file member; the list does not include it.
+ * - `sdk/proxyutil/proxy.go` `Parse`: inherit, `direct`/`none`, or a `socks5`/`socks5h`/`http`/`https` URL.
+ * - `internal/api/server_management_v8.go`: `GET /config` (the whole config as JSON; `requests.proxy-url` is the
+ *   global proxy, and a member that is not set is left out).
  *
  * Shape changes are closed: `source_shape_changed` names a member path. The daemon keeps the last
  * good snapshot; this adapter never guesses. Unknown members are stripped, so a newer release that
@@ -71,7 +84,6 @@ const listEntrySchema = z.object({
   size: z.number().optional(),
   label: z.string().optional(),
   weight: z.number().optional(),
-  proxy_url: z.string().optional(),
   expired: z.union([z.string(), z.null()]).optional(),
   expires_at: z.union([z.string(), z.number(), z.null()]).optional(),
   expires_at_ms: z.union([z.number(), z.null()]).optional(),
@@ -83,12 +95,75 @@ const listSchema = z.object({
   files: z.array(z.unknown()),
 });
 
-/** One parsed list: metadata plus the label used by `select.tags` (never returned to the daemon). */
+/** One parsed list: metadata plus the label used by `select.tags` (never returned to the daemon). No proxy: see the header. */
 export interface ParsedCliproxyList {
   readonly accounts: readonly SourceAccount[];
   readonly labels: ReadonlyMap<string, string>;
-  /** Proxy passwords by source id, never part of `SourceAccount` (K4-1). */
-  readonly egressPasswords: ReadonlyMap<string, string>;
+  /** Each account's place in the answer's `files`, for a member path (`files.<n>.proxy_url`). */
+  readonly places: ReadonlyMap<string, number>;
+}
+
+/** CLIProxyAPI's reading of one proxy setting (`sdk/proxyutil` `Parse`). */
+export type CliproxyProxySetting =
+  | { readonly mode: "inherit" }
+  | { readonly mode: "direct" }
+  | { readonly mode: "proxy"; readonly proxy: ParsedEgress };
+
+/**
+ * One proxy setting as CLIProxyAPI reads it: missing or empty inherits the global one, `direct` or `none` (any case)
+ * is no proxy, anything else must be a proxy URL the lane can seal. `detail` is a member path; it never holds the value.
+ */
+export function parseCliproxyProxySetting(raw: unknown, detail: string): CliproxyProxySetting {
+  if (raw === undefined || raw === null) return { mode: "inherit" };
+  if (typeof raw !== "string") throw new RelayKitError("source_shape_changed", detail);
+  const text = raw.trim();
+  if (text === "") return { mode: "inherit" };
+  const word = text.toLowerCase();
+  if (word === "direct" || word === "none") return { mode: "direct" };
+  return { mode: "proxy", proxy: parseEgressUrl(text, detail) };
+}
+
+/** An auth file's own proxy setting (its `proxy_url` member). */
+export function parseCliproxyAuthFileProxy(value: unknown, detail = "credential.proxy_url"): CliproxyProxySetting {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new RelayKitError("source_shape_changed", detail);
+  return parseCliproxyProxySetting((value as Record<string, unknown>)["proxy_url"], detail);
+}
+
+const globalProxySchema = z.object({
+  requests: z.object({ "proxy-url": z.unknown().optional() }).optional(),
+});
+
+/** The global proxy of `GET /config`: `requests.proxy-url`, left out of the answer when it is not set. */
+export function parseCliproxyGlobalProxy(value: unknown): CliproxyProxySetting {
+  const parsed = globalProxySchema.safeParse(value);
+  if (!parsed.success) throw new RelayKitError("source_shape_changed", "config.requests");
+  return parseCliproxyProxySetting(parsed.data.requests?.["proxy-url"], "config.requests.proxy-url");
+}
+
+const NO_GLOBAL: CliproxyProxySetting = { mode: "inherit" };
+
+/** The proxy an account leaves through: its own, else the global one; null for none. */
+export function resolveCliproxyProxy(own: CliproxyProxySetting, global: CliproxyProxySetting): ParsedEgress | null {
+  if (own.mode === "proxy") return own.proxy;
+  if (own.mode === "direct") return null;
+  return global.mode === "proxy" ? global.proxy : null;
+}
+
+function sameProxy(left: ParsedEgress | null, right: ParsedEgress | null): boolean {
+  if (left === null || right === null) return left === right;
+  return (
+    left.egress.type === right.egress.type &&
+    left.egress.host === right.egress.host &&
+    left.egress.port === right.egress.port &&
+    left.egress.username === right.egress.username &&
+    left.password === right.password
+  );
+}
+
+/** A listed account with the proxy its auth file (or the global setting) names; the mark moves with the proxy. */
+function withProxy(account: SourceAccount, proxy: ParsedEgress): SourceAccount {
+  const signals = [account.changeMark, proxy.egress.type, proxy.egress.host, String(proxy.egress.port), proxy.egress.username ?? "", proxy.password ?? ""];
+  return { ...account, changeMark: sha256BareHex(jcsBytes(signals)), egress: proxy.egress };
 }
 
 const RFC3339 = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u;
@@ -160,7 +235,7 @@ function statusOf(
   return { status: "limited", limitedUntilMs };
 }
 
-function changeMarkOf(entry: z.infer<typeof listEntrySchema>, detail: string, expiryMs: number | undefined, proxy: ParsedEgress | undefined): string {
+function changeMarkOf(entry: z.infer<typeof listEntrySchema>, detail: string, expiryMs: number | undefined): string {
   // The modification timestamps are opaque signals here: Go writes them as RFC3339, but a future
   // release may change the text and the mark should still track it rather than fail the snapshot.
   const signals = [
@@ -169,9 +244,8 @@ function changeMarkOf(entry: z.infer<typeof listEntrySchema>, detail: string, ex
     entry.last_refresh ?? "",
     entry.size === undefined ? "" : String(entry.size),
     expiryMs === undefined ? "" : String(expiryMs),
-    proxy === undefined
-      ? ""
-      : [proxy.egress.type, proxy.egress.host, String(proxy.egress.port), proxy.egress.username ?? "", proxy.password ?? ""].join("\u0000"),
+    // The place the list's proxy once had (the list has none): kept, so an account without a proxy keeps its mark.
+    "",
   ];
   if (signals[0] === "" && signals[1] === "" && signals[2] === "" && signals[3] === "") {
     // Without a modification or refresh signal the adapter cannot tell whether the secret
@@ -191,7 +265,7 @@ export function parseCliproxyCredentialList(value: unknown, maxAccounts: number,
   if (parsed.data.files.length > maxAccounts) throw new RelayKitError("source_shape_changed", "files");
   const accounts: SourceAccount[] = [];
   const labels = new Map<string, string>();
-  const egressPasswords = new Map<string, string>();
+  const places = new Map<string, number>();
   const seen = new Set<string>();
   for (let index = 0; index < parsed.data.files.length; index += 1) {
     const entry = listEntrySchema.safeParse(parsed.data.files[index]);
@@ -225,17 +299,13 @@ export function parseCliproxyCredentialList(value: unknown, maxAccounts: number,
       // dropping it made the exclusion permanent with no deadline at all.
       limitedUntilMs = parseRfc3339Ms(entry.data.next_retry_after, `${detail}.next_retry_after`);
     }
-    let proxy: ParsedEgress | undefined;
-    if (entry.data.proxy_url !== undefined && entry.data.proxy_url !== "") {
-      proxy = parseEgressUrl(entry.data.proxy_url, `${detail}.proxy_url`);
-      if (proxy.password !== undefined) egressPasswords.set(sourceId, proxy.password);
-    }
     const status = statusOf(entry.data, limitedUntilMs);
     const weight = entry.data.weight === 0 ? 1n : BigInt(entry.data.weight ?? 1);
     const sourceStatus = entry.data.weight === 0 && status.status === "active" ? "disabled" : status.status;
     const label = entry.data.label === undefined ? "" : entry.data.label.trim();
     if (label !== "" && !SOURCE_TAG.test(label)) throw new RelayKitError("source_shape_changed", `${detail}.label`);
     labels.set(sourceId, label);
+    places.set(sourceId, index);
     accounts.push({
       sourceId,
       vendor: provider.vendor,
@@ -248,11 +318,10 @@ export function parseCliproxyCredentialList(value: unknown, maxAccounts: number,
       status: sourceStatus as SourceAccountStatus,
       ...(status.limitedUntilMs === undefined ? {} : { limitedUntilMs: status.limitedUntilMs }),
       ...(expiryMs === undefined ? {} : { credentialExpiresAtMs: expiryMs }),
-      changeMark: changeMarkOf(entry.data, detail, expiryMs, proxy),
-      ...(proxy === undefined ? {} : { egress: proxy.egress }),
+      changeMark: changeMarkOf(entry.data, detail, expiryMs),
     });
   }
-  return { accounts, labels, egressPasswords };
+  return { accounts, labels, places };
 }
 
 const authFileSchema = z.object({
@@ -329,6 +398,12 @@ export function parseCliproxyAuthFile(value: unknown): ParsedAuthFile {
   return { vendor, credential };
 }
 
+/** A file name the download route can take: no separator, no `..` segment. */
+const DOWNLOAD_NAME = /^(?!.*\.\.)[A-Za-z0-9._@+,-]{1,255}\.json$/u;
+
+/** How many auth files `list()` reads at once for their proxy: the source is the relay's own software, beside the agent. */
+const PROXY_READS_AT_ONCE = 8;
+
 export interface CliproxyAdapterDeps {
   readonly fetch: typeof fetch;
   readonly readTokenFile: (path: string) => string;
@@ -351,8 +426,12 @@ function readToken(deps: CliproxyAdapterDeps, path: string): string {
  */
 export function cliproxyAdapter(config: CliproxySourceConfig, deps: CliproxyAdapterDeps): SourceAdapter {
   let detected: { readonly software: string; readonly version: string | null; readonly credentialReadable: boolean } | null = null;
-  // The list declares the proxy whole; the password is held out of the metadata (K4-1).
-  const egressPasswords = new Map<string, string>();
+  // The proxy the last list declared for each account it returned (null: none). The password is held here, out of the
+  // metadata (K4-1), and `credential()` seals an account only while its auth file still names this proxy.
+  const declared = new Map<string, ParsedEgress | null>();
+  // The global proxy as that list read it, when an account of it inherited; a credential read uses it, so reading N
+  // credentials does not read the config N times.
+  let listedGlobal: CliproxyProxySetting | undefined;
   const detect = async (signal: AbortSignal): Promise<{ readonly software: string; readonly version: string | null; readonly credentialReadable: boolean }> => {
     const result = await detectSourceSoftware(config.url, {
       fetch: deps.fetch,
@@ -379,6 +458,30 @@ export function cliproxyAdapter(config: CliproxySourceConfig, deps: CliproxyAdap
       throw error;
     }
   };
+  const management = (...path: string[]): string => joinSourceUrl(config.url, "v8", "management", ...path);
+  /** One auth file, whole. The download route takes a file name, never a path. */
+  const download = (sourceId: string, token: string, signal: AbortSignal): Promise<unknown> =>
+    fetchJson(withQuery(management("credentials", "download"), "name", sourceId), {
+      fetch: deps.fetch,
+      signal,
+      timeoutMs: config.requestTimeoutMs,
+      maxBytes: config.maxCredentialBytes,
+      headers: { authorization: `Bearer ${token}` },
+      label: "credential",
+      notFoundCode: "source_not_found",
+    });
+  /** The global proxy, read from the config only when an account inherits it. */
+  const globalProxy = async (token: string, signal: AbortSignal): Promise<CliproxyProxySetting> =>
+    parseCliproxyGlobalProxy(
+      await fetchJson(management("config"), {
+        fetch: deps.fetch,
+        signal,
+        timeoutMs: config.requestTimeoutMs,
+        maxBytes: config.maxResponseBytes,
+        headers: { authorization: `Bearer ${token}` },
+        label: "config",
+      }),
+    );
   return {
     kind: "cliproxyapi",
     async probe(signal) {
@@ -388,7 +491,7 @@ export function cliproxyAdapter(config: CliproxySourceConfig, deps: CliproxyAdap
       return withDetectionCache(async () => {
         await assertSoftware(signal);
         const token = readToken(deps, config.tokenFile);
-        const value = await fetchJson(joinSourceUrl(config.url, "v8", "management", "credentials"), {
+        const value = await fetchJson(management("credentials"), {
           fetch: deps.fetch,
           signal,
           timeoutMs: config.requestTimeoutMs,
@@ -397,36 +500,69 @@ export function cliproxyAdapter(config: CliproxySourceConfig, deps: CliproxyAdap
           label: "accounts",
         });
         const parsed = parseCliproxyCredentialList(value, config.maxAccounts, deps.now());
-        egressPasswords.clear();
-        for (const [sourceId, password] of parsed.egressPasswords) egressPasswords.set(sourceId, password);
-        const accounts = parsed.accounts.filter((account) =>
+        const selected = parsed.accounts.filter((account) =>
           selectedBy(config.select, { sourceId: account.sourceId, vendor: account.vendor, tags: [parsed.labels.get(account.sourceId) ?? ""] }),
         );
+        // Each selected account's proxy, from its auth file (see the header). An account whose file name the download
+        // route cannot take is listed without one: `credential()` refuses that name before anything is sealed.
+        let global: Promise<CliproxyProxySetting> | undefined;
+        const proxyOf = async (account: SourceAccount): Promise<ParsedEgress | null | "gone" | "unreadable"> => {
+          if (!DOWNLOAD_NAME.test(account.sourceId)) return "unreadable";
+          let file: unknown;
+          try {
+            file = await download(account.sourceId, token, signal);
+          } catch (error) {
+            // Deleted between the list and this read: it is no account any more.
+            if (error instanceof RelayKitError && error.code === "source_not_found") return "gone";
+            throw error;
+          }
+          const own = parseCliproxyAuthFileProxy(file, `files.${parsed.places.get(account.sourceId) ?? 0}.proxy_url`);
+          return resolveCliproxyProxy(own, own.mode === "inherit" ? await (global ??= globalProxy(token, signal)) : NO_GLOBAL);
+        };
+        const proxies: (ParsedEgress | null | "gone" | "unreadable")[] = new Array(selected.length);
+        let next = 0;
+        const worker = async (): Promise<void> => {
+          for (let at = next++; at < selected.length; at = next++) proxies[at] = await proxyOf(selected[at] as SourceAccount);
+        };
+        await Promise.all(Array.from({ length: Math.min(PROXY_READS_AT_ONCE, selected.length) }, worker));
+        declared.clear();
+        listedGlobal = global === undefined ? undefined : await global;
+        const accounts: SourceAccount[] = [];
+        selected.forEach((account, at) => {
+          const proxy = proxies[at] as ParsedEgress | null | "gone" | "unreadable";
+          if (proxy === "gone") return;
+          if (proxy === "unreadable" || proxy === null) {
+            if (proxy === null) declared.set(account.sourceId, null);
+            accounts.push(account);
+            return;
+          }
+          declared.set(account.sourceId, proxy);
+          accounts.push(withProxy(account, proxy));
+        });
         return { accounts, refresh: "proactive" as const };
       });
     },
     async credential(sourceId: string, signal: AbortSignal): Promise<SourceCredential> {
       // The download route takes a file name, never a path. Reject a separator or a `..` segment
       // before the detection request, so the name never reaches a URL.
-      if (!SOURCE_ID.test(sourceId) || !/^(?!.*\.\.)[A-Za-z0-9._@+,-]{1,255}\.json$/u.test(sourceId)) {
+      if (!SOURCE_ID.test(sourceId) || !DOWNLOAD_NAME.test(sourceId)) {
         throw new RelayKitError("source_shape_changed", "credential.name");
       }
       return withDetectionCache(async () => {
         await assertSoftware(signal);
         const token = readToken(deps, config.tokenFile);
-        const url = withQuery(joinSourceUrl(config.url, "v8", "management", "credentials", "download"), "name", sourceId);
-        const value = await fetchJson(url, {
-          fetch: deps.fetch,
-          signal,
-          timeoutMs: config.requestTimeoutMs,
-          maxBytes: config.maxCredentialBytes,
-          headers: { authorization: `Bearer ${token}` },
-          label: "credential",
-          notFoundCode: "source_not_found",
-        });
+        const value = await download(sourceId, token, signal);
         const credential = parseCliproxyAuthFile(value).credential;
-        const password = egressPasswords.get(sourceId);
-        return { credential, ...(password === undefined ? {} : { egressPassword: password }) };
+        // The account is sealed with the proxy the last list declared (every caller lists first), and only while the
+        // file still names it: a proxy set, changed or removed in the file since the list is the next read's, never a
+        // credential sealed for another proxy or for none. An account that inherits is held to the global proxy that
+        // list read (the config is read again only when the list read none).
+        const listed = declared.get(sourceId);
+        if (listed === undefined) throw new RelayKitError("source_shape_changed", "credential.proxy_url");
+        const own = parseCliproxyAuthFileProxy(value);
+        const now = resolveCliproxyProxy(own, own.mode === "inherit" ? (listedGlobal ??= await globalProxy(token, signal)) : NO_GLOBAL);
+        if (!sameProxy(listed, now)) throw new RelayKitError("source_shape_changed", "credential.proxy_url");
+        return { credential, ...(listed?.password === undefined ? {} : { egressPassword: listed.password }) };
       });
     },
   };

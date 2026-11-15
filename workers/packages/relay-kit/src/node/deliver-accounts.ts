@@ -8,7 +8,9 @@
  *   and kept in `account-aliases.json` before it is used, as the agent does, so an id that reached Gray is never given
  *   again;
  * - its secret is read and held to the TEE's own format rule (`credentialParkReason`), its proxy to the connector's
- *   (`egressOf`); a per-account read failure skips that account, a source-wide one fails the read.
+ *   (`egressOf`); a per-account read failure skips that account, a source-wide one fails the read;
+ * - what the source lists goes to Gray with each account's proxy (`sources[].proxy`), so the panel account names the
+ *   proxy the account is sealed with.
  *
  * A skipped account is named by its panel id when it has one, else only by its vendor (a source id may be an e-mail
  * address), with a closed reason. Nothing here prints or logs a secret.
@@ -16,7 +18,7 @@
 import type { Account, Vendor } from "@gray/relay-connector";
 import { RelayKitError } from "../errors.ts";
 import { newAccountAliases, panelIdLookup, type AccountAliasStore } from "../daemon/account-aliases.ts";
-import { egressOf, isPerAccountSourceError } from "../daemon/daemon.ts";
+import { egressOf, isPerAccountSourceError, sourceProxyOf } from "../daemon/daemon.ts";
 import { credentialParkReason, metadataParkReason, planAccount } from "../daemon/eligibility.ts";
 import type { DaemonSourceAccount } from "../daemon/types.ts";
 import type { SourceAdapter, SourceCredential } from "../source/types.ts";
@@ -105,9 +107,14 @@ export async function readAccountsOnce(config: LoadedRelayConfig, deps: ReadAcco
     accounts.push({ account_id: id, vendor: entry.vendor, credential: read.credential, ...(egress === undefined ? {} : { egress }) });
   }
   accounts.sort((left, right) => (left.account_id < right.account_id ? -1 : left.account_id > right.account_id ? 1 : 0));
+  // With each account's proxy as the source declares it (its type, host and port; null for none), as the agent's own
+  // status names it: Gray points the panel account at that proxy from this, and the lane serves an account only when
+  // the panel's proxy is the sealed one (`proxy_mismatch`). Without it an account sealed with a proxy never served.
   const sources = planned.flatMap((p) => {
     const id = panelId(p.vendor, p.account.sourceId);
-    return id === null ? [] : [{ sourceId: id, vendor: p.vendor, credentialType: p.credentialType }];
+    if (id === null) return [];
+    const proxy = sourceProxyOf(p.account.egress);
+    return [{ sourceId: id, vendor: p.vendor, credentialType: p.credentialType, ...(proxy === undefined ? {} : { proxy }) }];
   });
   return { accounts, skipped, listed: snapshot.accounts.length, sources };
 }

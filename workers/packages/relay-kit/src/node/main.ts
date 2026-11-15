@@ -984,8 +984,9 @@ async function initPairCommand(args: ParsedArgs, io: CliIo): Promise<number> {
 
 /**
  * `gray-assistant accounts` (S59): the source's accounts with the id Gray's panel knows each by, on this machine only:
- * the source's own id, or the plain alias the agent gave an id that cannot be one (an e-mail address). The source is
- * read as `doctor` reads it; the aliases from the state directory.
+ * the source's own id, or the plain alias the agent gave an id that cannot be one (an e-mail address), and the proxy
+ * the source names for each (its type, host and port; `none`: the VM's own address), which is what a push would seal.
+ * The source is read as `doctor` reads it; the aliases from the state directory.
  */
 async function accountsCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   assertFlags(args, ["config"]);
@@ -1000,16 +1001,18 @@ async function accountsCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   if (aliases === null) io.stderr(`gray-assistant accounts: ${aliasesPath} does not read; aliased accounts show no panel id\n`);
   const panelId = panelIdLookup(aliases ?? []);
   const snapshot = await createSourceAdapter(config.source).list(AbortSignal.timeout(config.source.requestTimeoutMs));
+  const { proxyText } = await import("./deliver.ts");
   const rows = snapshot.accounts
-    .map((account) => ({ panelId: panelId(account.vendor, account.sourceId), sourceId: account.sourceId, vendor: account.vendor }))
+    .map((account) => ({ panelId: panelId(account.vendor, account.sourceId), sourceId: account.sourceId, vendor: account.vendor, proxy: account.egress === undefined ? null : proxyText(account.egress) }))
     .sort((left, right) => (left.sourceId < right.sourceId ? -1 : left.sourceId > right.sourceId ? 1 : 0));
   const width = Math.max("panel id".length, ...rows.map((row) => (row.panelId ?? "-").length));
+  const proxyWidth = Math.max("proxy".length, ...rows.map((row) => (row.proxy ?? "none").length));
   io.stdout(`gray-assistant accounts: ${rows.length} account(s) in the ${config.source.kind} source\n`);
-  io.stdout(`${"panel id".padEnd(width)}  source id\n`);
+  io.stdout(`${"panel id".padEnd(width)}  ${"proxy".padEnd(proxyWidth)}  source id\n`);
   for (const row of rows) {
-    io.stdout(`${(row.panelId ?? "-").padEnd(width)}  ${row.sourceId}${row.panelId === null ? "  (gets a panel id when the agent next reads the source)" : ""}\n`);
+    io.stdout(`${(row.panelId ?? "-").padEnd(width)}  ${(row.proxy ?? "none").padEnd(proxyWidth)}  ${row.sourceId}${row.panelId === null ? "  (gets a panel id when the agent next reads the source)" : ""}\n`);
   }
-  printJson(io, { command: "accounts", accounts: rows.map((row) => ({ panel_id: row.panelId, source_id: row.sourceId, vendor: row.vendor })) });
+  printJson(io, { command: "accounts", accounts: rows.map((row) => ({ panel_id: row.panelId, source_id: row.sourceId, vendor: row.vendor, proxy: row.proxy })) });
   return 0;
 }
 

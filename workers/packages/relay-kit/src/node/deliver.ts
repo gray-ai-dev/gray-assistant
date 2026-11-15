@@ -402,6 +402,16 @@ async function cliAccounts(config: LoadedRelayConfig, nowMs: number): Promise<Re
   });
 }
 
+/** A proxy as a command names it: its type, host and port, never its user name or password. */
+export function proxyText(egress: { readonly type: string; readonly host: string; readonly port: number | bigint }): string {
+  return `${egress.type}://${egress.host.includes(":") ? `[${egress.host}]` : egress.host}:${String(egress.port)}`;
+}
+
+/** How a sealed account leaves the VM, in words: its proxy, or the VM's own address. */
+export function leavesThrough(egress: { readonly type: string; readonly host: string; readonly port: number | bigint } | undefined): string {
+  return egress === undefined ? "leaves from the VM's own address (the source names no proxy for it)" : `leaves through its proxy ${proxyText(egress)}`;
+}
+
 const defaultPost: StackPost = async (url, body) => {
   const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "user-agent": "gray-assistant" }, body, redirect: "error", signal: AbortSignal.timeout(20_000) });
   return { status: response.status, text: await response.text() };
@@ -764,6 +774,9 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
       accountsReceipt = null;
     }
     io.stdout(`gray-assistant ${name}: the VM keeps ${accounts.accounts.length} account(s), version ${bundle.version}${get(accountsReceipt ?? {}, "staged") === true ? ", for the designated image" : ""}\n`);
+    // How each account leaves the VM, as it was sealed: the one place a relay sees that a proxy set in its source came
+    // along (the proxy's type, host and port; never its user name or password).
+    for (const account of accounts.accounts) io.stdout(`gray-assistant ${name}: ${account.account_id} (${account.vendor}) ${leavesThrough(account.egress)}\n`);
   }
 
   // 5. The restart.
@@ -790,6 +803,8 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
         accounts: accounts === null ? null : BigInt(accounts.accounts.length),
         // The source's accounts this delivery could not seal (each named on stderr): 0 when every one went.
         accounts_left_out: accounts === null ? null : BigInt(accounts.skipped.length),
+        // Of the sealed accounts, how many leave through a proxy of their own (each is a line above).
+        accounts_with_proxy: accounts === null ? null : BigInt(accounts.accounts.filter((account) => account.egress !== undefined).length),
         ...extra,
       })}\n`,
     );
