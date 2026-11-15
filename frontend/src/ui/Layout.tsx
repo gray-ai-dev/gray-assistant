@@ -34,6 +34,8 @@ export function PageHeader({ title, description, actions, back, className, child
 
 type SectionHeaderProps = {
   title: ReactNode;
+  /** A short label beside the title, in the meta size: the scope of what the section shows ("Last 7 days"), never a sentence. */
+  tag?: ReactNode;
   description?: ReactNode;
   actions?: ReactNode;
   icon?: ReactNode;
@@ -46,11 +48,13 @@ type SectionHeaderProps = {
   headingRef?: Ref<HTMLHeadingElement>;
 };
 
-export function SectionHeader({ title, description, actions, icon, level = 2, size = 'md', id, headingRef }: SectionHeaderProps) {
+export function SectionHeader({ title, tag, description, actions, icon, level = 2, size = 'md', id, headingRef }: SectionHeaderProps) {
   const Heading = `h${level}` as const;
+  const heading = <Heading className="ui-section-header__title" id={id} ref={headingRef} tabIndex={headingRef ? -1 : undefined}>{icon}{title}</Heading>;
   return <div className={cx('ui-section-header', size === 'sm' && 'ui-section-header--sm')}>
     <div className="ui-section-header__text">
-      <Heading className="ui-section-header__title" id={id} ref={headingRef} tabIndex={headingRef ? -1 : undefined}>{icon}{title}</Heading>
+      {/* The tag sits outside the heading, so the heading's name (and a section's, which it labels) stays the title. */}
+      {tag != null ? <div className="ui-section-header__title-row">{heading}<span className="ui-section-header__tag">{tag}</span></div> : heading}
       {description && <p className="ui-section-header__description">{description}</p>}
     </div>
     {actions && <div className="ui-section-header__actions">{actions}</div>}
@@ -58,18 +62,18 @@ export function SectionHeader({ title, description, actions, icon, level = 2, si
 }
 
 /** A titled group of content. Sections stack with `Stack gap={8}`. */
-export function Section({ title, description, actions, icon, level, size, headingId, headingRef, className, children, ...rest }: Omit<Box, 'as'> & Partial<Omit<SectionHeaderProps, 'id'>> & { headingId?: string }) {
+export function Section({ title, tag, description, actions, icon, level, size, headingId, headingRef, className, children, ...rest }: Omit<Box, 'as'> & Partial<Omit<SectionHeaderProps, 'id'>> & { headingId?: string }) {
   return <section className={cx('ui-section', className)} {...rest}>
-    {title != null && <SectionHeader title={title} description={description} actions={actions} icon={icon} level={level} size={size} id={headingId} headingRef={headingRef} />}
+    {title != null && <SectionHeader title={title} tag={tag} description={description} actions={actions} icon={icon} level={level} size={size} id={headingId} headingRef={headingRef} />}
     {children}
   </section>;
 }
 
 /** A bordered surface. With a title it gets a header bar; `flush` removes body
  *  padding for tables and code that bring their own. With nothing to show under its header it has no body. */
-export function Panel({ title, description, actions, icon, level = 2, headingRef, flush, tone, as: Tag = 'section', className, children, ...rest }: Box & Partial<Omit<SectionHeaderProps, 'size' | 'id'>> & { flush?: boolean; tone?: 'default' | 'muted' }) {
+export function Panel({ title, tag, description, actions, icon, level = 2, headingRef, flush, tone, as: Tag = 'section', className, children, ...rest }: Box & Partial<Omit<SectionHeaderProps, 'size' | 'id'>> & { flush?: boolean; tone?: 'default' | 'muted' }) {
   return <Tag className={cx('ui-panel', tone === 'muted' && 'ui-panel--muted', className)} {...rest}>
-    {title != null && <SectionHeader title={title} description={description} actions={actions} icon={icon} level={level} size="sm" headingRef={headingRef} />}
+    {title != null && <SectionHeader title={title} tag={tag} description={description} actions={actions} icon={icon} level={level} size="sm" headingRef={headingRef} />}
     {(title == null || Children.toArray(children).length > 0) && <div className={cx('ui-panel__body', flush && 'ui-panel__body--flush')}>{children}</div>}
   </Tag>;
 }

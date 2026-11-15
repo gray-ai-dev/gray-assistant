@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef, type ReactNode } from 'react';
+import { useCallback, useLayoutEffect, useRef, type MouseEvent, type ReactNode } from 'react';
 import { ToggleGroup } from '@cloudflare/kumo/primitives/toggle-group';
 import { Toggle } from '@cloudflare/kumo/primitives/toggle';
 import { ScrollArea } from '@cloudflare/kumo/primitives/scroll-area';
@@ -45,7 +45,8 @@ export function SegmentedControl<T extends string>({ options, value, onValueChan
 export type TabItem<T extends string> = { value: T; label: ReactNode; count?: ReactNode; href?: string; disabled?: boolean };
 
 /** Underlined tabs across the top of a page or panel. Items with an `href` are page navigation: links in a `nav`,
- *  the current one marked `aria-current="page"`. Items without one switch a view in place: a Base UI toggle group,
+ *  the current one marked `aria-current="page"`; `onValueChange` runs on a plain click of one (`opensHere`), not on
+ *  one that opens the link in another tab or window. Items without one switch a view in place: a Base UI toggle group,
  *  like `SegmentedControl` with the tab look. When the strip is wider than its space (many tabs on a phone) it is a
  *  Base UI ScrollArea viewport, as Base UI's Tabs docs combine them: it scrolls sideways, an edge with more tabs past
  *  it fades out (the viewport's overflow variables drive a mask), and the current tab is kept whole in view clear of
@@ -89,10 +90,16 @@ export function Tabs<T extends string>({ items, value, onValueChange, className,
     {items.some(item => item.href)
       ? <ScrollArea.Viewport ref={holdStrip} className="ui-tabs" render={<nav />} role="navigation" {...aria}>
         {items.map(item => <a key={item.value} className="ui-tabs__item" href={item.href} aria-current={item.value === value ? 'page' : undefined}
-          onClick={() => onValueChange?.(item.value)}>{content(item)}</a>)}
+          onClick={event => { if (opensHere(event)) onValueChange?.(item.value); }}>{content(item)}</a>)}
       </ScrollArea.Viewport>
       : <ToggleGroup ref={holdStrip} className="ui-tabs" render={<ScrollArea.Viewport />} value={[value]} onValueChange={next => pick(value, next, onValueChange)} {...aria}>
         {items.map(item => <Toggle key={item.value} value={item.value} className="ui-tabs__item" disabled={item.disabled}>{content(item)}</Toggle>)}
       </ToggleGroup>}
   </ScrollArea.Root>;
 }
+
+/**
+ * Whether a click on a link opens it in this page: the main button with no modifier key. Ctrl, Meta and Shift open it
+ * in another tab or window, Alt saves it, as the app's own link handling counts them (main.tsx).
+ */
+export const opensHere = (event: MouseEvent) => event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;

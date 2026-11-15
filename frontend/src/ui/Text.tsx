@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState, type AnchorHTMLAttributes, type ElementType, type HTMLAttributes, type ReactNode } from 'react';
 import { cx } from './cx';
 import { Tooltip } from './Tooltip';
+import { usePhone } from './phone';
 
 export type TextProps = HTMLAttributes<HTMLElement> & {
   as?: ElementType;
@@ -28,6 +29,37 @@ export function Text({ as: Tag = 'p', size = 'body', tone = 'default', weight = 
   // Mono text is an identifier (a model ID, a key, an address): the browser's page translation leaves it as written.
   const keep = mono && rest.translate === undefined ? { translate: 'no' as const } : null;
   return truncate ? <TruncatedText as={Tag} className={classes} title={title} {...keep} {...rest} /> : <Tooltip content={title}><Tag className={classes} {...keep} {...rest} /></Tooltip>;
+}
+/**
+ * A measured figure in a table cell, or a dash that says why there is none: `missing` is the dash's tooltip and what
+ * assistive technology reads in its place. `tone="muted"` for a figure the row only compares against. With `explain`
+ * the reason is also written under the dash below 600px, where a tooltip does not open (a touch screen) and a
+ * `StackedTable` card has the room.
+ *
+ * `standIn` marks a figure that stands in for the one its column defines (a Gray benchmark where customer traffic was
+ * too thin): muted, with no mark (product owner, 2026-11-13: the dagger was "莫名其妙，太 low 了"), `standIn` saying what
+ * it is in its tooltip and to assistive technology, and with `explain` under it on a phone. Inside an element whose own
+ * tooltip says it (a directory row's metric), `standInTooltip={false}` leaves the tooltip to that element. `explain`
+ * as text writes that shorter line under the figure or the dash on a phone, in place of the whole reason.
+ */
+export function Measured({ value, format, missing, tone, explain, standIn, standInTooltip = true }: {
+  value: number | null | undefined; format: (value: number) => string; missing: string; tone?: 'muted'; explain?: boolean | string;
+  standIn?: string; standInTooltip?: boolean;
+}) {
+  if (value != null && standIn) {
+    const figure = <span className="ui-measured">
+      <Text as="span" numeric tone="muted">{format(value)}</Text>
+      <VisuallyHidden>{` (${standIn})`}</VisuallyHidden>
+    </span>;
+    return <>{standInTooltip ? <Tooltip content={standIn}>{figure}</Tooltip> : figure}{explain && <MissingReason>{typeof explain === 'string' ? explain : standIn}</MissingReason>}</>;
+  }
+  if (value != null) return <Text as="span" numeric tone={tone}>{format(value)}</Text>;
+  return <><Text as="span" tone="muted" title={missing} aria-label={missing}>—</Text>{explain && <MissingReason>{typeof explain === 'string' ? explain : missing}</MissingReason>}</>;
+}
+/** The reason under a dash, on a phone only (`usePhone`). The dash already says it to assistive technology. */
+function MissingReason({ children }: { children: string }) {
+  const phone = usePhone();
+  return phone ? <Text as="div" size="meta" tone="muted" aria-hidden="true">{children}</Text> : null;
 }
 /** Whether the element `ref` points at is cut off by its ellipsis now; measured again when it resizes or `content`
  *  changes. For a tooltip that should appear only while a name does not fit. */

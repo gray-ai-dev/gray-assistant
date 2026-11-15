@@ -93,6 +93,9 @@ const RESTART_WORDS = {
 /** How long a restart is waited for by default: a second VM's boot (~4 minutes measured) and an image pull, with room. */
 export const DELIVER_WAIT_DEFAULT_MS = 15 * 60_000;
 const DELIVER_WAIT_POLL_MS = 10_000;
+/** What `missing_credential` asks for, beside the account it names: a secret, or the type that has none. */
+const MISSING_CREDENTIAL_HINT =
+  'the source gave no secret for it: give it one there, or list a subscription you sign in inside the VM with "credential": {"type": "sign_in"}';
 /** The largest answer the VM gives (a receipt, a refusal). */
 const ANSWER_MAX_BYTES = 64 * 1024;
 
@@ -591,7 +594,10 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
     case "rollout":
       if (options.image === null || options.image === undefined) throw new RelayKitError("usage", "stack rollout needs the image: one of stack.relay_images");
       target = options.image;
-      sendAccounts = false;
+      // To a VM that waits for its first delivery, a rollout is that delivery with the image named: the accounts go
+      // with it, as `deliver`'s. Without them the VM kept no vault for the image, Gray's rollout waited for one that
+      // never came and failed `vault_not_uploaded` (roteo, 2026-11-14: `deliver` had refused, `stack rollout` went on).
+      sendAccounts = boot.running === null;
       break;
     case "rollback": {
       // The designation the VM attests, never this machine's record: a designation signed here may never have run.
@@ -677,7 +683,13 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
       }
     }
     for (const skipped of accounts.skipped) {
-      io.stderr(`gray-assistant ${name}: left out a ${skipped.vendor} account${skipped.panelId === null ? "" : ` (${skipped.panelId})`}: ${skipped.reason}${skipped.reason === "invalid_credential_format" ? ` (${credentialFormatHint(skipped.vendor, skipped.credentialType ?? "")})` : ""}\n`);
+      const hint =
+        skipped.reason === "invalid_credential_format"
+          ? ` (${credentialFormatHint(skipped.vendor, skipped.credentialType ?? "")})`
+          : skipped.reason === "missing_credential"
+            ? ` (${MISSING_CREDENTIAL_HINT})`
+            : "";
+      io.stderr(`gray-assistant ${name}: left out a ${skipped.vendor} account${skipped.panelId === null ? "" : ` (${skipped.panelId})`}: ${skipped.reason}${hint}\n`);
     }
     if (accounts.accounts.length === 0 && accounts.listed > 0) {
       // Nothing is sent. A first delivery would start the relay's image with no account, which serves nothing while the
@@ -685,7 +697,7 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
       // workspace); a push to a VM that serves would replace the accounts it has with none.
       return refuse(
         "no_account_sealed",
-        `none of the source's ${accounts.listed} account(s) can be sealed (each is named above), so nothing was sent${boot.running === null ? "" : " and the VM keeps the accounts it has"}: put the source right (\`gray-assistant doctor\`, \`gray-assistant login status\`), then run the command again`,
+        `none of the source's ${accounts.listed} account(s) can be sealed (each is named above), so nothing was sent${boot.running === null ? "" : " and the VM keeps the accounts it has"}: put each right in the source as its line above says (\`gray-assistant doctor\` checks the source), then run the command again`,
         { accounts_listed: BigInt(accounts.listed), left_out: accounts.skipped.map((skipped) => ({ vendor: skipped.vendor, account: skipped.panelId, reason: skipped.reason })) },
       );
     }

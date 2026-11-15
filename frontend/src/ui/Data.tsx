@@ -1,4 +1,4 @@
-import { Children, Fragment, isValidElement, type CSSProperties, type HTMLAttributes, type MouseEvent, type ReactNode, type TdHTMLAttributes, type ThHTMLAttributes } from 'react';
+import { Children, Fragment, isValidElement, useRef, type CSSProperties, type HTMLAttributes, type MouseEvent, type ReactNode, type TdHTMLAttributes, type ThHTMLAttributes } from 'react';
 import { Collapsible } from '@cloudflare/kumo/primitives/collapsible';
 import { Progress as BaseProgress } from '@cloudflare/kumo/primitives/progress';
 import { ArrowDown, ArrowUp, CaretDown, Check, X } from '../components/icons';
@@ -8,6 +8,7 @@ import { cx } from './cx';
 import { Skeleton } from './Feedback';
 import { InfoTip } from './InfoTip';
 import { Tooltip } from './Tooltip';
+import { useCellDefinition, useColumnDefinition } from './StackedColumns';
 
 /** Label/value pairs, e.g. request details. `compact` puts values at the right. */
 export function DescriptionList({ items, compact, className, children }: {
@@ -33,13 +34,23 @@ export type StatDelta = { change: number | null; better: 'up' | 'down' | 'neithe
   /** `points` when `change` is a difference of two rates in percentage points (0.004 for +0.4 pt). */
   unit?: 'relative' | 'points' };
 
+/** The words of a label: its text, an `InfoTip`'s term rather than its definition. */
+function wordsOf(node: ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node);
+  if (Array.isArray(node)) return node.map(wordsOf).join('');
+  if (isValidElement<{ term?: ReactNode; children?: ReactNode }>(node)) return wordsOf(node.props.term ?? node.props.children);
+  return '';
+}
+
 /** A headline number with its label, e.g. a balance. `delta` adds its change against the previous period, `trend` a
  *  sparkline of the same measure over the period. `loading` holds the value's place with a skeleton of its height while
- *  its own read is under way and the cards beside it already show theirs. */
+ *  its own read is under way and the cards beside it already show theirs. A label that needs a definition is an
+ *  `InfoTip`; the skeleton names the label's words. */
 export function Stat({ label, value, hint, size = 'md', delta, trend, loading, className }: { label: ReactNode; value: ReactNode; hint?: ReactNode; size?: 'md' | 'sm'; delta?: StatDelta; trend?: readonly number[]; loading?: boolean; className?: string }) {
+  const words = wordsOf(label);
   return <div className={cx('ui-stat', size === 'sm' && 'ui-stat--sm', className)}>
     <span className="ui-stat__label">{label}</span>
-    {loading ? <Skeleton lines={1} label={typeof label === 'string' ? `Loading ${label.toLowerCase()}` : 'Loading'} className="ui-stat__skeleton" /> : <strong className="ui-stat__value">{value}</strong>}
+    {loading ? <Skeleton lines={1} label={words ? `Loading ${words.toLowerCase()}` : 'Loading'} className="ui-stat__skeleton" /> : <strong className="ui-stat__value">{value}</strong>}
     {delta && !loading && <StatChange delta={delta} />}
     {hint && <p className="ui-stat__hint">{hint}</p>}
     {trend && trend.length > 1 && <Sparkline className="ui-stat__trend" values={trend} />}
@@ -124,13 +135,31 @@ type CellLook = {
 };
 const cellClass = ({ kind = 'text', nowrap, top, wide, wrap }: CellLook, className?: string) => cx(kind !== 'text' && `ui-cell--${kind}`, nowrap && 'ui-cell--nowrap', top && 'ui-cell--top', wide && 'ui-cell--wide', wrap && 'ui-cell--wrap', className) || undefined;
 
-/** `title` on a header cell defines the column (an `InfoTip`: the header text opens it on hover, tap or Enter). On a
- *  body cell it is a tooltip, e.g. the full timestamp behind a short one. */
-export function TableHeaderCell({ kind, nowrap, top, wide, wrap, className, scope = 'col', title, children, ...rest }: CellLook & ThHTMLAttributes<HTMLTableCellElement>) {
-  return <th scope={scope} className={cellClass({ kind, nowrap, top, wide, wrap }, className)} {...rest}>{title ? <InfoTip term={children}>{title}</InfoTip> : children}</th>;
+/**
+ * A column header that defines its column (`definition`), for TableHeaderCell and SortableHeaderCell, which show the
+ * definition their own way: in a `StackedTable` it is also what each card's label of the column opens on a phone.
+ */
+export function HeaderCell({ kind, nowrap, top, wide, wrap, className, scope = 'col', definition, ...rest }: CellLook & Omit<ThHTMLAttributes<HTMLTableCellElement>, 'title'> & { definition?: string }) {
+  const ref = useRef<HTMLTableCellElement>(null);
+  useColumnDefinition(ref, definition);
+  return <th ref={ref} scope={scope} className={cellClass({ kind, nowrap, top, wide, wrap }, className)} {...rest} />;
 }
-export function TableCell({ kind, nowrap, top, wide, wrap, className, title, ...rest }: CellLook & TdHTMLAttributes<HTMLTableCellElement>) {
-  return <Tooltip content={title}><td className={cellClass({ kind, nowrap, top, wide, wrap }, className)} {...rest} /></Tooltip>;
+/** `title` on a header cell defines the column (an `InfoTip`: the header text opens it on hover, tap or Enter; in a
+ *  `StackedTable` on a phone, so does each card's label of the column). On a body cell it is a tooltip, e.g. the full
+ *  timestamp behind a short one. */
+export function TableHeaderCell({ title, children, ...rest }: CellLook & ThHTMLAttributes<HTMLTableCellElement>) {
+  return <HeaderCell definition={title} {...rest}>{title ? <InfoTip term={children}>{title}</InfoTip> : children}</HeaderCell>;
+}
+/** A body cell. In a `StackedTable` on a phone, a cell with content whose column's header has a definition takes its
+ *  `data-label` as an `InfoTip` that opens it, in place of the plain label. */
+export function TableCell({ kind, nowrap, top, wide, wrap, className, title, children, ...rest }: CellLook & TdHTMLAttributes<HTMLTableCellElement> & { 'data-label'?: string }) {
+  const ref = useRef<HTMLTableCellElement>(null);
+  const definition = useCellDefinition(ref), label = rest['data-label'];
+  const defined = !!definition && !!label && children != null && children !== false && children !== '';
+  return <Tooltip content={title}><td ref={ref} className={cellClass({ kind, nowrap, top, wide, wrap }, cx(defined && 'ui-cell--defined', className))} {...rest}>
+    {defined && <span className="ui-cell__label"><InfoTip term={label}>{definition}</InfoTip></span>}
+    {children}
+  </td></Tooltip>;
 }
 
 /** Show-more content behind a summary line. Base UI Collapsible (through Kumo) owns the button, its expanded state

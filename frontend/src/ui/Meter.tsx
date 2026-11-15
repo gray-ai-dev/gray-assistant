@@ -13,9 +13,9 @@ export function Meter({ value, max, label, valueText, tone, size = 'sm', classNa
   max: number;
   label: string;
   valueText?: string;
-  /** `danger` for a measure of something that failed; `strong` an ink bar for a measure the row is about, e.g. a ranking weight. */
+  /** `danger` for a measure of something that failed; `strong` an ink bar for a measure the row is about, e.g. a day's checks against their cap. */
   tone?: 'danger' | 'strong';
-  /** `sm` a 4px hairline beside a figure; `md` an 8px bar that stands for the figure (a `WeightBar`). */
+  /** `sm` a 4px hairline beside a figure; `md` an 8px bar that stands for the figure. */
   size?: 'sm' | 'md';
   className?: string;
 }) {

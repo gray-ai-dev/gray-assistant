@@ -55,9 +55,15 @@ export function metadataParkReason(account: SourceAccount): ParkReason | null {
 /**
  * Validate one secret with the TEE's own format rule. Returns the park reason, or null when the
  * account may be sealed. The credential value is never put in a message, a reason or a log event.
+ *
+ * A `sign_in` credential is its type alone (docs/design/relay-sign-in-in-vm.md §1: a subscription account with no secret,
+ * sealed as it is and signed in inside the VM with `gray-assistant login`): its empty value is its form, which the
+ * format rule holds it to, never a missing secret. Read as one, no kit could seal such an account, and `deliver` and
+ * `accounts push` refused a relay whose accounts were all subscriptions (`no_account_sealed`; roteo, 2026-11-14).
  */
 export function credentialParkReason(vendor: Vendor, credential: Credential): ParkReason | null {
-  if (typeof credential.value !== "string" || credential.value.length === 0) return "missing_credential";
+  if (typeof credential.value !== "string") return "missing_credential";
+  if (credential.value.length === 0 && credential.type !== "sign_in") return "missing_credential";
   try {
     assertCredentialFormat(vendor, credential);
     return null;

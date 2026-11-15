@@ -22,6 +22,9 @@
 .ui-section-header__title { display: flex; align-items: center; gap: var(--space-2); margin: 0; font-size: var(--text-section); font-weight: var(--weight-heading); line-height: var(--leading-snug); letter-spacing: normal; }
 .ui-section-header__title > svg { flex-shrink: 0; color: var(--muted); }
 .ui-section-header--sm .ui-section-header__title { font-size: var(--text-subsection); letter-spacing: normal; }
+/* A short scope beside the title ("Last 7 days"), on the title's baseline; it wraps under the title when there is no room. */
+.ui-section-header__title-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px var(--space-2); min-width: 0; }
+.ui-section-header__tag { color: var(--muted); font-size: var(--text-meta); line-height: var(--leading-ui); }
 .ui-section-header__description { margin: 0; max-width: 75ch; color: var(--muted); font-size: var(--text-support); line-height: var(--leading-body); }
 .ui-section-header__actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--space-2); flex-shrink: 0; max-width: 100%; }
 
@@ -75,6 +78,9 @@
 .ui-text--measure { max-width: 75ch; }
 .ui-text--pre-wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
 .ui-text--truncate { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A figure standing in for the one its column defines (Measured standIn): muted, a small dagger after it that hangs
+   past it, into the cell's padding, so the column's digits stay aligned. */
+.ui-measured { display: inline-block; white-space: nowrap; }
 .ui-link { width: fit-content; color: var(--accent); line-height: var(--leading-ui); text-decoration: underline; text-decoration-color: var(--strong-border); text-underline-offset: 3px; }
 @media (hover: hover) and (pointer: fine) { .ui-link:hover { text-decoration-color: currentColor; } }
 .ui-link--muted { color: var(--muted); }
@@ -441,8 +447,8 @@
 /* ---------- Icons (Lucide) ---------- */
 :is(.ui-button, .ui-segmented__item, .ui-tabs__item, .ui-page-header__back, .ui-input-group, .ui-disclosure__summary, .ui-notice__icon, .ui-code__title-text) > svg,
 .select-trigger > svg { width: 16px; height: 16px; }
-/* Icons in tables and badges are 14px; a status glyph (StatusStrip.tsx) keeps its own size beside the words it stands for. */
-:is(.ui-table, .ui-badge, .ui-sort-button) svg:not(.ui-glyph) { width: 14px; height: 14px; }
+/* Icons in tables and badges are 14px. */
+:is(.ui-table, .ui-badge, .ui-sort-button) svg { width: 14px; height: 14px; }
 .ui-empty__icon > svg { width: 32px; height: 32px; }
 
 /* ---------- Responsive ---------- */

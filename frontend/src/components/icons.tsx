@@ -17,6 +17,7 @@ import CalendarBlankGlyph from 'lucide-react/dist/esm/icons/calendar.mjs';
 import CaretUpGlyph from 'lucide-react/dist/esm/icons/chevron-up.mjs';
 import CheckGlyph from 'lucide-react/dist/esm/icons/check.mjs';
 import CheckCircleGlyph from 'lucide-react/dist/esm/icons/circle-check.mjs';
+import ClockCounterClockwiseGlyph from 'lucide-react/dist/esm/icons/history.mjs';
 import CodeGlyph from 'lucide-react/dist/esm/icons/code.mjs';
 import CopyGlyph from 'lucide-react/dist/esm/icons/copy.mjs';
 import DotsThreeGlyph from 'lucide-react/dist/esm/icons/ellipsis.mjs';
@@ -64,6 +65,9 @@ export const CalendarBlank = icon(CalendarBlankGlyph, 'CalendarBlank');
 export const CaretUp = icon(CaretUpGlyph, 'CaretUp');
 export const Check = icon(CheckGlyph, 'Check');
 export const CheckCircle = icon(CheckCircleGlyph, 'CheckCircle');
+// Pure, so a bundle that never draws it leaves it and its glyph out: the relay's committed page (src/relay-ui) is
+// built from these icons too, and stays the build it is.
+export const ClockCounterClockwise = /* @__PURE__ */ icon(ClockCounterClockwiseGlyph, 'ClockCounterClockwise');
 export const Code = icon(CodeGlyph, 'Code');
 export const Copy = icon(CopyGlyph, 'Copy');
 export const DotsThree = icon(DotsThreeGlyph, 'DotsThree');

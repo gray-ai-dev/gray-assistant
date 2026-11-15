@@ -857,10 +857,17 @@ export const STEP_FAILURE_WORDS: Readonly<Record<string, FailureWords>> = {
   busy: { title: "Another Deploy, Restart or Delete is still running.", fix: "Wait for it to finish; the timeline shows its progress.", side: "relay" },
   // A Deploy asked again too soon after one that failed (`deployRetryLaterWords` names the seconds).
   [DEPLOY_RETRY_LATER]: DEPLOY_RETRY_LATER_WORDS,
-  // P7 (docs/design/relay-no-always-on-host.md 13.4): a phase-2 rollout or release move that stops before a second VM.
+  // P7 (docs/design/relay-no-always-on-host.md 13.4): a phase-2 rollout that stops before a second VM because Gray's copy
+  // of the accounts' vault for the designated image did not arrive. Two ways here, each with its own next step: a VM
+  // still waiting for its first delivery that was sent an image without accounts (`stack rollout` of a kit before
+  // 1.6.6; roteo, 2026-11-14, was told to run "the stack command" again, which could never work), and a serving VM whose
+  // copy was late.
   vault_not_uploaded: {
-    title: "Your VM had not stored its vault for the new image at Gray, so no second VM was started.",
-    fix: "Your VM keeps serving. Run the gray-assistant stack command again; it re-sends the designation and Gray tries again.",
+    title: "Gray did not receive your accounts' vault for the image you designated, so no new VM was started.",
+    fix:
+      `Nothing changed on your side. If your VM is still waiting for its first delivery, run ${kitRun("deliver")} (not stack rollout): ` +
+      "it sends your accounts with the image. If your VM already runs an image, it keeps serving: run the same command again. If it fails " +
+      `again, run ${kitRun("doctor")} and send Gray what it prints.`,
     side: "relay",
   },
   release_vetoed: { title: "Your relay's contract vetoed (or removed) the Gray release this move needed.", fix: "Your VM keeps its release and serves. Gray proposes the next release.", side: "relay" },

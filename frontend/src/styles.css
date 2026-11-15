@@ -79,12 +79,11 @@
   --chart-2: #8a8a8a;
   --chart-3: #c9c9c9;
   --chart-grid: #ebebeb;
-  /* Status fills for graphics (the model check strip, its glyphs and marks): the three status hues lightened so a run
-     of cells reads as a band, each at least 3:1 against the surface, and a neutral cell for nothing checked. */
+  /* Status fills for graphics (the status strips' bars): the three status hues lightened so a run of bars reads as a
+     band, each at least 3:1 against the surface. A period nothing checked is a hairline in --strong-border. */
   --status-ok: #3d9b67;
   --status-warn: #bf8a25;
   --status-bad: #d24a4a;
-  --status-none: #e3e3e3;
   --radius: 6px;
   --radius-card: 8px;
   /* Every control on one row shares a height: 40px default, 32px compact
@@ -132,7 +131,6 @@
   --status-ok: #4cb57a;
   --status-warn: #d9a744;
   --status-bad: #e56565;
-  --status-none: #2f2f2f;
   color-scheme: dark;
 }
 @media (max-width: 600px) {
