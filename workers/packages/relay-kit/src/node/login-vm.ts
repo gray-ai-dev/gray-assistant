@@ -95,7 +95,19 @@ export interface LoginVmOptions {
   readonly stackIssue?: (nonce: string) => Promise<StackIssueRecord | null>;
   readonly listen?: Listen;
   readonly pollMs?: number;
+  /** How long the start waits for an account the VM does not serve yet (`ACCOUNT_WAIT_MS` unless given). */
+  readonly accountWaitMs?: number;
 }
+
+/**
+ * How long `login` waits for an account the VM does not serve yet, and how often it asks. A newly sealed account
+ * reaches the VM's egress a moment after the push: Gray's panel adopts it, the lane reads the panel, and egress gets
+ * its account table (the VM's own refusal says "try again in a minute"). `login --vendor` signs in right after its
+ * seal, and a person runs `login` right after `accounts push`; both met `login_account_unknown` and were told to seal
+ * again (2026-11-15).
+ */
+export const ACCOUNT_WAIT_MS = 120_000;
+const ACCOUNT_WAIT_POLL_MS = 5_000;
 
 /** A usage error unless `id` is an account id the VM can name. */
 export function checkLoginAccountId(id: string): void {
@@ -134,7 +146,10 @@ export function endedMessage(code: RelayLoginCode | null): string {
 function routeRefusal(status: number, code: string | null, accountId: string): string {
   switch (code) {
     case "login_account_unknown":
-      return `The VM holds no account ${accountId}. Seal it first (gray-assistant accounts push), then run this again.`;
+      return (
+        `The VM does not serve an account ${accountId}. If it is not sealed yet, seal it first (gray-assistant accounts push, or gray-assistant login ${accountId} --vendor <vendor>). ` +
+        "If the push listed it, Gray has not adopted it: its vendor has no model in relay-stack.json's `models` yet. Add a model of that vendor, apply relay-stack.json, and run this again."
+      );
     case "login_not_subscription":
       return `${accountId} is not a subscription account: it has nothing to sign in.`;
     case "login_held":
@@ -267,12 +282,23 @@ export async function loginVm(options: LoginVmOptions): Promise<number> {
     }
   };
 
-  const signed = await loginStartValue({ relayId, accountId, signingKey: options.seed, issuedAt: Math.floor(io.now() / 1000), nonce: io.random(16) });
-  const started = await call(RELAY_LOGIN_PATH, { method: "POST", body: signed });
-  if ("transport" in started) return fail(`transport_${started.transport}`, `The request did not reach the VM through Gray's entry (${started.transport}); \`gray-assistant doctor\` checks the path.`);
-  if (started.status !== 200) {
-    const code = errorCodeOf(started.body);
-    return fail(code ?? `http_${started.status}`, routeRefusal(started.status, code, accountId));
+  // The start, asked again while the VM does not serve the account yet (see ACCOUNT_WAIT_MS): each ask is signed anew.
+  const accountWaitMs = options.accountWaitMs ?? ACCOUNT_WAIT_MS;
+  const askedFrom = io.now();
+  let started: DaemonHttpResponse;
+  for (let waiting = false; ; ) {
+    const signed = await loginStartValue({ relayId, accountId, signingKey: options.seed, issuedAt: Math.floor(io.now() / 1000), nonce: io.random(16) });
+    const answer = await call(RELAY_LOGIN_PATH, { method: "POST", body: signed });
+    if ("transport" in answer) return fail(`transport_${answer.transport}`, `The request did not reach the VM through Gray's entry (${answer.transport}); \`gray-assistant doctor\` checks the path.`);
+    if (answer.status === 200) {
+      started = answer;
+      break;
+    }
+    const code = errorCodeOf(answer.body);
+    if (code !== "login_account_unknown" || io.now() - askedFrom >= accountWaitMs) return fail(code ?? `http_${answer.status}`, routeRefusal(answer.status, code, accountId));
+    if (!waiting) io.stdout(`The VM does not serve ${accountId} yet. An account sealed just now reaches it within a minute: waiting (at most ${Math.round(accountWaitMs / 1000)} s) …\n`);
+    waiting = true;
+    await io.sleep(ACCOUNT_WAIT_POLL_MS);
   }
   let startAnswer;
   try {
