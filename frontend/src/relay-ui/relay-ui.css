@@ -35,10 +35,36 @@
 /* The CT monitor's alert above every page: the page below keeps its own top space. */
 .relay-ui-banner { padding-bottom: 0; }
 
+/* Whether the last change reached the VM: one quiet line under the bar, at the page's end edge, close to the bar. */
+.relay-ui-banner--quiet { padding-top: 16px; }
+.relay-ui-push {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 /* Identifiers in table cells: one line, cut with an ellipsis (the whole value is the tooltip). */
 .relay-ui-name { max-width: 16rem; }
 .relay-ui-proxy { max-width: 14rem; }
-.relay-ui-models { max-width: 14rem; }
+
+/* The accounts list: the selection column as wide as its checkbox, the group filter as wide as a group's name. */
+.relay-ui-select { width: 2.5rem; }
+/* On a phone a row is a card: a box with no label above it reads as clutter, and one account's proxy is changed on its
+   own screen. Several at once is a desk's work, as on Gray's panel. */
+@media (max-width: 600px) { .relay-ui-select { display: none; } }
+.relay-ui-group { width: 14rem; }
+
+/* A part of one account's screen that a link opens (`/accounts/{id}/sign-in`): it stops below the sticky bar. */
+.relay-ui-part { scroll-margin-top: 88px; }
+
+/* An account named in a list: its id, then what it is, on two lines. */
+.relay-ui-pair {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
 
 /* One check of the Health page: a title row (status and name), then its message and next step. */
 .relay-ui-check__title {
@@ -59,6 +85,8 @@
 }
 @media (max-width: 600px) {
   .relay-ui-relay__id { max-width: 7rem; }
+  .relay-ui-group { width: 100%; }
+  .relay-ui-push { justify-content: flex-start; }
 }
 @media (max-width: 420px) {
   /* A narrow phone keeps the brand, where the page runs and the menu; the menu's sheet names the relay and its agent. */

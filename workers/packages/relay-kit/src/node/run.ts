@@ -360,7 +360,11 @@ export async function startRelay(options: RunRelayOptions): Promise<RunningRelay
         })
       : null;
   const uiNow = (nowMs: number): AgentStatusInput["ui"] => {
-    if (uiPublic !== null && publicOrigin().origin !== null) return { mode: publicOrigin().mode };
+    // On the config's `ui.origin` the status names it too (`ui_origin`), as a command's status does, so the agent's
+    // next status does not take the page's address away from the panel's jumps.
+    if (uiPublic !== null && publicOrigin().origin !== null) {
+      return options.uiPublicOrigin === undefined && uiConfig?.origin ? { mode: "public", origin: uiConfig.origin } : { mode: publicOrigin().mode };
+    }
     const port = ownUiPort ?? readUiPort(uiMarkerPath(config.daemon.stateFile), nowMs);
     return port === null ? null : { mode: "loopback", port };
   };

@@ -33,8 +33,18 @@ const PATH_RENAMES: ReadonlyArray<readonly [string, string]> = [
 ];
 /** The first line of a compose file an `init --pair` wrote, under either name. */
 const OWN_COMPOSE = /^# gray-(relay|assistant)'s agent, written by `gray-(relay|assistant) init --pair`/u;
-/** A compose file of a kit whose agent ran all the time. */
-const ALWAYS_ON = /^\s+restart:\s*\S/mu;
+/**
+ * A compose file of a kit whose agent ran all the time: its `agent` service has a restart policy. Only that service:
+ * since kit 1.7.0 the file's `page` service (the operators' page) has one, and is no agent.
+ */
+function agentAlwaysOn(composeText: string): boolean {
+  const parsed = parseComposeText(composeText);
+  // A file that does not parse was not rewritten either; the old line-based reading is what is left to judge it by.
+  if (!parsed.ok) return /^\s+restart:\s*\S/mu.test(composeText);
+  const services = parsed.value.get("services");
+  const agent = isYamlMap(services) ? services.get("agent") : undefined;
+  return isYamlMap(agent) && agent.get("restart") !== undefined;
+}
 export const ALWAYS_ON_NOTE =
   "compose.yaml used to run the agent all the time (docker compose up -d, restart: unless-stopped); this kit runs one container per command (docker compose run --rm --no-deps agent <command>) and has no run command. Remove the old container once, in this directory: docker compose rm -sf agent (the state volume stays), and do not start it with docker compose up again";
 const VOLUME_KEY = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,63}$/u;
@@ -190,7 +200,7 @@ export function upgradeWorkspace(options: UpgradeOptions): UpgradeResult {
       }
       // Kits up to 1.4.5 ran the agent all the time (`docker compose up -d`, `restart: unless-stopped`, the image's `run`).
       // This kit has no `run`: a container that project left would restart for ever on "unknown command".
-      if (ALWAYS_ON.test(composeText)) notes.push(ALWAYS_ON_NOTE);
+      if (agentAlwaysOn(composeText)) notes.push(ALWAYS_ON_NOTE);
     }
   }
   return { directory, relayId: loaded.daemon.relayId, found: current === null ? OLD_CONFIG_FILE : INIT_FILES.config, written, backups, members: members.map((m) => m.path.join(".")), project, notes };

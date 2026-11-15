@@ -9,6 +9,7 @@
  *                 "parked": [{"account_id", "reason"}],
  *                 "sources": [{"account_id", "vendor", "credential_type", "proxy": {"type", "host", "port"} | null}] | null,
  *                 "ui_mode": "loopback|public|tunnel", "ui_port": 7470,   // while the page runs; the port for loopback
+ *                 "ui_origin": "https://ops.relay.example",              // with public, when the config names ui.origin
  *                 "tunnel": "connected",              // only with the config's tunnel section
  *                 "boot": {"code", "held", "first_ms", "last_ms", "count", "compose_hash"} | null,
  *                 "accepted_compose": ["<64 hex>", …] | null,
@@ -54,6 +55,7 @@ import {
   STACK_AGENT_SOURCE_VENDORS,
   STACK_AGENT_SOURCES_MAX,
   STACK_AGENT_STATUS_MAX_BYTES,
+  STACK_AGENT_UI_ORIGIN_PATTERN,
   STACK_AGENT_UI_PORT_MAX,
   STACK_AGENT_UI_PORT_MIN,
   STACK_AGENT_WORD,
@@ -83,9 +85,11 @@ export interface AgentStatusInput {
   readonly sources: readonly DaemonSourceAccount[] | null;
   /**
    * Where the relay's own page runs, null or absent while it runs nowhere: `loopback` with its port on 127.0.0.1
-   * (`gray-assistant ui`, `ui.listen`), `public` on the relay's own origin, `tunnel` on the relay tunnel's.
+   * (`gray-assistant ui`, `ui.listen`), `public` on the relay's own origin, `tunnel` on the relay tunnel's. `origin`
+   * (docs/design/relay-operator-page.md section 3) is the config's `ui.origin`, with `public` only: where the page is
+   * set up, which the panel's jumps open.
    */
-  readonly ui?: { readonly mode: "loopback"; readonly port: number } | { readonly mode: Exclude<StackAgentUiMode, "loopback"> } | null;
+  readonly ui?: { readonly mode: "loopback"; readonly port: number } | { readonly mode: Exclude<StackAgentUiMode, "loopback">; readonly origin?: string | null } | null;
   /** The relay tunnel's word (`@gray/control/tunnel`); null or absent without a `tunnel` section. */
   readonly tunnel?: TunnelState | null;
   /** S58: the token service's latest refusal (`PullTokenService.boot()`); absent without a token service. */
@@ -134,13 +138,15 @@ export function agentStatusDocument(input: AgentStatusInput): { readonly status:
       last_push_ms: int(r.lastPushAtMs),
       last_error: r.lastError === null ? null : word(r.lastError),
     }));
-  // A loopback port the console's schema would refuse is left out with its mode, rather than sent.
+  // A loopback port the console's schema would refuse is left out with its mode, rather than sent; an origin it would
+  // refuse is left out alone (the mode is still true, and the panel then falls back as for an older status).
   const page = input.ui ?? null;
+  const origin = page !== null && page.mode === "public" && typeof page.origin === "string" && page.origin.length <= 255 && STACK_AGENT_UI_ORIGIN_PATTERN.test(page.origin) ? page.origin : null;
   const ui: JsonObject =
     page === null
       ? {}
       : page.mode !== "loopback"
-        ? { ui_mode: page.mode }
+        ? { ui_mode: page.mode, ...(origin === null ? {} : { ui_origin: origin }) }
         : Number.isInteger(page.port) && page.port >= STACK_AGENT_UI_PORT_MIN && page.port <= STACK_AGENT_UI_PORT_MAX
           ? { ui_mode: "loopback", ui_port: BigInt(page.port) }
           : {};

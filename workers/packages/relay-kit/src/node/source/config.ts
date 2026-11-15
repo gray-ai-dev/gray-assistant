@@ -33,7 +33,7 @@ import { RelayKitError } from "../../errors.ts";
 import { SOURCE_KINDS, type SourceAdapter } from "../../source/types.ts";
 import { readPrivateFile } from "../files.ts";
 import type { ResolvedSourceConfig, SourceCommonConfig, SourceDeps, SourceSelection } from "./config-types.ts";
-import { checkHttpSource, type SourceCheckReport } from "./check.ts";
+import { checkFileSource, checkHttpSource, type SourceCheckReport } from "./check.ts";
 import { fileAdapter } from "./file.ts";
 import { httpAdapter } from "./http.ts";
 import {
@@ -233,10 +233,13 @@ export function createSourceAdapter(config: ResolvedSourceConfig, deps: SourceDe
 
 /**
  * `gray-assistant source check` and `doctor`'s `source_contract`: the `http` source's two routes against the standard's
- * "Account source" (`check.ts`). The `file` kind is gray-assistant's own reader and has nothing for a relay to check.
+ * "Account source" (`check.ts`). The `file` kind is gray-assistant's own reader: its check is that the file reads and
+ * that every account's `proxy` names an entry of the file's list.
  */
 export async function checkSourceContract(config: ResolvedSourceConfig, deps: SourceDeps = {}): Promise<SourceCheckReport> {
-  if (config.kind !== "http") throw new RelayKitError("source_unsupported", `source check reads the http source; this config's source is ${config.kind}`);
+  if (config.kind === "file") {
+    return checkFileSource(config, { readAccountsFile: deps.readAccountsFile ?? ((path: string): string => readPrivateFile(path, "source accounts file", MAX_SOURCE_FILE_BYTES)) });
+  }
   return checkHttpSource(config, {
     fetch: deps.fetch ?? ((input, init) => globalThis.fetch(input, init)),
     readTokenFile: deps.readTokenFile ?? ((path: string): string => readPrivateFile(path, "source token file", MAX_SOURCE_TOKEN_BYTES)),

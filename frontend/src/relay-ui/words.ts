@@ -1,7 +1,8 @@
 // The local page's words: vendor and credential names, states, times and the sentences for the server's closed
 // refusal codes. Pure, so `words.test.mjs` reads each in Node.
 import { COMPATIBLE_VENDORS, compatibleRows, isCompatibleVendor } from '../runtime/lane-vendors.ts';
-import type { Account, AgentState, CredentialType, PastedCredentialType, RelayInfo, Release, Vendor } from './api';
+import { serverStateText, shortReason, type AccountHealth } from '../runtime/relay-stack-health.ts';
+import type { Account, AgentState, CredentialType, PanelAccount, PanelView, PastedCredentialType, Proxy, PushView, RelayInfo, Vendor } from './api';
 
 export const VENDORS: readonly Vendor[] = ['anthropic', 'openai', 'chatgpt_codex', ...COMPATIBLE_VENDORS.map(v => v.id)];
 
@@ -134,43 +135,181 @@ const REFUSALS: Record<string, string> = {
   refused_by_source: 'gray-assistant would refuse accounts.json with this change.',
   account_not_found: 'That account isn’t in accounts.json any more.',
   busy: 'Another gray-assistant command is changing the same file. Try again in a moment.',
-  not_listed: 'Gray’s signed release list doesn’t name it.',
-  not_seen: 'gray-assistant hasn’t seen this release in Gray’s list yet. It shows here once gray-assistant reads the list; accept it then.',
-  os_image_dev: 'This is a development OS image; it’s never accepted.',
-  io: 'gray-assistant couldn’t read a file or reach Gray’s release list.',
+  io: 'gray-assistant couldn’t read or write a file.',
   internal: 'Something went wrong in gray-assistant.',
   not_found: 'gray-assistant doesn’t know that request.',
   passkey_refused: 'gray-assistant didn’t accept that passkey.',
   enroll_link_invalid: 'This enrolment link has been used or has expired.',
   ceremony_expired: 'The passkey prompt took too long. Try again.',
   rate_limited: 'Too many tries. Wait a minute and try again.',
+  not_available: 'This gray-assistant page can’t do that. Use the command on the relay’s machine.',
+  sign_in_busy: 'Four sign-ins are under way already. Finish or cancel one first.',
+  sign_in_no_input: 'This sign-in takes nothing now. If it ended, start it again.',
+  sign_in_unknown: 'That sign-in ended. Start it again.',
+  proxy_not_found: 'That proxy isn’t in the list any more.',
+  proxy_in_use: 'Accounts still leave through this proxy. Move them to another first.',
 };
 
 export function refusalText(code: string, detail?: string | null): string {
+  // A proxy in use names who uses it (their ids, at most ten).
+  if (code === 'proxy_in_use' && detail) return `${detail.split(',').join(', ')} still ${detail.includes(',') ? 'leave' : 'leaves'} through this proxy. Move ${detail.includes(',') ? 'them' : 'it'} to another first.`;
   const text = REFUSALS[code] ?? `gray-assistant refused it (${code.replaceAll('_', ' ')}).`;
   return detail ? `${text} (${detail})` : text;
 }
 
-/** A refusal said beside one field of the add-account form. */
-export function fieldError(field: string, code: string): string {
+/** A refusal of the page's server in words: what its field means when it names one, else its code's sentence. */
+export function refusalWords(refusal: { code: string; field: string | null; detail: string | null } | null): string {
+  if (!refusal) return refusalText('internal');
+  return refusal.field ? fieldError(refusal.field, refusal.code, refusal.detail) : refusalText(refusal.code, refusal.detail);
+}
+
+/** Which pasted line a refusal is about: the server names it by its place (`keys.2`, `proxies.0`), counted from zero. */
+function lineOf(detail: string | null | undefined): number | null {
+  const match = /^[a-z_]+\.(\d+)$/.exec(detail ?? '');
+  return match ? Number(match[1]) + 1 : null;
+}
+
+/** A refusal said beside one field of a form; `detail` names the pasted line it is about, when the server does. */
+export function fieldError(field: string, code: string, detail?: string | null): string {
+  const line = lineOf(detail);
   if (field === 'account_id') return code === 'taken' ? 'An account with this ID exists already.' : 'Use 1–128 letters, digits and . _ : - (no spaces).';
   if (field === 'credential') {
     if (code === 'format') return 'This isn’t in the format this vendor uses for this kind of key.';
     if (code === 'type_vendor') return 'This vendor doesn’t take this kind of credential.';
     return 'Paste the key.';
   }
+  if (field === 'keys') {
+    const which = line === null ? 'A key here' : `Key ${line}`;
+    if (code === 'format') return `${which} isn’t in the format this vendor uses. Nothing was added.`;
+    if (code === 'duplicate') return `${which} is here twice. Nothing was added.`;
+    if (code === 'taken') return `${which} belongs to an account of this vendor already. Nothing was added.`;
+    return 'Paste the keys, one a line.';
+  }
+  if (field === 'id_prefix') return 'Use letters, digits and . _ : - (no spaces), or leave it empty.';
+  if (field === 'group') return 'A group’s name is at most 64 characters, on one line.';
   if (field === 'models') return 'Give model IDs separated by commas, or leave it empty for all models.';
-  if (field === 'proxy') return 'Give a URL like socks5://user:password@host:1080 or http://host:3128.';
+  if (field === 'proxy') {
+    if (code === 'unknown') return 'That proxy isn’t in the list any more.';
+    return `${line === null ? 'This' : `Line ${line}`} isn’t a proxy address: scheme://user:password@host:port, with http, https, socks5 or socks5h. Nothing was added.`;
+  }
+  if (field === 'proxy_id') {
+    if (code === 'proxy_in_use') return refusalText(code, detail);
+    return code === 'taken' ? 'Another proxy has this ID.' : 'That proxy isn’t in the list any more.';
+  }
+  if (field === 'account_ids') return 'One of these accounts isn’t in accounts.json any more.';
+  if (field === 'vendor') return code === 'no_sign_in' ? 'This vendor has no subscription to sign in. Add its API key instead.' : code === 'no_api_key' ? 'This vendor takes no API key. Add it as a subscription.' : 'gray-assistant doesn’t know this vendor.';
+  if (field === 'text') return 'Paste the code, or the whole address the browser ended on.';
   if (field === 'code') return 'That code didn’t work: it was used, it expired, or a character is missing.';
   return 'Check this value.';
 }
 
-/** A short name for a release: its version or the start of its commit, never the whole hash. */
-export function releaseName(release: Pick<Release, 'kind' | 'version' | 'git_commit' | 'hash'>): string {
-  if (release.kind === 'os_image') return release.version ? `OS image ${release.version}` : `OS image ${release.hash.slice(0, 7)}`;
-  // Twelve hex digits of the commit: the end of the tag Gray's console names the release by (2026.11.09-745af9427725,
-  // the lane's public source), so the two pages name a release alike.
-  return release.git_commit ? `Release ${release.git_commit.slice(0, 12)}` : `Release ${release.hash.slice(0, 7)}`;
+// ---------------------------------------------------------------------------------------------------------------------
+// Accounts, proxies and the push
+
+/** An account that signs in inside the VM (a subscription), not one whose key is pasted. */
+export function signsIn(type: CredentialType): boolean {
+  return type === 'sign_in' || type === 'password';
+}
+
+/** The vendors a subscription is signed in for, and those an API key is pasted for. */
+export const SUBSCRIPTION_VENDORS: readonly Vendor[] = ['anthropic', 'chatgpt_codex'];
+export const KEY_VENDORS: readonly Vendor[] = VENDORS.filter(vendor => CREDENTIAL_CHOICES[vendor].includes('api_key'));
+
+/** The account's kind in a word or two: "Subscription", "API key", "Subscription token". */
+export function kindPhrase(account: Pick<Account, 'vendor' | 'credential_type'>): string {
+  return signsIn(account.credential_type) ? 'Subscription' : credentialLabel(account.vendor, account.credential_type);
+}
+
+/** A proxy's address without its user name or password: "socks5://203.0.113.9:1080". */
+export function proxyAddress(proxy: { type: string; host: string; port: number }): string {
+  return `${proxy.type}://${proxy.host.includes(':') ? `[${proxy.host}]` : proxy.host}:${proxy.port}`;
+}
+
+/** A proxy as one option of a picker: its id, then its address. */
+export function proxyOption(proxy: Pick<Proxy, 'id' | 'type' | 'host' | 'port'>): string {
+  return `${proxy.id} · ${proxyAddress(proxy)}`;
+}
+
+/** The non-empty lines of a pasted block (keys, proxy addresses), trimmed, in order. */
+export function linesOf(text: string): string[] {
+  return text.split(/\r?\n/).map(line => line.trim()).filter(line => line !== '');
+}
+
+/** A proxy's address as the page sends it: `scheme://[user[:password]@]host:port`, the user name and password escaped. */
+export function proxyUrl(proxy: { type: string; host: string; port: string; username: string; password: string }): string {
+  const host = proxy.host.trim(), user = proxy.username.trim();
+  const login = user === '' ? '' : `${encodeURIComponent(user)}${proxy.password === '' ? '' : `:${encodeURIComponent(proxy.password)}`}@`;
+  return `${proxy.type}://${login}${host.includes(':') && !host.startsWith('[') ? `[${host}]` : host}:${proxy.port.trim()}`;
+}
+
+/** The ids of a `?ids=a,b` query, in order, each once. */
+export function idsOf(value: string | null): string[] {
+  return [...new Set((value ?? '').split(',').map(id => id.trim()).filter(id => id !== ''))];
+}
+
+export type PushWords = { tone: 'neutral' | 'success' | 'danger'; text: string; detail: string | null; again: boolean };
+
+/** The push in the shell's words; null while there is nothing to say (no push yet). */
+export function pushWords(push: PushView | null, now: number): PushWords | null {
+  if (!push || push.state === 'idle') return null;
+  const count = typeof push.accounts === 'number' ? push.accounts : null;
+  const what = count === null ? 'the accounts' : count === 1 ? '1 account' : `${count} accounts`;
+  if (push.state === 'running') return { tone: 'neutral', text: `Sending ${what} to the VM…`, detail: null, again: false };
+  const when = push.at_ms === null ? '' : ` ${clockText(push.at_ms, now)}`;
+  if (push.state === 'ok') {
+    const out = push.accounts_left_out ?? 0;
+    return { tone: 'success', text: `Sent ${what} to the VM${when}${out > 0 ? ` · ${out} left out` : ''}`, detail: null, again: false };
+  }
+  const detail = push.message?.trim() || (push.code ? push.code.replaceAll('_', ' ') : null);
+  return push.state === 'refused'
+    // Gray or the VM refused them: the command's own words say which and why.
+    ? { tone: 'danger', text: `The accounts were refused${when}`, detail, again: true }
+    : { tone: 'danger', text: `The accounts didn’t reach the VM${when}`, detail, again: true };
+}
+
+/** A group field's suggestions, as on Gray's panel: the groups in use that hold what is typed, the ones that start with it first. */
+export function groupSuggestions(names: readonly string[], typed: string): { value: string }[] {
+  const text = typed.trim().toLowerCase();
+  const held = names.filter(name => name.toLowerCase().includes(text) && name !== typed.trim());
+  return [...held.filter(name => name.toLowerCase().startsWith(text)), ...held.filter(name => !name.toLowerCase().startsWith(text))].slice(0, 8).map(value => ({ value }));
+}
+
+/** The account's entry on Gray's panel: by its panel id when the file's id is not one. */
+export function panelAccount(panel: PanelView | undefined, account: Pick<Account, 'account_id' | 'panel_id'>): PanelAccount | null {
+  return panel?.accounts.find(item => item.account_id === (account.panel_id ?? account.account_id)) ?? null;
+}
+
+/** The tone of each state of Gray's panel (relay-stack-state.ts): problems red, what ends by itself amber. */
+const STATE_TONE: Readonly<Record<AccountHealth['state'], 'success' | 'warning' | 'danger' | 'neutral'>> = {
+  serving: 'success', paused: 'neutral', not_served: 'danger', waiting_credential: 'warning', held: 'danger', at_limit: 'warning', cooling: 'warning',
+  proxy_failing: 'danger', credential_expiring: 'warning', failing: 'danger',
+};
+
+export type PanelState =
+  | { known: true; label: string; tone: 'success' | 'warning' | 'danger' | 'neutral'; short: string; reason: string }
+  | { known: false; label: string; reason: string };
+
+/**
+ * An account's state on Gray, in the words Gray's panel uses (`serverStateText`, `shortReason`). Not known while Gray
+ * does not answer, for an account Gray's panel does not list, and before the VM's first report of it.
+ */
+export function panelState(panel: PanelView | undefined, account: Pick<Account, 'account_id' | 'panel_id'>, now: number): PanelState {
+  if (!panel) return { known: false, label: 'Not available', reason: 'Gray doesn’t answer right now. The account’s state shows on Gray’s panel.' };
+  const id = account.panel_id ?? account.account_id;
+  const health = panel.health.accounts.find(item => item.account_id === id);
+  if (!health) {
+    return panel.accounts.some(item => item.account_id === id)
+      ? { known: false, label: 'Not reported yet', reason: 'The VM hasn’t reported this account yet.' }
+      : { known: false, label: 'Not on Gray', reason: 'Gray’s panel doesn’t list this account. It appears there after the accounts reach the VM.' };
+  }
+  const clock = (ms: number) => clockText(ms, now);
+  const text = serverStateText(health, { clock });
+  // The badge says the state and the line under it why, each once: a ban's fix ("replace") is the line's, and "Needs
+  // sign-in" under "Waiting for its sign-in" would say one thing twice (what its last sign-in failed on stays).
+  const label = health.state === 'held' ? text.label.split(' · ')[0]! : text.label;
+  const why = shortReason(health, { clock });
+  const short = health.reason === 'login_waiting' ? why.replace(/^Needs sign-in(?: · )?/, '').replace(/^./, c => c.toUpperCase()) : why;
+  return { known: true, label, tone: health.reason === 'credential_expired' ? 'danger' : STATE_TONE[health.state] ?? 'neutral', short, reason: text.reason };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

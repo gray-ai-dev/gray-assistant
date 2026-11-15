@@ -454,34 +454,8 @@ export function pairedComposeName(relayId: string): string {
 export function pairedComposeText(image: string, relayId: string, keep: { readonly name?: string; readonly stateVolume?: string } = {}): string {
   const name = keep.name ?? pairedComposeName(relayId);
   const volume = keep.stateVolume ?? "relay-state";
-  return `# gray-assistant's agent, written by \`gray-assistant init --pair\`. Run each command from this
-# directory, one at a time: docker compose run --rm --no-deps agent <command> (deliver, accounts push, login <id>, ...).
-# Nothing of it runs all the time.
-#
-# The directory is the kit: mounted read-only at ${KIT_MOUNT} (the paths gray-assistant.jsonc names), its config where the
-# image's command reads it. Every kit file is owned by 10001:10001 (the agent's uid) with mode 0600 or 0400, as
-# \`init\` wrote it; add registry-password the same way. The agent's state is the ${volume} volume.
-#
-# Change a config member with the agent's own writer, not an editor (the config is mounted read-only below, so the
-# writer gets the kit mounted writable); the next command reads it:
-#   docker compose run --rm --no-deps -v "$PWD:/work" agent config set --config /work/gray-assistant.jsonc stack.registry.expires_at <YYYY-MM-DDTHH:MM:SSZ>
-# The gray-assistant page, only while you add an account by hand (stop it with Ctrl-C, then accounts push), on
-# http://127.0.0.1:${KIT_UI_PORT} of this host:
-#   docker compose run --rm --no-deps --service-ports agent ui --host 0.0.0.0
-# Add to this file (another network, TZ, ...) in compose.override.yaml beside it, which docker compose merges; this
-# file is rewritten by the next init --pair --force, the override is not.
-#
-# The project is named after the relay, so several relays on one host do not share a container, volume or network.
-name: ${JSON.stringify(name)}
-
-services:
-  agent:
-    image: ${JSON.stringify(image)}
-    # No restart policy and a profile: \`docker compose run\` starts the service for one command (naming it enables its
-    # profile), and a \`docker compose up -d\` starts nothing, so no agent keeps restarting on a host.
-    profiles:
-      - cli
-    read_only: true
+  // What every container of the kit is held to, whichever command it runs.
+  const hardened = `    read_only: true
     user: "10001:10001"
     # Core dumps can contain a credential; no swap keeps the relay's secrets out of a swap file.
     ulimits:
@@ -504,9 +478,54 @@ services:
       - .:${KIT_MOUNT}:ro
       - ${volume}:${STATE_MOUNT}
     networks:
-      - relay
+      - relay`;
+  return `# gray-assistant's agent, written by \`gray-assistant init --pair\`. Run each command from this
+# directory, one at a time: docker compose run --rm --no-deps agent <command> (deliver, accounts push, login <id>, ...).
+# Nothing of it runs all the time, unless you start the operators' page below.
+#
+# The directory is the kit: mounted read-only at ${KIT_MOUNT} (the paths gray-assistant.jsonc names), its config where the
+# image's command reads it. Every kit file is owned by 10001:10001 (the agent's uid) with mode 0600 or 0400, as
+# \`init\` wrote it; add registry-password the same way. The agent's state is the ${volume} volume.
+#
+# Change a config member with the agent's own writer, not an editor (the config is mounted read-only below, so the
+# writer gets the kit mounted writable); the next command reads it:
+#   docker compose run --rm --no-deps -v "$PWD:/work" agent config set --config /work/gray-assistant.jsonc stack.registry.expires_at <YYYY-MM-DDTHH:MM:SSZ>
+# The gray-assistant page for one person on this host, only while they add an account by hand (stop it with Ctrl-C),
+# on http://127.0.0.1:${KIT_UI_PORT}:
+#   docker compose run --rm --no-deps --service-ports agent ui --host 0.0.0.0
+# Add to this file (another network, TZ, ...) in compose.override.yaml beside it, which docker compose merges; this
+# file is rewritten by the next init --pair --force, the override is not.
+#
+# The project is named after the relay, so several relays on one host do not share a container, volume or network.
+name: ${JSON.stringify(name)}
+
+services:
+  agent:
+    image: ${JSON.stringify(image)}
+    # No restart policy and a profile: \`docker compose run\` starts the service for one command (naming it enables its
+    # profile), and a \`docker compose up -d\` starts nothing, so no agent keeps restarting on a host.
+    profiles:
+      - cli
+${hardened}
     # The page's port, on the host's 127.0.0.1 only, and only for a run with --service-ports (gray-assistant ui --host
     # 0.0.0.0); no other command publishes it, and no other network reaches it.
+    ports:
+      - "127.0.0.1:${KIT_UI_PORT}:${KIT_UI_PORT}"
+
+  # The operators' page: where your operators add accounts, sign subscriptions in and set proxies, with a passkey and no
+  # terminal. Name its address in the config first (ui.origin, an https origin of your own that your TLS proxy forwards
+  # to 127.0.0.1:${KIT_UI_PORT} of this host), then:
+  #   docker compose up -d page          start it (naming the service enables its profile)
+  #   docker compose run --rm --no-deps agent ui enroll      a one-time link that adds an operator's passkey
+  #   docker compose stop page           stop it; nothing the VM serves depends on it
+  page:
+    image: ${JSON.stringify(image)}
+    profiles:
+      - page
+    # --service: it prints no one-time link, since what it prints is kept as this container's log.
+    command: ["ui", "--service", "--host", "0.0.0.0"]
+    restart: unless-stopped
+${hardened}
     ports:
       - "127.0.0.1:${KIT_UI_PORT}:${KIT_UI_PORT}"
 

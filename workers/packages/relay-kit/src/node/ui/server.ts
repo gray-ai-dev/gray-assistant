@@ -1,6 +1,6 @@
 /**
- * `gray-assistant ui`: the relay's local page, where an operator adds accounts, accepts releases and runs
- * the checks on the relay's own machine, so a key never enters a page Gray serves. The page lives under `/ui/` and is
+ * `gray-assistant ui`: the relay's own page, where a person adds accounts, signs subscriptions in, sets proxies and
+ * runs the checks on the relay's own machine, so a key never enters a page Gray serves. The page lives under `/ui/` and is
  * served in one of two modes:
  *
  * - **loopback** (`gray-assistant ui`, or `ui.listen` beside `gray-assistant run`): its own listener on 127.0.0.1 only. From
@@ -48,16 +48,28 @@ import {
   type AuthenticationResponseJSON,
   type RegistrationResponseJSON,
 } from "@simplewebauthn/server";
+import { checkedStackGroup, STACK_ACCOUNTS_PATCH_MAX } from "@gray/control";
 import { z } from "zod";
 import { RelayKitError } from "../../errors.ts";
 import { defaultConfigPath, loadRelayConfigFile, type LoadedRelayConfig } from "../config-file.ts";
 import { panelIdLookup } from "../../daemon/account-aliases.ts";
 import { accountAliasesPath, readAccountAliasesFile } from "../daemon/account-aliases-file.ts";
-import { controlFileBeside } from "../daemon/control-file.ts";
-import { readControlView } from "../control.ts";
 import type { DoctorOptions, DoctorReport } from "../doctor.ts";
-import { acceptReleaseId, vetoRelease } from "../release-control.ts";
-import { addAccount, readAccountsView, removeAccount, replaceCredential, type UiAccount } from "./accounts-file.ts";
+import {
+  addAccount,
+  addKeyAccounts,
+  addProxies,
+  ensureSignInAccount,
+  listProxies,
+  readAccountsView,
+  removeAccount,
+  removeProxy,
+  replaceCredential,
+  setAccountsProxy,
+  type UiAccount,
+} from "./accounts-file.ts";
+import { UiPush, type UiPushRunner } from "./push.ts";
+import { UiSignIns, type UiSignInRunner } from "./sign-in.ts";
 import { readAgentView, sealedState, type UiAgentView } from "./agent.ts";
 import { appendUiAudit, uiAuditPath, type UiAuditEntry } from "./audit.ts";
 import { UiHealth } from "./health.ts";
@@ -72,6 +84,7 @@ import {
   redeemUiLink,
   UI_PUBLIC_SESSION_IDLE_MS,
   UI_PUBLIC_SESSION_MAX_MS,
+  UI_ENROLL_LIFETIME_MS,
   uiEnrollDirectory,
   uiLinksDirectory,
   UiSessions,
@@ -88,6 +101,10 @@ export const MAX_UI_BODY_BYTES = 64 * 1024;
 export const DEFAULT_UI_BUNDLE_DIR = fileURLToPath(new URL("../../../assets/ui/", import.meta.url).toString());
 /** How long a passkey ceremony may take between its options and its answer. */
 export const UI_CEREMONY_MS = 5 * 60_000;
+/** How long Gray's view of the accounts is kept before the page asks Gray again. */
+export const PANEL_VIEW_KEEP_MS = 30_000;
+/** How long an account added here with a group waits for Gray to have it before the page stops asking. */
+export const PENDING_GROUP_KEEP_MS = 15 * 60_000;
 
 export type UiMode = "loopback" | "public";
 
@@ -108,6 +125,23 @@ interface UiCommonOptions {
   readonly bundleDir?: string;
   /** The doctor run, injectable for tests; defaults to `../doctor.ts`'s `runDoctor`. */
   readonly runDoctor?: (options: DoctorOptions) => Promise<DoctorReport>;
+  /**
+   * What the page does for an operator beyond editing the account file (docs/design/relay-operator-page.md section 7),
+   * each bound by `gray-assistant ui` to this config and the relay key; a page given none answers those calls
+   * `not_available` and still edits the file:
+   * - `signIn`: one subscription account's sign-in inside the VM (`loginVm`);
+   * - `push`: what `accounts push` does, run after every change of the account file;
+   * - `panelView`: the accounts as Gray's panel has them (state, group), null while Gray does not answer.
+   */
+  readonly signIn?: UiSignInRunner;
+  readonly push?: UiPushRunner;
+  readonly panelView?: () => Promise<SerdeValue | null>;
+  /**
+   * Puts accounts in a group on Gray (the relay-key-signed change, `../account-group.ts`): the accounts Gray has and
+   * the ones it does not have yet, or null when Gray did not take it. For an account added here with a group.
+   */
+  readonly setGroup?: (accountIds: readonly string[], group: string) => Promise<{ readonly grouped: readonly string[]; readonly unknown: readonly string[] } | null>;
+  readonly sleep?: (ms: number) => Promise<void>;
 }
 
 export interface UiHandlerOptions extends UiCommonOptions {
@@ -133,6 +167,15 @@ export interface UiHandler {
   stop(): void;
 }
 
+/**
+ * A one-time link that adds a passkey to the page on `origin` (public mode; what `gray-assistant ui enroll` prints).
+ * It is a file beside `state.json`, so the command makes it from its own process and the running page redeems it.
+ */
+export function mintUiEnrollLink(stateFile: string, origin: string, nowMs: number, random: (length: number) => Uint8Array): { readonly url: string; readonly code: string; readonly expiresAtMs: number } {
+  const link = mintUiLink(uiEnrollDirectory(stateFile), nowMs, random, UI_ENROLL_LIFETIME_MS);
+  return { url: `${origin}${UI_BASE}/enroll/${link.code}`, code: link.code, expiresAtMs: link.expiresAtMs };
+}
+
 export interface RelayUiOptions extends UiCommonOptions {
   readonly configPath: string;
   /** The port on 127.0.0.1; 0 picks a free one (tests). Defaults to `ui.listen.port`, then `DEFAULT_UI_PORT`. */
@@ -146,12 +189,20 @@ export interface RelayUiOptions extends UiCommonOptions {
 }
 
 export interface RunningRelayUi {
-  /** `http://127.0.0.1:<port>`. */
+  /**
+   * `loopback`: this machine only, signed in to with a one-time link. `public`: the config names the page's address
+   * for the relay's operators (`ui.origin`), the relay's own TLS proxy forwards that address to this listener, and
+   * sign-in is a passkey (docs/design/relay-operator-page.md section 7).
+   */
+  readonly mode: UiMode;
+  /** `http://127.0.0.1:<port>`, or the public origin. */
   readonly url: string;
   readonly port: number;
   readonly config: LoadedRelayConfig;
-  /** Mint a one-time sign-in link for this page (what `gray-assistant ui link` does from another process). */
+  /** Loopback: a one-time sign-in link for this page (what `gray-assistant ui link` does from another process). */
   mintLink(): { readonly url: string; readonly code: string; readonly expiresAtMs: number };
+  /** Public: a one-time link that adds a passkey (what `gray-assistant ui enroll` does from another process). */
+  mintEnrollLink(): { readonly url: string; readonly code: string; readonly expiresAtMs: number };
   stop(): Promise<void>;
 }
 
@@ -308,14 +359,30 @@ const newAccountBody = z
   .object({
     account_id: z.string().max(256),
     vendor: z.enum(VENDORS),
-    credential: credentialBody,
+    // A pasted key or token, or `{"type": "sign_in"}`: a subscription, which carries no secret and is signed in inside the VM.
+    credential: z.union([credentialBody, z.object({ type: z.literal("sign_in") }).strict()]),
     models: z.array(z.string().max(512)).max(256).nullable(),
     proxy: z.string().max(4096).nullable(),
+    // The group on Gray the account goes in once Gray has it (the Add form's choice); absent or null: none.
+    group: z.string().max(256).nullable().optional(),
   })
   .strict();
 const replaceBody = z.object({ credential: credentialBody }).strict();
-const releaseIdBody = z.object({ id: z.string().min(1).max(256) }).strict();
-const hashBody = z.object({ hash: z.string().max(128) }).strict();
+/** Several API keys as one change: each becomes an account of the vendor, on one proxy of the list or none. */
+const keyAccountsBody = z
+  .object({
+    vendor: z.enum(VENDORS),
+    keys: z.array(z.string().max(16_384)).min(1).max(500),
+    proxy_id: z.string().max(64).nullable(),
+    id_prefix: z.string().max(64).nullable(),
+    group: z.string().max(256).nullable().optional(),
+  })
+  .strict();
+const accountsProxyBody = z.object({ account_ids: z.array(z.string().max(256)).min(1).max(1000), proxy_id: z.string().max(64).nullable() }).strict();
+/** Proxies as they are pasted: `scheme://[user:password@]host:port`, one a line. */
+const newProxiesBody = z.object({ urls: z.array(z.string().max(4096)).min(1).max(500) }).strict();
+/** A pasted code, or the address the browser ended on (a redirect with its query): one line, bounded. */
+const signInInputBody = z.object({ text: z.string().max(8_192) }).strict();
 // The browser's WebAuthn answers, checked whole by @simplewebauthn/server; here only their outline and size.
 const webauthnAnswer = z.object({ id: z.string().min(1).max(2048), rawId: z.string().min(1).max(2048), type: z.literal("public-key"), response: z.record(z.string(), z.unknown()) }).passthrough();
 const enrollOptionsBody = z.object({ code: z.string().max(256) }).strict();
@@ -360,6 +427,78 @@ export async function createRelayUiHandler(options: UiHandlerOptions): Promise<U
   });
   /** When this page last changed each account: until the agent's next seal, that account waits. */
   const editedAt = new Map<string, number>();
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((done) => setTimeout(done, ms)));
+  const signIns = options.signIn === undefined ? null : new UiSignIns({ run: options.signIn, now, sleep, random });
+  /**
+   * Accounts added here with a group, until Gray has them: a group is Gray's (docs/design/relay-operator-page.md
+   * section 2), and Gray learns of a new account from the push's report, so the group follows the push. Asked again
+   * when Gray's view is next read, and dropped after `PENDING_GROUP_KEEP_MS` (an account Gray never adopts has no
+   * group to be in; the operator sets it on Gray's panel).
+   */
+  const pendingGroups = new Map<string, { readonly group: string; readonly atMs: number }>();
+  let groupsBusy: Promise<void> = Promise.resolve();
+  const flushGroups = (): Promise<void> => {
+    const setGroup = options.setGroup;
+    if (setGroup === undefined || pendingGroups.size === 0) return groupsBusy;
+    groupsBusy = groupsBusy.then(async () => {
+      const nowMs = now();
+      for (const [id, pending] of pendingGroups) if (nowMs - pending.atMs > PENDING_GROUP_KEEP_MS) pendingGroups.delete(id);
+      const byGroup = new Map<string, string[]>();
+      for (const [id, pending] of pendingGroups) byGroup.set(pending.group, [...(byGroup.get(pending.group) ?? []), id]);
+      for (const [group, ids] of byGroup) {
+        // A request names at most STACK_ACCOUNTS_PATCH_MAX accounts.
+        for (let from = 0; from < ids.length; from += STACK_ACCOUNTS_PATCH_MAX) {
+          const sent = new Map(ids.slice(from, from + STACK_ACCOUNTS_PATCH_MAX).map((id) => [id, pendingGroups.get(id)] as const));
+          const done = await setGroup([...sent.keys()], group).catch(() => null);
+          // Gray did not take it now: these wait for the next try. Taken: the ones Gray does not have yet wait. An
+          // account removed and added again meanwhile has another choice waiting, which this answer is not about.
+          for (const id of done?.grouped ?? []) if (pendingGroups.get(id) === sent.get(id)) pendingGroups.delete(id);
+        }
+      }
+    });
+    return groupsBusy;
+  };
+  /** The group an Add names, by Gray's own rule for a name, so one Gray would refuse is said beside the field now. */
+  const groupOf = (group: string | null | undefined): string | null => {
+    if (group === null || group === undefined || group.trim() === "") return null;
+    try {
+      return checkedStackGroup(group);
+    } catch {
+      throw new UiRefusal(422, "invalid", "group");
+    }
+  };
+  const withGroup = (ids: readonly string[], group: string | null, nowMs: number): void => {
+    if (group === null) return;
+    for (const id of ids) pendingGroups.set(id, { group, atMs: nowMs });
+  };
+  const push =
+    options.push === undefined
+      ? null
+      : new UiPush({
+          run: options.push,
+          now,
+          // Sent: Gray adopted what is new from the push's report, so the groups chosen here can go on them, and
+          // Gray's view of the accounts is read anew (a screen shows the new account at once, not 30 s later).
+          onDone: (view) => {
+            if (view.state !== "ok") return;
+            void flushGroups();
+            panel = null;
+          },
+        });
+  /** The account file changed: it goes to the VM, as `accounts push` after an edit by hand. */
+  const changed = (): void => push?.request();
+  /** Gray's view of the accounts, asked at most every `PANEL_VIEW_KEEP_MS`: several screens read it, each on its own timer. */
+  let panel: { readonly atMs: number; readonly value: Promise<SerdeValue | null> } | null = null;
+  const panelValue = (nowMs: number): Promise<SerdeValue | null> => {
+    if (options.panelView === undefined) return Promise.resolve(null);
+    if (panel === null || nowMs - panel.atMs >= PANEL_VIEW_KEEP_MS) {
+      const read = options.panelView;
+      // A failure is "no view now" (the page works without it), never the call's failure. Groups that wait go first,
+      // so the view read after them has them.
+      panel = { atMs: nowMs, value: flushGroups().then(() => read()).catch(() => null) };
+    }
+    return panel.value;
+  };
   // Two pages for two relays on one machine keep their own cookie; on the public origin the `__Host-` prefix binds it.
   const cookieName = mode === "public" ? "__Host-gray_assistant_ui" : `gray_assistant_ui_${createHash("sha256").update(`${config.daemon.relayId}\n${config.path}`).digest("hex").slice(0, 12)}`;
   const cookieAttributes = mode === "public" ? "HttpOnly; Secure; SameSite=Strict; Path=/" : `HttpOnly; SameSite=Strict; Path=${UI_BASE}`;
@@ -384,8 +523,9 @@ export async function createRelayUiHandler(options: UiHandlerOptions): Promise<U
       // The relay tunnel and its CT monitor (docs/relay-tunnel.md): the page warns on every page while CT shows a
       // certificate for the relay's name that gray-assistant did not obtain. Counts and words only.
       tunnel: agent.tunnel === null ? null : { state: agent.tunnel.state, name: agent.tunnel.name, ct: agent.tunnel.ct === null ? null : { state: agent.tunnel.ct.state, findings: agent.tunnel.ct.findings, checked_ms: agent.tunnel.ct.checkedMs } },
-      // The image page arrives with `gray-assistant stack` (S53); until then the page shows no Image tab.
-      features: { image: false },
+      // What this page can do beyond editing the account file (`UiCommonOptions`), so a screen offers only what is
+      // there. The image page arrives with `gray-assistant stack` (S53); until then the page shows no Image tab.
+      features: { image: false, sign_in: signIns !== null, push: push !== null, panel: options.panelView !== undefined },
     };
   }
 
@@ -401,6 +541,8 @@ export async function createRelayUiHandler(options: UiHandlerOptions): Promise<U
       status: account.status,
       models: account.models === "*" ? "*" : [...account.models],
       proxy: account.proxy === null ? null : { type: account.proxy.type, host: account.proxy.host, port: account.proxy.port, username: account.proxy.username ?? null },
+      // The entry of the file's proxy list the account names; null for none, and for a proxy written on the account itself.
+      proxy_id: account.proxyId,
       credential_expires_at_ms: account.credentialExpiresAtMs,
       selected: account.selected,
       sealed: { state: sealed.state, version: sealed.version, at_ms: sealed.atMs, reason: sealed.reason },
@@ -420,36 +562,18 @@ export async function createRelayUiHandler(options: UiHandlerOptions): Promise<U
     };
   }
 
-  async function releasesValue(nowMs: number): Promise<SerdeValue> {
-    const agent = readAgentView(config, nowMs);
-    const control = await readControlView(config.daemon.stateFile, controlFileBeside(config.daemon.stateFile));
-    // The operator's decisions are control.json's: a release accepted or rejected here shows so at once, before the
-    // agent's next tick reads the file and its status says the same.
-    const acceptedNow = new Set(control.control.acceptedReleases);
-    const rejectedNow = new Set(control.control.rejectedReleases ?? []);
-    const pairingNow = new Set(control.control.acceptedAtPairing ?? []);
+  /** The file's proxies as the page lists them: an address and a user name, whether a password is set, never the password. */
+  function proxiesValue(): SerdeValue {
     return {
-      relay: relayView(agent),
-      accept_mode: config.daemon.releases.accept,
-      delay_days: config.daemon.releases.delayDays,
-      release_list: agent.releaseList === null ? null : { current_until_ms: agent.releaseList.currentUntilMs, last_error: agent.releaseList.lastError },
-      accepted: [...control.control.acceptedReleases],
-      rejected: [...(control.control.rejectedReleases ?? [])],
-      releases: agent.releases.map((row) => ({
-        kind: row.kind,
-        hash: row.hash,
-        git_commit: row.gitCommit,
-        version: row.version,
-        first_seen_ms: row.firstSeenMs,
-        acceptable_at_ms: row.acceptableAtMs,
-        acceptable: row.acceptable && !rejectedNow.has(row.hash),
-        accepted: !rejectedNow.has(row.hash) && (row.accepted || acceptedNow.has(row.hash)),
-        // Pairing's acceptance, until the operator's own decision in control.json replaces it.
-        accepted_at_pairing: row.acceptedAtPairing && !rejectedNow.has(row.hash) && pairingNow.has(row.hash),
-        rejected: rejectedNow.has(row.hash),
-        refusal: row.refusal,
+      proxies: listProxies(config.source).map((proxy) => ({
+        id: proxy.id,
+        type: proxy.type,
+        host: proxy.host,
+        port: proxy.port,
+        username: proxy.username,
+        has_password: proxy.hasPassword,
+        used_by: [...proxy.usedBy],
       })),
-      replicas: agent.replicas.map((replica) => ({ origin: replica.origin, phase: replica.phase, last_error: replica.lastError })),
     };
   }
 
@@ -702,16 +826,28 @@ export async function createRelayUiHandler(options: UiHandlerOptions): Promise<U
       case "POST accounts": {
         const body = parseBody(newAccountBody, await readJsonBody(request));
         const accountId = body.account_id.trim();
-        await act("account.add", accountId, () =>
-          addAccount(config.source, config.daemon.relayId, {
-            accountId,
-            vendor: body.vendor,
-            credential: body.credential,
-            models: body.models === null ? null : body.models.map((model) => model.trim()).filter((model) => model.length > 0),
-            proxy: body.proxy === null || body.proxy.trim() === "" ? null : body.proxy.trim(),
-          }),
-        );
+        const group = groupOf(body.group);
+        const proxy = body.proxy === null || body.proxy.trim() === "" ? null : body.proxy.trim();
+        const credential = body.credential;
+        await act("account.add", accountId, async () => {
+          if (credential.type !== "sign_in") {
+            await addAccount(config.source, config.daemon.relayId, {
+              accountId,
+              vendor: body.vendor,
+              credential,
+              models: body.models === null ? null : body.models.map((model) => model.trim()).filter((model) => model.length > 0),
+              proxy,
+            });
+            return;
+          }
+          // A subscription: listed with no secret, as `login <account> --vendor <vendor>` lists it, and signed in
+          // inside the VM next. The command adds to an account it already listed; a page's Add is a new account only.
+          if (readAccountsView(config.source).accounts.some((account) => account.accountId === accountId)) throw new UiRefusal(422, "taken", "account_id");
+          await ensureSignInAccount(config.source, config.daemon.relayId, { accountId, vendor: body.vendor, proxy });
+        });
         editedAt.set(accountId, nowMs);
+        withGroup([accountId], group, nowMs);
+        changed();
         sendJson(response, 201, accountsValue(nowMs));
         return;
       }
@@ -719,45 +855,104 @@ export async function createRelayUiHandler(options: UiHandlerOptions): Promise<U
         const body = parseBody(replaceBody, await readJsonBody(request));
         await act("account.replace_key", id as string, () => replaceCredential(config.source, config.daemon.relayId, id as string, body.credential));
         editedAt.set(id as string, nowMs);
+        changed();
         sendJson(response, 200, accountsValue(nowMs));
         return;
       }
       case "DELETE accounts/:id":
         await act("account.remove", id as string, () => removeAccount(config.source, config.daemon.relayId, id as string));
         editedAt.delete(id as string);
+        // Its group waited for Gray to have it: an account of the same id added later is another account.
+        pendingGroups.delete(id as string);
+        changed();
         sendJson(response, 200, accountsValue(nowMs));
         return;
-      case "GET releases":
-        sendJson(response, 200, await releasesValue(nowMs));
+      case "POST accounts/:id": {
+        if (id !== "keys") break;
+        const body = parseBody(keyAccountsBody, await readJsonBody(request));
+        const keys = body.keys.map((key) => key.trim()).filter((key) => key !== "");
+        if (keys.length === 0) throw new UiRefusal(422, "invalid", "keys");
+        const group = groupOf(body.group);
+        const prefix = body.id_prefix === null || body.id_prefix.trim() === "" ? null : body.id_prefix.trim();
+        const ids = await act("account.add_keys", `${keys.length}`, () => addKeyAccounts(config.source, config.daemon.relayId, { vendor: body.vendor, keys, proxyId: body.proxy_id, idPrefix: prefix }));
+        for (const added of ids) editedAt.set(added, nowMs);
+        withGroup(ids, group, nowMs);
+        changed();
+        sendJson(response, 201, { ids: [...ids], ...(accountsValue(nowMs) as Record<string, SerdeValue>) });
         return;
-      case "POST releases/:id": {
-        const controlFile = controlFileBeside(config.daemon.stateFile);
-        if (id === "accept") {
-          const body = parseBody(releaseIdBody, await readJsonBody(request));
-          const outcome = await act("release.accept", body.id.trim(), async () => {
-            // The page lists what the agent has seen; an id it has not seen yet is refused (`not_seen`) rather than
-            // recorded as an acceptance that would not count (R27). Its Accept button only shows for listed releases.
-            const result = await acceptReleaseId(config, controlFile, body.id.trim(), () => nowMs, { waitMs: 0, agentRunning: true, sleep: async () => undefined });
-            if (!result.ok) throw new UiRefusal(409, result.code);
-            return result;
-          });
-          sendJson(response, 200, { ok: true, kind: outcome.kind, provenance: outcome.kind === "os_image" ? outcome.provenance : "ok", releases: await releasesValue(nowMs) });
-          return;
-        }
-        if (id === "reject" || id === "unreject") {
-          const body = parseBody(hashBody, await readJsonBody(request));
-          const hash = body.hash.trim();
-          if (!/^[0-9a-f]{64}$/u.test(hash)) throw new UiRefusal(422, "invalid", "hash");
-          await act(`release.${id}`, hash, async () => {
-            const result = await vetoRelease(config, controlFile, id, hash, nowMs);
-            if (!result.ok) throw new UiRefusal(409, result.code);
-            return result;
-          });
-          sendJson(response, 200, { ok: true, releases: await releasesValue(nowMs) });
-          return;
-        }
-        break;
       }
+      case "PUT accounts/:id": {
+        if (id !== "proxy") break;
+        const body = parseBody(accountsProxyBody, await readJsonBody(request));
+        const moved = await act("account.proxy", body.proxy_id ?? "none", () => setAccountsProxy(config.source, config.daemon.relayId, body.account_ids, body.proxy_id));
+        for (const account of moved) editedAt.set(account, nowMs);
+        // Nothing moved (each account had that proxy already): nothing to send.
+        if (moved.length > 0) changed();
+        sendJson(response, 200, { changed: [...moved], ...(accountsValue(nowMs) as Record<string, SerdeValue>) });
+        return;
+      }
+      // The file's proxy list. A proxy no account names is not sealed, so adding or removing one sends nothing.
+      case "GET proxies":
+        sendJson(response, 200, proxiesValue());
+        return;
+      case "POST proxies": {
+        const body = parseBody(newProxiesBody, await readJsonBody(request));
+        const urls = body.urls.map((url) => url.trim()).filter((url) => url !== "");
+        if (urls.length === 0) throw new UiRefusal(422, "invalid", "urls");
+        const added = await act("proxy.add", `${urls.length}`, () => addProxies(config.source, config.daemon.relayId, urls));
+        sendJson(response, 201, { ids: added.map((proxy) => proxy.id), ...(proxiesValue() as Record<string, SerdeValue>) });
+        return;
+      }
+      case "DELETE proxies/:id":
+        await act("proxy.remove", id as string, () => removeProxy(config.source, config.daemon.relayId, id as string));
+        sendJson(response, 200, proxiesValue());
+        return;
+      // A subscription account's sign-in inside the VM (./sign-in.ts): the session is this page's, the tokens the VM's.
+      case "POST accounts/:id/sign-in": {
+        if (signIns === null) throw new UiRefusal(501, "not_available");
+        const view = await act("account.sign_in", id as string, async () => signIns.start(id as string));
+        sendJson(response, 201, view as unknown as SerdeValue);
+        return;
+      }
+      case "GET sign-in/:id": {
+        const view = signIns?.view(id as string) ?? null;
+        if (view === null) throw new UiRefusal(404, "sign_in_unknown");
+        // Signed in: the account's state on Gray changes with the VM's next report, so Gray's view is read anew.
+        if (view.state === "done") panel = null;
+        sendJson(response, 200, view as unknown as SerdeValue);
+        return;
+      }
+      case "POST sign-in/:id/input": {
+        if (signIns === null) throw new UiRefusal(404, "sign_in_unknown");
+        const body = parseBody(signInInputBody, await readJsonBody(request));
+        const text = body.text.trim();
+        if (text === "") throw new UiRefusal(422, "invalid", "text");
+        if (signIns.view(id as string) === null) throw new UiRefusal(404, "sign_in_unknown");
+        // The paste is the vendor's code or the browser's return: sent to the VM, never logged or kept.
+        if (!signIns.input(id as string, text)) throw new UiRefusal(409, "sign_in_no_input");
+        sendJson(response, 200, signIns.view(id as string) as unknown as SerdeValue);
+        return;
+      }
+      case "DELETE sign-in/:id": {
+        if (signIns === null || signIns.view(id as string) === null) throw new UiRefusal(404, "sign_in_unknown");
+        signIns.cancel(id as string);
+        audit({ action: "account.sign_in_cancel", who: who(session), target: signIns.view(id as string)?.account_id ?? null, outcome: "ok" });
+        sendJson(response, 200, signIns.view(id as string) as unknown as SerdeValue);
+        return;
+      }
+      case "GET push":
+        sendJson(response, 200, (push?.view() ?? { state: "idle", at_ms: null }) as unknown as SerdeValue);
+        return;
+      case "POST push":
+        if (push === null) throw new UiRefusal(501, "not_available");
+        push.request();
+        audit({ action: "push.run", who: who(session), outcome: "ok" });
+        sendJson(response, 202, push.view() as unknown as SerdeValue);
+        return;
+      case "GET panel":
+        // The view itself, or JSON null while Gray does not answer (docs/design/relay-operator-page.md section 7).
+        sendJson(response, 200, await panelValue(nowMs));
+        return;
       case "GET health":
         sendJson(response, 200, healthValue(nowMs));
         return;
@@ -869,16 +1064,24 @@ export async function createRelayUiHandler(options: UiHandlerOptions): Promise<U
     stop() {
       sessions.clear();
       ceremonies.clear();
+      // The VM voids a session 30 s after its last poll; cancelling closes it at once.
+      void signIns?.stop();
     },
   };
 }
 
-/** Start the page in loopback mode on its own 127.0.0.1 listener. */
+/**
+ * Start the page on its own listener: in public mode when the config names `ui.origin`, else in loopback mode. Either
+ * way the listener is plain HTTP on 127.0.0.1 (or `host`): in public mode the relay's TLS proxy stands in front of it,
+ * and the page answers only to that origin's Host.
+ */
 export async function startRelayUi(options: RelayUiOptions): Promise<RunningRelayUi> {
   const config = loadRelayConfigFile(options.configPath);
   const port = options.port ?? config.daemon.ui?.port ?? DEFAULT_UI_PORT;
   if (!Number.isInteger(port) || port < 0 || port > 65_535) throw new RelayKitError("usage", "--port must be a TCP port");
-  const handler = await createRelayUiHandler({ ...options, mode: "loopback", config });
+  const origin = config.daemon.ui?.origin ?? null;
+  const mode: UiMode = origin === null ? "loopback" : "public";
+  const handler = await createRelayUiHandler({ ...options, mode, config, ...(origin === null ? {} : { publicOrigin: () => origin }) });
   const server: Server = createServer((request, response) => {
     void handler.handle(request, response).then((handled) => {
       if (!handled) send(response, 404, { "content-type": "text/plain; charset=utf-8" }, "Not found.\n");
@@ -894,10 +1097,12 @@ export async function startRelayUi(options: RelayUiOptions): Promise<RunningRela
       else resolvePort(address.port);
     });
   });
-  const base = `http://127.0.0.1:${actualPort}`;
-  // The agent's status (S45) carries the page's port while this marker is fresh, so Gray's panel can link here.
+  const base = origin ?? `http://127.0.0.1:${actualPort}`;
+  // Loopback: the agent's status (S45) carries the page's port while this marker is fresh, so Gray's panel can link
+  // here. Public: every status carries `ui.origin` from the config, so there is nothing to mark.
   const marker = uiMarkerPath(config.daemon.stateFile);
   const touchMarker = (): void => {
+    if (mode !== "loopback") return;
     try {
       writeUiMarker(marker, actualPort, options.io.now());
     } catch {
@@ -907,14 +1112,23 @@ export async function startRelayUi(options: RelayUiOptions): Promise<RunningRela
   touchMarker();
   const markerTimer = setInterval(touchMarker, UI_MARKER_EVERY_MS);
   markerTimer.unref();
+  const random = options.random ?? ((length: number) => randomBytes(length));
   return {
+    mode,
     url: base,
     port: actualPort,
     config,
-    mintLink: () => handler.mintLink(base),
+    mintLink: () => {
+      if (mode !== "loopback") throw new RelayKitError("usage", "the page on ui.origin is signed in to with a passkey: `gray-assistant ui enroll` makes the link that adds one");
+      return handler.mintLink(base);
+    },
+    mintEnrollLink: () => {
+      if (origin === null) throw new RelayKitError("usage", "a passkey is for the page on ui.origin; this page runs on 127.0.0.1 and is signed in to with `gray-assistant ui link`");
+      return mintUiEnrollLink(config.daemon.stateFile, origin, options.io.now(), random);
+    },
     async stop() {
       clearInterval(markerTimer);
-      removeUiMarker(marker);
+      if (mode === "loopback") removeUiMarker(marker);
       handler.stop();
       await new Promise<void>((resolveClose) => {
         server.close(() => resolveClose());

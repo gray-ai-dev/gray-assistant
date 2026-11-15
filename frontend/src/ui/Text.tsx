@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef, useState, type AnchorHTMLAttributes, type ElementType, type HTMLAttributes, type ReactNode } from 'react';
+import { Children, useLayoutEffect, useRef, useState, type AnchorHTMLAttributes, type ElementType, type HTMLAttributes, type ReactNode } from 'react';
 import { cx } from './cx';
 import { Tooltip } from './Tooltip';
 import { usePhone } from './phone';
@@ -29,6 +29,19 @@ export function Text({ as: Tag = 'p', size = 'body', tone = 'default', weight = 
   // Mono text is an identifier (a model ID, a key, an address): the browser's page translation leaves it as written.
   const keep = mono && rest.translate === undefined ? { translate: 'no' as const } : null;
   return truncate ? <TruncatedText as={Tag} className={classes} title={title} {...keep} {...rest} /> : <Tooltip content={title}><Tag className={classes} {...keep} {...rest} /></Tooltip>;
+}
+/**
+ * Short facts on one line, parted by a middle dot: "Frees 4:05 PM · 5-hour limit used up". Each child is a fact (an
+ * empty one is left out). Where they do not fit one line, the break falls between two facts and takes the dot with it:
+ * no line begins or ends with a dot, and a fact that fits a line is never cut in two. The dot is part of the text, so
+ * a reader, a copy and a test get "A · B". `size` and `tone` as `Text`; `title` is the tooltip.
+ */
+export function Facts({ children, size = 'support', tone = 'muted', title, className }: { children: ReactNode; size?: TextProps['size']; tone?: TextProps['tone']; title?: string; className?: string }) {
+  const facts = Children.toArray(children).filter(fact => fact !== '');
+  if (!facts.length) return null;
+  return <Text as="span" size={size} tone={tone} title={title} className={cx('ui-facts', className)}>
+    <span className="ui-facts__line">{facts.map((fact, index) => <span key={index} className="ui-facts__fact">{index > 0 && <span className="ui-facts__dot"> · </span>}{fact}</span>)}</span>
+  </Text>;
 }
 /**
  * A measured figure in a table cell, or a dash that says why there is none: `missing` is the dash's tooltip and what
@@ -102,6 +115,11 @@ export function VisuallyHidden({ as: Tag = 'span', children }: { as?: ElementTyp
 
 /** A standalone text link, e.g. "View usage in Activity". Links inside
  *  running text can stay plain anchors; they inherit the prose style. */
-export function TextLink({ size = 'support', tone = 'default', className, ...rest }: AnchorHTMLAttributes<HTMLAnchorElement> & { size?: TextProps['size']; tone?: 'default' | 'muted' }) {
-  return <a className={cx('ui-link', size !== 'body' && `ui-text--${size}`, tone === 'muted' && 'ui-link--muted', className)} {...rest} />;
+export function TextLink({ size = 'support', tone = 'default', quiet, className, ...rest }: AnchorHTMLAttributes<HTMLAnchorElement> & {
+  size?: TextProps['size']; tone?: 'default' | 'muted';
+  /** A row's title in a table: ink in medium weight, underlined only under the pointer or the focus, so a list of them
+   *  reads as names and not as a column of underlines. */
+  quiet?: boolean;
+}) {
+  return <a className={cx('ui-link', size !== 'body' && `ui-text--${size}`, tone === 'muted' && 'ui-link--muted', quiet && 'ui-link--quiet', className)} {...rest} />;
 }

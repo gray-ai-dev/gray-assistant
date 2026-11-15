@@ -37,6 +37,30 @@ export function useLocal<T>(path: string, options: { live?: number | ((data: T |
   };
 }
 
+/**
+ * After a write: the account file changed and gray-assistant started sending it to the VM, so the reads of the accounts,
+ * the proxies and the push start over (the push's state shows in the shell at once).
+ */
+export function useChanged(): () => Promise<void> {
+  const client = useQueryClient();
+  return async () => {
+    await Promise.all(['accounts', 'proxies', 'push'].map(key => client.invalidateQueries({ queryKey: [key] })));
+  };
+}
+
+// A sign-in under way belongs to the page, not to one screen: leaving an account and coming back finds it again, and
+// the add form hands a new subscription account to its sign-in steps. Kept in memory only (a reload starts over).
+const signInSessions = new Map<string, string>();
+const signInWanted = new Set<string>();
+export const signInSession = (accountId: string): string | null => signInSessions.get(accountId) ?? null;
+export function keepSignInSession(accountId: string, session: string | null) {
+  if (session === null) signInSessions.delete(accountId);
+  else signInSessions.set(accountId, session);
+}
+/** The add form asks for the new account's sign-in to start once its screen opens; the screen takes the request once. */
+export const wantSignIn = (accountId: string) => { signInWanted.add(accountId); };
+export const takeSignIn = (accountId: string): boolean => signInWanted.delete(accountId);
+
 export function createQueryClient(): QueryClient {
   return new QueryClient({
     defaultOptions: {

@@ -15,6 +15,10 @@
  *   for a proxy with a username;
  * - `credential_unknown`: an id the list does not name answers 404.
  *
+ * The `file` source is gray-assistant's own reader, so its check is the file's own rules (`checkFileSource`): the file
+ * reads, and every account that names a proxy names one the file's `proxies` list has (`proxy:<id>`; an account that
+ * does not is left out of every push, `unknown_proxy`).
+ *
  * Nothing here prints or keeps a credential value or the token: a line names an account id, a member path, a closed
  * reason and times.
  */
@@ -22,7 +26,8 @@ import { randomBytes } from "node:crypto";
 import { isValidEgressCredential } from "@gray/relay-connector";
 import { RelayKitError } from "../../errors.ts";
 import { credentialParkReason } from "../../daemon/eligibility.ts";
-import type { SourceHttpConfig } from "./config-types.ts";
+import type { SourceFileConfig, SourceHttpConfig } from "./config-types.ts";
+import { parseAccountsSourceText } from "./file.ts";
 import { fetchJson, fetchText } from "./http-client.ts";
 import { httpSourceRoutes, parseHttpAccounts, parseHttpCredential, readHttpSourceToken, type HttpAdapterDeps, type ParsedHttpAccounts } from "./http.ts";
 
@@ -198,6 +203,30 @@ export async function checkHttpSource(config: SourceHttpConfig, deps: HttpAdapte
   } catch (error) {
     if (error instanceof RelayKitError && error.code === "source_not_found") add("credential_unknown", "ok", "an id the list does not name answers 404");
     else add("credential_unknown", "fail", `an id the list does not name must answer 404 (${why(error)})`);
+  }
+  return done();
+}
+
+/** Check the `file` source a config names: the file reads, and each account's `proxy` is one the list has. */
+export function checkFileSource(config: SourceFileConfig, deps: { readonly readAccountsFile: (path: string) => string }): SourceCheckReport {
+  const lines: SourceCheckLine[] = [];
+  const done = (): SourceCheckReport => ({ lines, ok: lines.every((line) => line.status !== "fail") });
+  let parsed;
+  try {
+    parsed = parseAccountsSourceText(deps.readAccountsFile(config.path), { maxAccounts: config.maxAccounts });
+  } catch (error) {
+    lines.push({ id: "list", status: "fail", message: `accounts.json does not read (${why(error)})` });
+    return done();
+  }
+  const count = parsed.accounts.length;
+  lines.push({ id: "list", status: count === 0 ? "warn" : "ok", message: count === 0 ? "accounts.json lists no account" : `accounts.json lists ${count} account(s) and ${parsed.proxies.length} proxy(ies)` });
+  for (const account of parsed.accounts) {
+    if (account.leftOut !== "unknown_proxy") continue;
+    lines.push({
+      id: `proxy:${account.sourceId}`,
+      status: "fail",
+      message: `${account.sourceId} names a proxy the file's \`proxies\` list lacks (unknown_proxy), so it is left out of every push: \`gray-assistant proxies\` lists the ids, \`gray-assistant accounts proxy ${account.sourceId} --proxy <id>\` (or --none) gives it one`,
+    });
   }
   return done();
 }

@@ -15,7 +15,7 @@ export { SegmentedControl, Tabs, opensHere, type SegmentOption, type TabItem } f
 export { Page, PageHeader, Section, SectionHeader, Panel, Stack, Inline, Grow, FormGrid, Split } from './Layout';
 export { Notice, EmptyState, Badge, Spinner, Skeleton, type Tone } from './Feedback';
 export { DescriptionList, DescriptionItem, Stat, StatGroup, type StatDelta, Table, TableHead, TableBody, TableRow, TableHeaderCell, TableCell, Disclosure, List, Steps, Step, type StepState, Progress } from './Data';
-export { Text, Measured, TextLink, InlineCode, Name, VisuallyHidden, useTruncated } from './Text';
+export { Text, Facts, Measured, TextLink, InlineCode, Name, VisuallyHidden, useTruncated } from './Text';
 export { CodeBlock, CodeExamples, CopyButton, type CodeLanguage, type CodeExample } from './Code';
 export { Fieldset } from './Fieldset';
 export { SettingsList, SettingsRow } from './Settings';
@@ -24,7 +24,7 @@ export { MultiSelectField, type MultiSelectOption } from './MultiSelectField';
 export { Picker, type PickerChoice } from './Picker';
 export { focusHeading } from './focus';
 export { SortableHeaderCell, RowHeaderCell, type SortDirection } from './TableHeaders';
-export { Menu, MenuItem, MenuSeparator } from './Menu';
+export { Menu, MenuGroup, MenuItem, MenuLinkItem, MenuSeparator } from './Menu';
 export { OverflowNav, type NavLink } from './OverflowNav';
 export { SectionNav } from './SectionNav';
 export { SideNav, type SideNavItem } from './SideNav';

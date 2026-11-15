@@ -94,6 +94,9 @@ const RESTART_WORDS = {
 export const DELIVER_WAIT_DEFAULT_MS = 15 * 60_000;
 const DELIVER_WAIT_POLL_MS = 10_000;
 /** What `missing_credential` asks for, beside the account it names: a secret, or the type that has none. */
+/** What `unknown_proxy` asks for, beside the account it leaves out. */
+const UNKNOWN_PROXY_HINT = "its `proxy` names an id accounts.json's `proxies` list lacks: `gray-assistant proxies` lists them, `gray-assistant accounts proxy` gives the account another";
+
 const MISSING_CREDENTIAL_HINT =
   'the source gave no secret for it: give it one there, or list a subscription you sign in inside the VM with "credential": {"type": "sign_in"}';
 /** The largest answer the VM gives (a receipt, a refusal). */
@@ -284,7 +287,9 @@ export function phase2Candidate(answer: unknown, relayId: string, chain: ChainCo
  * command has read the source; it then posts again with what the source lists and the accounts it left out (`parked`,
  * each with its reason), as the agent does, so Gray adopts an account new to it at once and the panel names each one
  * left out. Each status carries the registry token's end (`stack.registry.expires_at`), so the panel's notice follows
- * a token changed with `registry set`.
+ * a token changed with `registry set`, and the page's address when the config names one (`ui.origin`, as
+ * `ui_mode: "public"` with `ui_origin`; docs/design/relay-operator-page.md section 3): where the page is set up, for
+ * the panel's jumps, not that it is up now.
  */
 async function cliAgentAnswer(
   config: LoadedRelayConfig,
@@ -307,6 +312,7 @@ async function cliAgentAnswer(
     sources,
     acceptedCompose: null,
     registryExpiresAtMs: stack.registry.expiresAtMs,
+    ...(config.daemon.ui?.origin ? { ui: { mode: "public" as const, origin: config.daemon.ui.origin } } : {}),
   });
   const url = `${stack.reportOrigin}${AGENT_STATUS_PATH}`;
   let answer: { readonly status: number; readonly text: string };
@@ -704,7 +710,9 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
           ? ` (${credentialFormatHint(skipped.vendor, skipped.credentialType ?? "")})`
           : skipped.reason === "missing_credential"
             ? ` (${MISSING_CREDENTIAL_HINT})`
-            : "";
+            : skipped.reason === "unknown_proxy"
+              ? ` (${UNKNOWN_PROXY_HINT})`
+              : "";
       io.stderr(`gray-assistant ${name}: left out a ${skipped.vendor} account${skipped.panelId === null ? "" : ` (${skipped.panelId})`}: ${skipped.reason}${hint}\n`);
     }
     for (const said of accounts.notFollowed ?? []) {

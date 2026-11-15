@@ -1,127 +1,159 @@
-// Add account: the one form where a key is typed. Gray's panel links here with the account's ID, vendor and models
-// (`/accounts/new?id=…&vendor=…&models=…`), so the operator only pastes the key. gray-assistant writes the account to
-// accounts.json on the relay's machine; nothing of gray-assistant runs all the time, so the operator's next
-// `accounts push` reads the file and seals the key for Gray's VM.
+// Add account: a subscription, or API keys. A subscription has no key to paste: the form takes its vendor, its ID and
+// its proxy, saves it and goes straight to the sign-in steps on the account's screen. API keys are pasted, one or
+// several (one a line; several get an ID prefix). Gray's panel links here with what it knows
+// (`?id=&vendor=&type=&group=`). The group is Gray's: gray-assistant puts the account in it once Gray has the account.
+// Keys stay on the relay's machine: gray-assistant writes them there and sends them sealed to the VM by itself.
 import { useMemo, useState } from 'react';
-import { Button, Field, Fieldset, FormGrid, Inline, InlineCode, LinkButton, Notice, Page, PageHeader, Panel, Section, SegmentedControl, SelectField, Skeleton, Stack, Step, Steps, Text, TextInput, toast } from '../../ui';
-import { ApiError, write, type AccountsView, type PastedCredentialType, type RelayInfo, type Vendor } from '../api';
-import { useLocal } from '../data';
+import { AutocompleteInput, Button, Field, Fieldset, FormGrid, Inline, LinkButton, Notice, Page, PageHeader, Panel, SegmentedControl, SelectField, Skeleton, Stack, TextArea, TextInput, TextLink, toast } from '../../ui';
+import { ApiError, write, type AccountsView, type PanelView, type ProxiesView, type Vendor } from '../api';
+import { useChanged, useLocal, wantSignIn } from '../data';
 import { href, navigate } from '../router';
-import { CREDENTIAL_CHOICES, credentialLabel, fieldError, keyFits, keyHint, recognizeKey, refusalText, relayCommand, VENDOR_LABEL, VENDORS } from '../words';
+import { accountPath } from '../screens';
+import { fieldError, groupSuggestions, KEY_VENDORS, keyFits, keyHint, linesOf, recognizeKey, refusalText, refusalWords, SUBSCRIPTION_VENDORS, VENDOR_LABEL, VENDORS } from '../words';
+import { editable, ProxyPicker, SourceNotice } from './parts';
 
-type Form = { id: string; vendor: Vendor; type: PastedCredentialType; key: string; models: string; proxy: string };
+type Kind = 'subscription' | 'key';
+type Form = { kind: Kind; vendor: Vendor; id: string; proxy: string | null; group: string; many: boolean; key: string; keys: string; prefix: string };
 
+const vendorsOf = (kind: Kind) => kind === 'subscription' ? SUBSCRIPTION_VENDORS : KEY_VENDORS;
+
+/** What Gray's panel's link asks for: the account's ID, its vendor and its type (a subscription unless it says a key). */
 function initialForm(query: URLSearchParams): Form {
-  const id = (query.get('id') ?? '').trim();
-  const vendor = VENDORS.find(item => item === query.get('vendor')) ?? 'anthropic';
-  const asked = query.get('type');
-  const type = CREDENTIAL_CHOICES[vendor].find(item => item === asked) ?? CREDENTIAL_CHOICES[vendor][0]!;
-  const models = (query.get('models') ?? '').split(',').map(model => model.trim()).filter(Boolean).join(', ');
-  return { id, vendor, type, key: '', models, proxy: '' };
+  const asked = VENDORS.find(item => item === query.get('vendor')) ?? null;
+  const type = query.get('type');
+  const kind: Kind = type === 'api_key' ? 'key' : type === 'sign_in' || type === 'password' || type === 'oauth_access_token' ? 'subscription'
+    : asked !== null && !SUBSCRIPTION_VENDORS.includes(asked) ? 'key' : 'subscription';
+  const vendor = asked !== null && vendorsOf(kind).includes(asked) ? asked : vendorsOf(kind)[0]!;
+  return { kind, vendor, id: (query.get('id') ?? '').trim(), proxy: null, group: (query.get('group') ?? '').trim(), many: false, key: '', keys: '', prefix: '' };
 }
 
-export function AddAccountPage({ relay, query }: { relay: RelayInfo; query: URLSearchParams }) {
+export function AddAccountPage({ query }: { query: URLSearchParams }) {
   const accounts = useLocal<AccountsView>('accounts', { live: 60_000 });
-  const fromPanel = query.has('id') || query.has('vendor') || query.has('models');
+  const source = accounts.data?.source;
+  const canEdit = editable(source);
+  const proxies = useLocal<ProxiesView>('proxies', { enabled: canEdit });
+  // The groups in use on Gray, to pick from; the field takes a new name all the same while Gray does not answer.
+  const panel = useLocal<PanelView>('panel', { enabled: canEdit });
+  const changed = useChanged();
   const [form, setForm] = useState<Form>(() => initialForm(query));
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [failure, setFailure] = useState<string | null>(null);
   const set = (patch: Partial<Form>) => setForm(current => ({ ...current, ...patch }));
-  const source = accounts.data?.source;
   const taken = useMemo(() => new Set((accounts.data?.accounts ?? []).map(account => account.account_id)), [accounts.data]);
+  const id = form.id.trim(), prefix = form.prefix.trim(), group = form.group.trim() || null;
+  const groups = useMemo(() => [...new Set((panel.data?.accounts ?? []).map(account => account.group).filter((name): name is string => !!name))].sort((a, b) => a.localeCompare(b)), [panel.data]);
+  const idTaken = taken.has(id);
+  const keys = linesOf(form.keys);
   const seen = recognizeKey(form.key);
-  const fits = keyFits(form.vendor, form.type, seen);
-  const push = relayCommand(accounts.data?.relay ?? relay, 'accounts push');
-  const blocked = !!source && (source.kind !== 'file' || !source.writable || source.problem !== null);
-  const idTaken = taken.has(form.id.trim());
+  const fits = keyFits(form.vendor, 'api_key', seen);
+  const several = form.kind === 'key' && form.many;
+  const ready = form.kind === 'subscription' ? id !== '' && !idTaken
+    : several ? keys.length > 0
+    : id !== '' && !idTaken && form.key.trim() !== '';
+
+  function refuse(error: unknown) {
+    const refusal = error instanceof ApiError ? error : null;
+    // The form's fields by the server's names; a subscription's proxy is refused as `proxy`, a key's as `proxy_id`.
+    if (refusal?.field) setErrors({ [refusal.field === 'proxy' ? 'proxy_id' : refusal.field]: fieldError(refusal.field, refusal.code, refusal.detail) });
+    else setFailure(refusalText(refusal?.code ?? 'internal', refusal?.detail));
+  }
 
   async function submit() {
     setBusy(true);
     setErrors({});
     setFailure(null);
-    const id = form.id.trim();
-    const models = form.models.split(',').map(model => model.trim()).filter(Boolean);
     try {
-      await write<AccountsView>('POST', 'accounts', {
-        account_id: id,
-        vendor: form.vendor,
-        credential: { type: form.type, value: form.key },
-        models: models.length ? models : null,
-        proxy: form.proxy.trim() || null,
-      });
-      set({ key: '' });
-      toast.success(`Added ${id}.`, { description: 'Run accounts push to seal its key for Gray’s VM.' });
-      navigate('/accounts', { replace: true });
+      if (form.kind === 'subscription') {
+        // No secret: the account is listed with its proxy (the list's id), and signed in inside the VM next.
+        await write('POST', 'accounts', { account_id: id, vendor: form.vendor, credential: { type: 'sign_in' }, models: null, proxy: form.proxy, group });
+        await changed();
+        wantSignIn(id);
+        navigate(accountPath(id, 'sign-in'), { replace: true });
+      } else if (several) {
+        const added = await write<{ ids: string[] }>('POST', 'accounts/keys', { vendor: form.vendor, keys, proxy_id: form.proxy, id_prefix: prefix === '' ? null : prefix, group });
+        set({ keys: '' });
+        await changed();
+        toast.success(added.ids.length === 1 ? `Added ${added.ids[0]}.` : `Added ${added.ids.length} accounts.`, added.ids.length > 1 ? { description: `${added.ids[0]} to ${added.ids.at(-1)}` } : undefined);
+        navigate('/accounts', { replace: true });
+      } else {
+        // One key keeps the ID given (Gray's panel names it). A key account's proxy is set by the list's own call.
+        await write('POST', 'accounts', { account_id: id, vendor: form.vendor, credential: { type: 'api_key', value: form.key.trim() }, models: null, proxy: null, group });
+        set({ key: '' });
+        let withProxy = true;
+        if (form.proxy !== null) {
+          try {
+            await write('PUT', 'accounts/proxy', { account_ids: [id], proxy_id: form.proxy });
+          } catch (error) {
+            withProxy = false;
+            toast.error(`Added ${id}, but its proxy isn’t set.`, { description: refusalWords(error instanceof ApiError ? error : null) });
+          }
+        }
+        await changed();
+        if (withProxy) toast.success(`Added ${id}.`);
+        navigate(withProxy ? '/accounts' : accountPath(id, 'proxy'), { replace: true });
+      }
     } catch (error) {
-      const refusal = error instanceof ApiError ? error : null;
-      if (refusal?.field) setErrors({ [refusal.field]: fieldError(refusal.field, refusal.code) });
-      else setFailure(refusalText(refusal?.code ?? 'internal', refusal?.detail));
+      refuse(error);
     } finally {
       setBusy(false);
     }
   }
 
+  const list = proxies.data?.proxies ?? [];
   return <Page size="narrow">
     <Stack gap={6}>
-      <PageHeader back={{ href: '/accounts', label: 'Accounts' }} title="Add account"
-        description="The key stays on the relay’s machine: gray-assistant writes it to accounts.json, and your next accounts push seals it for Gray’s VM. Gray’s website never sees it." />
-      {fromPanel && <Notice title={form.id ? 'Opened from Gray’s panel: paste the key' : 'Opened from Gray’s panel'}>{form.id ? null : 'Fill in the account and paste its key.'}</Notice>}
-      {source && source.kind !== 'file' && <Notice tone="warning" title="Add it in your relay software instead">
-        This relay’s accounts come from its own software{source.url ? ` at ${source.url}` : ''}, not from accounts.json. Add the account there with the same ID{form.id ? ` (${form.id})` : ''}, then run <InlineCode>{push}</InlineCode>: gray-assistant reads your software once and seals the account. Nothing reads it in the background.
-      </Notice>}
-      {source?.kind === 'file' && source.problem && <Notice tone="danger" role="alert" title="accounts.json can’t be read">Fix it first ({source.problem.detail}); this page won’t change a file gray-assistant refuses.</Notice>}
-      {source?.kind === 'file' && !source.writable && !source.problem && <Notice tone="warning" title="accounts.json is read-only here">Its folder is mounted read-only for gray-assistant, so this page can’t add the account. Mount the folder writable, or add the entry by hand.</Notice>}
+      <PageHeader back={{ href: href('/accounts'), label: 'Accounts' }} title="Add account"
+        description="Nothing typed here passes through Gray’s website." />
+      {accounts.error && <Notice tone="danger" role="alert" actions={<Button size="sm" onClick={() => void accounts.reload()}>Try again</Button>}>Couldn’t read the accounts: {refusalText(accounts.error.code)}</Notice>}
+      <SourceNotice source={source} />
       {failure && <Notice tone="danger" role="alert">{failure}</Notice>}
-      {accounts.loading && <Skeleton lines={6} label="Loading the form" />}
-      {!accounts.loading && !blocked && <Panel>
+      {(accounts.loading || proxies.loading) && <Skeleton lines={6} label="Loading the form" />}
+      {canEdit && !proxies.loading && <Panel>
         <form onSubmit={event => { event.preventDefault(); void submit(); }}>
-          <Fieldset disabled={busy} gap={6}>
-            <Section title="The account" level={2} size="sm">
-              <FormGrid columns={2}>
-                <Field label="Account ID" hint="The same ID as in Gray’s panel, so the panel finds it." error={errors['account_id'] ?? (idTaken ? fieldError('account_id', 'taken') : undefined)}>
-                  <TextInput mono required autoComplete="off" spellCheck={false} value={form.id} onChange={event => set({ id: event.target.value })} />
-                </Field>
-                <Field label="Vendor" error={errors['vendor']}>
-                  <SelectField value={form.vendor} onValueChange={value => { const vendor = value as Vendor; set({ vendor, type: CREDENTIAL_CHOICES[vendor][0]! }); }}>
-                    {VENDORS.map(vendor => <option key={vendor} value={vendor}>{VENDOR_LABEL[vendor]}</option>)}
-                  </SelectField>
-                </Field>
-              </FormGrid>
-            </Section>
-            <Section title="Its credential" level={2} size="sm">
-              <Stack gap={4}>
-                {CREDENTIAL_CHOICES[form.vendor].length > 1 && <div><SegmentedControl aria-label="Kind of credential" value={form.type} onValueChange={type => set({ type })}
-                  options={CREDENTIAL_CHOICES[form.vendor].map(type => ({ value: type, label: credentialLabel(form.vendor, type) }))} /></div>}
-                <Field label="Key" hint={seen ? `${seen.label}.${fits ? '' : ` ${keyHint(form.vendor, form.type)}`}` : keyHint(form.vendor, form.type)} error={errors['credential']}>
-                  <TextInput type="password" mono required autoComplete="off" spellCheck={false} data-1p-ignore="" data-lpignore="true" value={form.key} onChange={event => set({ key: event.target.value })} />
-                </Field>
-              </Stack>
-            </Section>
-            <Section title="Serving" level={2} size="sm">
-              <FormGrid columns={1}>
-                <Field label="Models" optional hint="Model IDs separated by commas. Empty: every model of the vendor." error={errors['models']}>
-                  <TextInput mono autoComplete="off" spellCheck={false} value={form.models} placeholder="claude-sonnet-4-5, claude-opus-4-1" onChange={event => set({ models: event.target.value })} />
-                </Field>
-                <Field label="Proxy" optional hint="Where its calls to the vendor leave from, e.g. socks5://user:password@host:1080. Its password stays on the relay’s machine too." error={errors['proxy']}>
-                  <TextInput mono autoComplete="off" spellCheck={false} value={form.proxy} placeholder="socks5://user:password@host:1080" onChange={event => set({ proxy: event.target.value })} />
-                </Field>
-              </FormGrid>
-            </Section>
+          <Fieldset disabled={busy} gap={5}>
+            <div><SegmentedControl aria-label="Kind of account" value={form.kind}
+              onValueChange={kind => { set({ kind, vendor: vendorsOf(kind).includes(form.vendor) ? form.vendor : vendorsOf(kind)[0]! }); setErrors({}); }}
+              options={[{ value: 'subscription', label: 'Subscription' }, { value: 'key', label: 'API key' }]} /></div>
+            <FormGrid columns={2}>
+              <Field label="Vendor" error={errors['vendor']}>
+                <SelectField value={form.vendor} onValueChange={value => set({ vendor: value as Vendor })}>
+                  {vendorsOf(form.kind).map(vendor => <option key={vendor} value={vendor}>{VENDOR_LABEL[vendor]}</option>)}
+                </SelectField>
+              </Field>
+              <Field label="Proxy" error={errors['proxy_id']} aside={<TextLink href={href('/proxies')}>Add a proxy</TextLink>}>
+                <ProxyPicker proxies={list} value={form.proxy} onChange={proxy => set({ proxy })} />
+              </Field>
+            </FormGrid>
+            {form.kind === 'key' && <div><SegmentedControl aria-label="How many keys" value={form.many ? 'several' : 'one'} onValueChange={next => { set({ many: next === 'several' }); setErrors({}); }}
+              options={[{ value: 'one', label: 'One key' }, { value: 'several', label: 'Several keys' }]} /></div>}
+            {!several && <Field label="Account ID" error={errors['account_id'] ?? (idTaken ? fieldError('account_id', 'taken') : undefined)}>
+              <TextInput mono required autoComplete="off" spellCheck={false} value={form.id} onChange={event => set({ id: event.target.value })} />
+            </Field>}
+            {form.kind === 'key' && !several && <Field label="Key" hint={seen ? `${seen.label}.${fits ? '' : ` ${keyHint(form.vendor, 'api_key')}`}` : keyHint(form.vendor, 'api_key')} error={errors['credential']}>
+              <TextInput type="password" mono required autoComplete="off" spellCheck={false} data-1p-ignore="" data-lpignore="true" value={form.key} onChange={event => set({ key: event.target.value })} />
+            </Field>}
+            {several && <>
+              <Field label="Keys" hint={`One a line. ${keyHint(form.vendor, 'api_key')}`} error={errors['keys']}>
+                <TextArea mono rows={6} wrap="off" autoComplete="off" spellCheck={false} data-1p-ignore="" data-lpignore="true" value={form.keys} onChange={event => set({ keys: event.target.value })} />
+              </Field>
+              <Field label="ID prefix" optional hint={`IDs become ${prefix || form.vendor}-1, ${prefix || form.vendor}-2.`} error={errors['id_prefix']}>
+                <TextInput mono autoComplete="off" spellCheck={false} placeholder={form.vendor} value={form.prefix} onChange={event => set({ prefix: event.target.value })} />
+              </Field>
+            </>}
+            <Field label="Group" optional error={errors['group']}>
+              <AutocompleteInput value={form.group} onValueChange={value => set({ group: value })} suggestions={groupSuggestions(groups, form.group)} maxLength={64}
+                placeholder={groups.length ? 'Pick a group or type a new name' : 'Type a name'} />
+            </Field>
             <Inline gap={2}>
-              <Button type="submit" variant="primary" loading={busy} disabled={!form.id.trim() || idTaken || !form.key.trim()}>Add account</Button>
+              <Button type="submit" variant="primary" loading={busy} disabled={!ready}>
+                {form.kind === 'subscription' ? 'Save and sign in' : several && keys.length > 1 ? `Add ${keys.length} accounts` : 'Add account'}
+              </Button>
               <LinkButton href={href('/accounts')}>Cancel</LinkButton>
             </Inline>
           </Fieldset>
         </form>
       </Panel>}
-      {!blocked && <Section title="What happens next" level={2} size="sm">
-        <Steps aria-label="What happens next">
-          <Step title="gray-assistant writes it to accounts.json" aside="mode 0600" />
-          <Step title="You run accounts push: it seals the key for Gray’s VM" />
-          <Step title="Gray’s panel shows it serving" />
-        </Steps>
-      </Section>}
     </Stack>
   </Page>;
 }

@@ -77,6 +77,7 @@
  * them, so the agent accepts each one once, as `releases accept` would, when it first sees it in the list
  * (`acceptPairingReleases`); every later release waits `delay_days` as before.
  */
+import { STACK_AGENT_UI_ORIGIN_PATTERN } from "@gray/control/stack-agent";
 import { isTunnelZone, TUNNEL_LOGIN_MAX_LIFETIME_MS, tunnelName } from "@gray/control/tunnel";
 import { isObject } from "@gray/json";
 import { isStackRelayImage, releaseFreshnessLocation } from "@gray/lane-verify";
@@ -368,8 +369,10 @@ const uiSchema = z
       .strict()
       .optional(),
     public: z.boolean().optional(),
-    // An https origin, no path: the address the relay's proxy serves the agent on.
-    origin: z.string().max(2048).refine((value) => {
+    // An https origin, no path: the address the relay's proxy serves the agent on. Held to what the signed status may
+    // name (`ui_origin`, STACK_AGENT_UI_ORIGIN_PATTERN): a lower-case host name, an optional port, at most 255
+    // characters, so an origin the config takes is one the panel's jumps can open.
+    origin: z.string().max(255).regex(STACK_AGENT_UI_ORIGIN_PATTERN).refine((value) => {
       try {
         const url = new URL(value);
         return url.protocol === "https:" && url.origin === value;

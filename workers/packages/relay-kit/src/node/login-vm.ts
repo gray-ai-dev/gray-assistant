@@ -97,7 +97,23 @@ export interface LoginVmOptions {
   readonly pollMs?: number;
   /** How long the start waits for an account the VM does not serve yet (`ACCOUNT_WAIT_MS` unless given). */
   readonly accountWaitMs?: number;
+  /**
+   * The sign-in as it goes, for a caller that is not a terminal (gray-assistant's page, `ui/sign-in.ts`): each step,
+   * prompt and notice beside the text this command prints for it. The terminal passes none.
+   */
+  readonly onEvent?: (event: LoginVmEvent) => void;
 }
+
+/** What `loginVm` tells `onEvent`: the same moments its text says, as closed words and the VM's prompt as it is. */
+export type LoginVmEvent =
+  | { readonly kind: "progress"; readonly step: "checking" | "waiting_account" | "asking" }
+  /** A prompt to act on; `listening` when a local listener takes the browser's return (so nothing is pasted). */
+  | { readonly kind: "prompt"; readonly prompt: RelayLoginPrompt; readonly vendor: string; readonly listening: boolean }
+  | { readonly kind: "prompt_closed" }
+  | { readonly kind: "notice"; readonly code: "input_refused" | "not_callback_address" | "wrong_callback" | "vendor_refused" | "prompt_refused" | "prompt_changed" }
+  | { readonly kind: "signed_in" }
+  | { readonly kind: "cancelled" }
+  | { readonly kind: "failed"; readonly code: string; readonly message: string };
 
 /**
  * How long `login` waits for an account the VM does not serve yet, and how often it asks. A newly sealed account
@@ -240,25 +256,59 @@ export async function loginVm(options: LoginVmOptions): Promise<number> {
   const vm = debugStackVm(config, "`gray-assistant login <account>` signs an account in inside the relay's stack VM");
   const pollMs = options.pollMs ?? LOGIN_POLL_MS;
   const listen = options.listen ?? nodeListen;
+  const emit = (event: LoginVmEvent): void => options.onEvent?.(event);
+  // Cancelling works from the first moment (a page's Cancel, or Ctrl-C), also while the VM is checked and while an
+  // account sealed just now is awaited: before the session exists there is nothing in the VM to close.
+  let cancelled = false;
+  let cancelNow: () => void = () => undefined;
+  /** Resolves when cancel is asked: what a wait before the session races against, so Ctrl-C does not wait for the VM. */
+  const cancelSeen = new Promise<"cancelled">((resolve) => {
+    cancelNow = () => resolve("cancelled");
+  });
+  const stopCancel = io.onCancel(() => {
+    cancelled = true;
+    cancelNow();
+  });
+  const cancelledBeforeSession = (): number => {
+    stopCancel();
+    emit({ kind: "cancelled" });
+    io.stdout("\nCancelled.\n");
+    return 130;
+  };
   const fail = (code: string, message: string): number => {
+    stopCancel();
+    emit({ kind: "failed", code, message });
     io.stderr(`${message}\n`);
     io.stderr(`${toJsonString({ command: "login", ok: false, relay_id: relayId, account_id: accountId, code })}\n`);
     return 1;
   };
 
+  emit({ kind: "progress", step: "checking" });
   io.stdout("Checking the VM … ");
   const fetch = options.fetch ?? (await import("./daemon/fetch.ts")).createPinnedDaemonFetch({ maxResponseBytes: 256 * 1024 });
   const stack = config.daemon.stack;
   const issueReader = options.stackIssue ?? (stack === null ? undefined : (await import("./daemon/pull-token-log.ts")).createPullTokenIssueReader(stack.issueLog));
   const relayPublicKeyHex = bytesToLowerHex(await ed25519PublicKey(options.seed));
   // The entry's newest boot: the serving instance, the one that signs in (a draining one answers login_held).
-  const attested = await attestStackBoot({ config, vm, keyset: undefined, nowMs: io.now(), relayPublicKeyHex, ...(options.attest === undefined ? {} : { attest: options.attest }), ...(issueReader === undefined ? {} : { stackIssue: issueReader }) });
+  const attesting = attestStackBoot({ config, vm, keyset: undefined, nowMs: io.now(), relayPublicKeyHex, ...(options.attest === undefined ? {} : { attest: options.attest }), ...(issueReader === undefined ? {} : { stackIssue: issueReader }) });
+  // Left to end by itself when cancel comes first: it holds nothing in the VM.
+  attesting.catch(() => undefined);
+  let attested: Awaited<typeof attesting>;
+  try {
+    const first = await Promise.race([attesting, cancelSeen]);
+    if (first === "cancelled") return cancelledBeforeSession();
+    attested = first;
+  } catch (error) {
+    stopCancel();
+    throw error;
+  }
   if ("code" in attested) {
     io.stdout("failed\n");
     return fail(attested.code, attested.message);
   }
   const image = attested.bootImage.includes("@") ? attested.bootImage.slice(attested.bootImage.indexOf("@") + 1) : attested.bootImage;
   io.stdout(`ok (attested: relay ${relayId}, image ${image.slice(0, 19)}…)\n`);
+  if (cancelled) return cancelledBeforeSession();
 
   const tunnel = tunnelOriginOf(vm.origin) !== null;
   const call = async (path: string, init: { readonly method: "GET" | "POST"; readonly body?: Json; readonly key?: string }): Promise<DaemonHttpResponse | { readonly transport: string }> => {
@@ -287,6 +337,7 @@ export async function loginVm(options: LoginVmOptions): Promise<number> {
   const askedFrom = io.now();
   let started: DaemonHttpResponse;
   for (let waiting = false; ; ) {
+    if (cancelled) return cancelledBeforeSession();
     const signed = await loginStartValue({ relayId, accountId, signingKey: options.seed, issuedAt: Math.floor(io.now() / 1000), nonce: io.random(16) });
     const answer = await call(RELAY_LOGIN_PATH, { method: "POST", body: signed });
     if ("transport" in answer) return fail(`transport_${answer.transport}`, `The request did not reach the VM through Gray's entry (${answer.transport}); \`gray-assistant doctor\` checks the path.`);
@@ -296,9 +347,10 @@ export async function loginVm(options: LoginVmOptions): Promise<number> {
     }
     const code = errorCodeOf(answer.body);
     if (code !== "login_account_unknown" || io.now() - askedFrom >= accountWaitMs) return fail(code ?? `http_${answer.status}`, routeRefusal(answer.status, code, accountId));
+    if (!waiting) emit({ kind: "progress", step: "waiting_account" });
     if (!waiting) io.stdout(`The VM does not serve ${accountId} yet. An account sealed just now reaches it within a minute: waiting (at most ${Math.round(accountWaitMs / 1000)} s) …\n`);
     waiting = true;
-    await io.sleep(ACCOUNT_WAIT_POLL_MS);
+    await Promise.race([io.sleep(ACCOUNT_WAIT_POLL_MS), cancelSeen]);
   }
   let startAnswer;
   try {
@@ -309,6 +361,7 @@ export async function loginVm(options: LoginVmOptions): Promise<number> {
   if (startAnswer === null) return fail("answer_invalid", "The VM's answer is not a sign-in session; update gray-assistant.");
   const key = startAnswer.key;
   const sessionPath = `${RELAY_LOGIN_PATH}/${startAnswer.session}`;
+  emit({ kind: "progress", step: "asking" });
   io.stdout(`Asking your software in the VM to sign ${accountId} in …\n`);
 
   /** The 60 s for a prompt run from the start, and again from a prompt the VM refused. */
@@ -318,7 +371,6 @@ export async function loginVm(options: LoginVmOptions): Promise<number> {
   let view: RelayLoginView = startAnswer;
   let shown: RelayLoginPrompt | null = null;
   let lastSeen = view.last?.at_ms ?? null;
-  let cancelled = false;
   let listener: LocalListener | null = null;
   let stopLines: (() => void) | null = null;
   const pending: Promise<unknown>[] = [];
@@ -337,6 +389,7 @@ export async function loginVm(options: LoginVmOptions): Promise<number> {
   const send = async (kind: "input" | "callback", body: Json): Promise<boolean> => {
     const answer = readView(await call(`${sessionPath}/${kind}`, { method: "POST", body, key }));
     if ("refused" in answer) {
+      emit({ kind: "notice", code: "input_refused" });
       io.stdout(`The VM did not take it (${answer.refused}). Try again.\n`);
       return false;
     }
@@ -356,14 +409,17 @@ export async function loginVm(options: LoginVmOptions): Promise<number> {
     const minutes = minutesLeft(prompt.expires_at_ms, io.now());
     io.stdout(`Vendor: ${view.vendor}   Account: ${accountId}\n`);
     if (prompt.kind === "device_code") {
+      emit({ kind: "prompt", prompt, vendor: view.vendor, listening: false });
       io.stdout(`Open ${prompt.url} in any browser and enter the code ${prompt.code} within ${minutes} min.\nWaiting … (Ctrl-C cancels)\n`);
       return;
     }
     if (prompt.flow === "code") {
+      emit({ kind: "prompt", prompt, vendor: view.vendor, listening: false });
       io.stdout(`Open this address in a browser, sign in and approve:\n  ${prompt.url}\nThe page then shows a code. Paste it here and press Enter (within ${minutes} min):\n> `);
     } else {
       const port = prompt.callback?.port ?? null;
       listener = port === null ? null : await listen(port, (request) => forwardCallback(request, prompt));
+      emit({ kind: "prompt", prompt, vendor: view.vendor, listening: listener !== null });
       if (listener !== null) {
         io.stdout(
           `Open this address in a browser on this machine, sign in and approve (within ${minutes} min):\n  ${prompt.url}\nListening on localhost:${port} for the browser's return … (Ctrl-C cancels)\n` +
@@ -386,11 +442,13 @@ export async function loginVm(options: LoginVmOptions): Promise<number> {
       const port = prompt.callback?.port ?? 0;
       const request = callbackOfPaste(text, port);
       if (request === null) {
+        emit({ kind: "notice", code: "not_callback_address" });
         io.stdout(`That is not the address the browser ended on (http://localhost:${port}…). Paste the whole address:\n> `);
         return;
       }
       pending.push(
         forwardCallback(request, prompt).then((taken) => {
+          if (!taken) emit({ kind: "notice", code: "wrong_callback" });
           if (!taken) io.stdout(`That address is not the sign-in's return (${prompt.callback?.path ?? "/"}). Paste the whole address:\n> `);
         }),
       );
@@ -399,15 +457,13 @@ export async function loginVm(options: LoginVmOptions): Promise<number> {
 
   /** Stops what a shown prompt started: its listener and its stdin reader. */
   const stopPrompt = async (): Promise<void> => {
+    emit({ kind: "prompt_closed" });
     (stopLines as (() => void) | null)?.();
     stopLines = null;
     const open = listener as LocalListener | null;
     listener = null;
     await open?.close();
   };
-  const stopCancel = io.onCancel(() => {
-    cancelled = true;
-  });
   const cleanup = async (cancel: boolean): Promise<void> => {
     stopCancel();
     (stopLines as (() => void) | null)?.();
@@ -420,11 +476,13 @@ export async function loginVm(options: LoginVmOptions): Promise<number> {
     for (;;) {
       if (cancelled) {
         await cleanup(true);
+        emit({ kind: "cancelled" });
         io.stdout("\nCancelled; the VM closed the sign-in.\n");
         return 130;
       }
       if (view.state === "signed_in") {
         await cleanup(false);
+        emit({ kind: "signed_in" });
         io.stdout(`Signed in: ${accountId}. Your software in the VM holds the tokens and refreshes them; nothing more to do.\n`);
         io.stderr(`${toJsonString({ command: "login", ok: true, relay_id: relayId, account_id: accountId })}\n`);
         return 0;
@@ -436,16 +494,21 @@ export async function loginVm(options: LoginVmOptions): Promise<number> {
       if (view.last !== null && view.last.at_ms !== lastSeen) {
         lastSeen = view.last.at_ms;
         if (view.last.outcome === "failed" && view.last.code === "prompt_refused") {
+          emit({ kind: "notice", code: "prompt_refused" });
           io.stdout("The VM refused the sign-in address your software made; its adapter sees the rule in the 422 answer, and your software may offer another.\n");
           await stopPrompt();
           shown = null;
           promptWaitFrom = io.now();
-        } else if (view.last.outcome === "failed") io.stdout("The vendor refused the code. Paste it again, or open the address again for a new one.\n> ");
+        } else if (view.last.outcome === "failed") {
+          emit({ kind: "notice", code: "vendor_refused" });
+          io.stdout("The vendor refused the code. Paste it again, or open the address again for a new one.\n> ");
+        }
       }
       // A new prompt (a new device code, a new address) replaces the one shown.
       if (view.prompt !== null && (shown === null || JSON.stringify(shown) !== JSON.stringify(view.prompt))) {
         if (shown !== null) {
           await stopPrompt();
+          emit({ kind: "notice", code: "prompt_changed" });
           io.stdout("\nThe sign-in changed; use this instead:\n");
         }
         shown = view.prompt;

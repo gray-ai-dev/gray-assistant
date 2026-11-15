@@ -28,6 +28,12 @@
  *     gray-assistant deliver [--config <gray-assistant.jsonc>] [--no-wait] [--timeout <s>]
  *     gray-assistant accounts push [--config <gray-assistant.jsonc>]
  *     gray-assistant accounts import <accounts.json> [--config <gray-assistant.jsonc>]
+ *     gray-assistant accounts add --vendor <vendor> [--proxy <id>] [--id-prefix <text>] [--config <gray-assistant.jsonc>]
+ *     gray-assistant accounts proxy <account>... (--proxy <id> | --none) [--config <gray-assistant.jsonc>]
+ *     gray-assistant accounts group <account>... (--group <name> | --none) [--config <gray-assistant.jsonc>]
+ *     gray-assistant proxies [--config <gray-assistant.jsonc>]
+ *     gray-assistant proxies add [<url>] [--id <id>] [--config <gray-assistant.jsonc>]
+ *     gray-assistant proxies remove <id> [--config <gray-assistant.jsonc>]
  *     gray-assistant messages [--seen] [--config <gray-assistant.jsonc>]
  *     gray-assistant registry set [--config <gray-assistant.jsonc>] 
  *     gray-assistant run [--config <gray-assistant.jsonc>] [--ca <pem>] [--verifier-module <mjs>]
@@ -40,11 +46,11 @@
  *     gray-assistant stack rollout <image> | rollback | restart [--config <gray-assistant.jsonc>] [--no-wait] [--timeout <s>]
  *     gray-assistant stack status [--config <gray-assistant.jsonc>]
  *     gray-assistant debug get <request id> [--out <file>] [--config <gray-assistant.jsonc>]
- *     gray-assistant login <account> [--vendor <anthropic|chatgpt_codex> [--proxy <url>]] [--config <gray-assistant.jsonc>]
- *     gray-assistant ui [--config <gray-assistant.jsonc>] [--port <n>] [--ca <pem>] [--verifier-module <mjs>]
+ *     gray-assistant login <account> [--vendor <anthropic|chatgpt_codex> [--proxy <url|id>]] [--config <gray-assistant.jsonc>]
+ *     gray-assistant ui [--service] [--config <gray-assistant.jsonc>] [--port <n>] [--ca <pem>] [--verifier-module <mjs>]
  *     gray-assistant ui link [--config <gray-assistant.jsonc>] [--port <n>]
- *     gray-assistant ui enroll [--config <gray-assistant.jsonc>] [--origin <https origin>]
- *     gray-assistant ui passkeys list|revoke <id> [--config <gray-assistant.jsonc>]
+ *     gray-assistant ui enroll [--config <gray-assistant.jsonc>]
+ *     gray-assistant ui passkeys [revoke <id>] [--config <gray-assistant.jsonc>]
  *     gray-assistant policy test --bundle <bundle.json> --fixtures <fixtures.jsonl>
  *                              (--key <relay-key.json> | --public-key <64 hex>)
  *     gray-assistant config set <member> <value> [--json] [--config <gray-assistant.jsonc>]
@@ -62,7 +68,7 @@
  * credentials and tokens stay in the process (the only binary a command prints is a ciphertext
  * envelope, which is not a secret); tests scan every stdout/stderr line for them.
  */
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { isIP } from "node:net";
 import { join } from "node:path";
 import { get, isObject, parsePlain, parseStrict, toJsonString, type JsonObject } from "@gray/json";
@@ -132,6 +138,12 @@ export interface CliIo {
   readonly kitMount?: string;
   /** Gray's messages route (`./messages.ts`); the tests pass a fake, the CLI global `fetch`. */
   readonly messagesPost?: import("./messages.ts").MessagesPost;
+  /** Gray's routes a command signs a request for with the relay key (`accounts group`); the tests pass a fake, the CLI global `fetch`. */
+  readonly grayPost?: import("./stack.ts").StackPost;
+  /** Standard input, whole (`proxies add`, `accounts add`: one a line); null when nothing is piped in. The tests pass a text. */
+  readonly stdin?: () => string | null;
+  /** Ends a command that runs until it is stopped (`ui`); the CLI stops on SIGINT and SIGTERM, the tests resolve this. */
+  readonly stopped?: Promise<void>;
 }
 
 function defaultIo(): CliIo {
@@ -170,6 +182,8 @@ const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "submit",
   "print",
   "seen",
+  "none",
+  "service",
 ]);
 
 function parseArgs(argv: readonly string[]): ParsedArgs {
@@ -261,10 +275,21 @@ function usage(): string {
     "                                    piped from anywhere: docker compose run --rm --no-deps -T agent accounts import - < accounts.json;",
     "                                    or a copy in the kit directory, which the container has at /run/secrets:",
     "                                    docker compose run --rm --no-deps agent accounts import /run/secrets/accounts.json, then remove that copy)",
+    "       gray-assistant accounts add --vendor <vendor> [--proxy <id>] [--id-prefix <text>] [--config <config>]   (the file source: one API-key account per key,",
+    "                                    the keys on standard input, one a line, never on the command line; ids <prefix>-<n>, the prefix the vendor by default;",
+    "                                    piped: docker compose run --rm --no-deps -T agent accounts add --vendor anthropic < keys.txt)",
+    "       gray-assistant accounts group <account>... (--group <name> | --none) [--config <config>]   (the accounts' group on Gray's panel: a name for your people, kept on Gray)",
+    "       gray-assistant accounts proxy <account>... (--proxy <id> | --none) [--config <config>]   (the file source: the accounts leave through that proxy",
+    "                                    of accounts.json's list, or through none)",
+    "       gray-assistant proxies [--config <config>]   (the file source: accounts.json's proxy list and the accounts that name each; never a password)",
+    "       gray-assistant proxies add [<url>] [--id <id>] [--config <config>]   (scheme://[user:password@]host:port; one as the argument, or several on",
+    "                                    standard input, one a line; a proxy given no id gets proxy-<n>)",
+    "       gray-assistant proxies remove <id> [--config <config>]   (one no account names)",
     "       gray-assistant messages [--seen] [--config <config>]   (Gray's unread messages for the relay: a release to approve, the traffic window,",
     "                                    a VM or account problem; --seen marks them seen once the operator is told)",
     "       gray-assistant registry set [--config <config>] [--no-wait] [--timeout <seconds>]   (seal stack.registry's login anew, same designation)",
-    "       gray-assistant source check [--config <config>]   (the http source's two routes against the standard; prints no key)",
+    "       gray-assistant source check [--config <config>]   (the http source's two routes against the standard, or the file source's",
+    "                                    accounts.json: it reads, and each account's proxy is in its list; prints no key)",
     "       gray-assistant doctor [--config <config>] [--ca <pem>] [--verifier-module <module.mjs>] [--now <unix>]",
     "       gray-assistant releases list [--from-block <n>] [--config <config>]   (each release proposed on the relay's contract)",
     "       gray-assistant releases check <hash> [--kind compose|os_image] [--config <config>]   (its state on the contract, read from both RPCs, and its compose or OS image texts from Gray's signed list, checked here)",
@@ -284,12 +309,17 @@ function usage(): string {
     "                                     restart waits for the new boot's own attestation)",
     "       gray-assistant stack status [--config <config>]",
     "       gray-assistant debug get <request id> [--out <file>] [--config <config>]   (a request's record the customer authorized; the VM holds it 24 h)",
-    "       gray-assistant login <account> [--vendor <anthropic|chatgpt_codex> [--proxy <url>]] [--config <config>]",
+    "       gray-assistant login <account> [--vendor <anthropic|chatgpt_codex> [--proxy <url|id>]] [--config <config>]",
     "                                        (signs a subscription account in inside the VM, by your software there; with --vendor it first",
-    "                                        adds the account to accounts.json, with --proxy leaving through that proxy, and seals it)",
-    "       gray-assistant ui [--config <config>] [--port <n>] [--host <address>] [--ca <pem>] [--verifier-module <module.mjs>]",
-    "                                    (the local page, on 127.0.0.1; in the kit's container --host 0.0.0.0, published on the host's 127.0.0.1 only)",
+    "                                        adds the account to accounts.json, with --proxy leaving through that proxy, a URL or the id of",
+    "                                        one in accounts.json's list, and seals it)",
+    "       gray-assistant ui [--service] [--config <config>] [--port <n>] [--host <address>] [--ca <pem>] [--verifier-module <module.mjs>]",
+    "                                    (the page: on ui.origin for your operators when the config names one, else on 127.0.0.1; in the kit's",
+    "                                    container --host 0.0.0.0, published on the host's 127.0.0.1 only; --service prints no one-time link,",
+    "                                    for a page that stays up and whose output is kept as a log)",
     "       gray-assistant ui link [--config <config>] [--port <n>]   (a one-time sign-in link for the local page)",
+    "       gray-assistant ui enroll [--config <config>]   (a one-time link that adds a person's passkey to the operators' page, ui.origin)",
+    "       gray-assistant ui passkeys [revoke <id>] [--config <config>]   (who has a passkey; take one away)",
     "       gray-assistant config set <member> <value> [--json] [--config <config>]   (one member; restart the agent after)",
     "       gray-assistant config unset <member> [--config <config>]",
     "       gray-assistant upgrade --dir <kit dir> [--image <image@sha256:...>]   (a kit of any earlier version, of the old name too, to this one;",
@@ -384,8 +414,12 @@ async function dispatch(args: ParsedArgs, io: CliIo): Promise<number> {
   if (command === "accounts") {
     if (args.positionals[1] === "push") return withMessagesNote(args, io, () => deliverCli(args, io, "accounts", null));
     if (args.positionals[1] === "import") return accountsImportCommand(args, io);
+    if (args.positionals[1] === "add") return accountsAddCommand(args, io);
+    if (args.positionals[1] === "proxy") return accountsProxyCommand(args, io);
+    if (args.positionals[1] === "group") return accountsGroupCommand(args, io);
     return accountsCommand(args, io);
   }
+  if (command === "proxies") return proxiesCommand(args, io);
   if (command === "deliver") return withMessagesNote(args, io, () => deliverCli(args, io, "deliver", null));
   if (command === "messages") return messagesCliCommand(args, io);
   if (command === "registry") {
@@ -1045,6 +1079,210 @@ async function accountsImportCommand(args: ParsedArgs, io: CliIo): Promise<numbe
 }
 
 // ---------------------------------------------------------------------------------------------
+// proxies | accounts proxy | accounts add (docs/design/relay-operator-page.md section 6)
+// ---------------------------------------------------------------------------------------------
+
+/** Which of several inputs a refusal names (`proxies.1` is the second), in words; never the input itself. */
+function nthOf(detail: string | null, what: string): string {
+  const place = detail === null ? null : /^[a-z_]+\.(\d+)$/.exec(detail);
+  return place === null ? `a ${what}` : `${what} ${Number(place[1]) + 1} of those given`;
+}
+
+/** Why an edit of accounts.json was refused, in words; a refusal names a field, a closed code and a place, never a value. */
+function accountsFileRefusal(code: string, field: string | null, detail: string | null): string {
+  if (code === "source_not_file") return "this relay's accounts come from its own software (source.kind \"http\"): the proxy list and these commands are for accounts.json (source.kind \"file\"); there, each account's proxy is the one your software lists for it";
+  if (code === "source_read_only") return "accounts.json cannot be written where the source reads it (its folder is not writable by gray-assistant)";
+  if (code === "source_unreadable") return "accounts.json does not read as the source reads it; put it right first (`gray-assistant doctor` names the member)";
+  if (code === "proxy_not_found") return "accounts.json's list has no proxy of that id (`gray-assistant proxies` lists them)";
+  if (code === "proxy_in_use") return `accounts still name that proxy (${detail ?? "some"}): give them another first (gray-assistant accounts proxy <account>... --proxy <id> | --none)`;
+  if (code === "account_not_found") return `accounts.json lists no account of the id given as ${nthOf(detail, "account")} (\`gray-assistant accounts\` lists them)`;
+  if (field === "account_ids") return "name at least one account";
+  if (field === "proxy" && code === "empty") return "no proxy was given: a URL as the argument, or several on standard input, one a line";
+  if (field === "proxy") return `${nthOf(detail, "proxy")} is not a proxy URL: scheme://[user:password@]host:port with socks5, socks5h, http or https (a SOCKS URL names its port, and a password comes with a user name)`;
+  if (field === "proxy_id" && code === "taken") return "accounts.json's list already has another proxy of that id";
+  if (field === "proxy_id") return "a proxy id is 1 to 64 letters, digits, `.`, `_`, `:` or `-`";
+  if (field === "keys" && code === "empty") return "no key was given: the API keys go on standard input, one a line";
+  if (field === "keys" && code === "format") return `${nthOf(detail, "key")} does not have the form of that vendor's API key (the integration standard, section 8)`;
+  if (field === "keys" && code === "duplicate") return `${nthOf(detail, "key")} is given twice`;
+  if (field === "keys" && code === "taken") return `${nthOf(detail, "key")} is already the key of an account in accounts.json`;
+  if (field === "vendor" && code === "no_api_key") return "that vendor's accounts are subscriptions, signed in inside the VM: gray-assistant login <account> --vendor <vendor>";
+  if (field === "vendor") return `--vendor is one of ${VENDORS.join(", ")}`;
+  if (field === "id_prefix") return "--id-prefix is 1 to 100 letters, digits, `.`, `_`, `:` or `-`";
+  if (code === "refused_by_source") return `accounts.json would not read as the source reads it after the change${detail === null ? "" : ` (${detail})`}, so it was not changed`;
+  return `accounts.json was not changed (${code}${detail === null ? "" : `: ${detail}`})`;
+}
+
+/**
+ * One command that reads or edits accounts.json through the page's own functions (`./ui/accounts-file.ts`): its result
+ * is one JSON line; a refusal is a sentence on stderr and one JSON line with its closed code, exit 1.
+ */
+async function accountsFileCommand(
+  args: ParsedArgs,
+  io: CliIo,
+  command: string,
+  run: (file: typeof import("./ui/accounts-file.ts"), source: import("./source/config-types.ts").ResolvedSourceConfig, relayId: string) => Promise<JsonObject>,
+): Promise<number> {
+  const { loadRelayConfigFile } = await import("./config-file.ts");
+  const { UiRefusal } = await import("./ui/refusal.ts");
+  const config = loadRelayConfigFile(configPathOf(args));
+  try {
+    printJson(io, { command, ok: true, ...(await run(await import("./ui/accounts-file.ts"), config.source, config.daemon.relayId)) });
+    return 0;
+  } catch (error) {
+    if (!(error instanceof UiRefusal)) throw error;
+    io.stderr(`gray-assistant ${command}: ${accountsFileRefusal(error.code, error.field, error.detail)}\n`);
+    printJson(io, { command, ok: false, code: error.code, field: error.field, detail: error.detail });
+    return 1;
+  }
+}
+
+/** Standard input's lines, trimmed, without the blank ones; a usage refusal when nothing is piped in. */
+function stdinLines(io: CliIo, hint: string): string[] {
+  // A terminal is not read: the command would wait for input it was never given.
+  const read = io.stdin ?? ((): string | null => (process.stdin.isTTY === true ? null : readFileSync(0, "utf8")));
+  let text: string | null;
+  try {
+    text = read();
+  } catch {
+    text = null;
+  }
+  if (text === null) throw new RelayKitError("usage", hint);
+  return text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line !== "");
+}
+
+/** How the change reaches the VM: these commands write the file only. */
+const PUSH_NEXT = "next: gray-assistant accounts push (seals the accounts, each with its proxy, to the VM)\n";
+
+/** `proxies`, `proxies add [<url>] [--id <id>]`, `proxies remove <id>`: accounts.json's proxy list. Never a password. */
+async function proxiesCommand(args: ParsedArgs, io: CliIo): Promise<number> {
+  const verb = args.positionals[1];
+  if (verb === undefined) {
+    assertFlags(args, ["config"]);
+    return accountsFileCommand(args, io, "proxies", async (file, source) => {
+      const proxies = file.listProxies(source);
+      const { proxyText } = await import("./deliver.ts");
+      io.stdout(`gray-assistant proxies: ${proxies.length} in accounts.json's list\n`);
+      for (const proxy of proxies) {
+        const login = proxy.username === null ? "no user" : `user ${proxy.username}, ${proxy.hasPassword ? "a password" : "no password"}`;
+        io.stdout(`${proxy.id}  ${proxyText(proxy)}  (${login})  ${proxy.usedBy.length === 0 ? "no account names it" : `used by ${proxy.usedBy.join(", ")}`}\n`);
+      }
+      return {
+        proxies: proxies.map((proxy) => ({ id: proxy.id, type: proxy.type, host: proxy.host, port: BigInt(proxy.port), username: proxy.username, has_password: proxy.hasPassword, used_by: [...proxy.usedBy] })),
+      };
+    });
+  }
+  if (verb === "add") {
+    assertFlags(args, ["config", "id"]);
+    if (args.positionals.length > 3) throw new RelayKitError("usage", "proxies add takes one URL as its argument; several go on standard input, one a line");
+    const id = args.flags.get("id");
+    const urls = args.positionals[2] !== undefined ? [args.positionals[2]] : stdinLines(io, "proxies add needs a proxy: gray-assistant proxies add <scheme://[user:password@]host:port>, or several on standard input, one a line");
+    if (id !== undefined && urls.length !== 1) throw new RelayKitError("usage", "--id names one proxy: give it with one URL");
+    return accountsFileCommand(args, io, "proxies add", async (file, source, relayId) => {
+      const added = await file.addProxies(source, relayId, id === undefined ? urls : [{ url: urls[0] as string, id }]);
+      for (const proxy of added) io.stdout(`gray-assistant proxies add: ${proxy.added ? `added ${proxy.id}` : `${proxy.id} is already in the list`}\n`);
+      io.stdout("next: gray-assistant accounts proxy <account>... --proxy <id> (which accounts leave through it)\n");
+      return { proxies: added.map((proxy) => ({ id: proxy.id, added: proxy.added })) };
+    });
+  }
+  if (verb === "remove") {
+    assertFlags(args, ["config"]);
+    if (args.positionals.length !== 3) throw new RelayKitError("usage", "proxies remove takes the proxy's id: gray-assistant proxies remove <id>");
+    const id = args.positionals[2] as string;
+    return accountsFileCommand(args, io, "proxies remove", async (file, source, relayId) => {
+      await file.removeProxy(source, relayId, id);
+      io.stdout(`gray-assistant proxies remove: ${id} is no longer in accounts.json's list\n`);
+      return { id };
+    });
+  }
+  throw new RelayKitError("usage", "proxies takes no subcommand (the list), `add [<url>] [--id <id>]` or `remove <id>`");
+}
+
+/** `accounts proxy <account>... (--proxy <id> | --none)`: which entry of the list the accounts leave through. */
+async function accountsProxyCommand(args: ParsedArgs, io: CliIo): Promise<number> {
+  assertFlags(args, ["config", "proxy", "none"]);
+  const accounts = args.positionals.slice(2);
+  const proxy = args.flags.get("proxy");
+  if (accounts.length === 0 || (proxy === undefined) === !args.flags.has("none")) {
+    throw new RelayKitError("usage", "gray-assistant accounts proxy <account>... (--proxy <id> | --none): the accounts, and the id of a proxy in accounts.json's list or --none");
+  }
+  return accountsFileCommand(args, io, "accounts proxy", async (file, source, relayId) => {
+    const changed = await file.setAccountsProxy(source, relayId, accounts, proxy ?? null);
+    const through = proxy === undefined ? "the VM's own address (no proxy)" : `proxy ${proxy}`;
+    io.stdout(`gray-assistant accounts proxy: ${changed.length === 0 ? `nothing to change: the account(s) already leave through ${through}` : `${changed.join(", ")} now leave(s) through ${through}`}\n`);
+    if (changed.length > 0) io.stdout(PUSH_NEXT);
+    return { proxy: proxy ?? null, accounts, changed: [...changed] };
+  });
+}
+
+/** What Gray's refusal of a group change means, in a sentence. */
+function groupRefusal(code: string): string {
+  switch (code) {
+    case "no_stack":
+      return "this config has no stack section: groups are for a relay with a stack VM";
+    case "request_invalid":
+      return "an account id is not one Gray's panel knows, or the group's name is over 256 characters or has a line break";
+    case "invalid_request":
+      return "Gray refused the group's name: 1 to 64 characters, no control characters";
+    case "unreachable":
+      return "Gray did not answer; run the command again";
+    case "lane_stack_relay_unknown":
+    case "lane_stack_signature_invalid":
+      return "Gray does not know this relay by this relay key (pair it first: init --pair)";
+    case "lane_stack_panel_view_future":
+    case "lane_stack_panel_view_stale":
+      return "this machine's clock is more than 5 minutes from Gray's; turn NTP on";
+    default:
+      return `Gray refused the change (${code})`;
+  }
+}
+
+/**
+ * `accounts group <account>... (--group <name> | --none)`: puts accounts in a group on Gray's panel, or in none
+ * (`./account-group.ts`). A group is a name for the relay's people: it is kept on Gray, the VM never sees it, and
+ * changing it restarts nothing. What the panel's Move to group does, signed with the relay key.
+ */
+async function accountsGroupCommand(args: ParsedArgs, io: CliIo): Promise<number> {
+  assertFlags(args, ["config", "group", "none"]);
+  const accounts = args.positionals.slice(2);
+  const group = args.flags.get("group");
+  if (accounts.length === 0 || (group === undefined) === !args.flags.has("none")) {
+    throw new RelayKitError("usage", "gray-assistant accounts group <account>... (--group <name> | --none): the accounts, and the group's name on Gray's panel or --none");
+  }
+  const { loadRelayConfigFile } = await import("./config-file.ts");
+  const config = loadRelayConfigFile(configPathOf(args));
+  const key = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "relay key", MAX_KEY_BYTES));
+  const { writeAccountGroup } = await import("./account-group.ts");
+  const result = await writeAccountGroup({ config, seed: key.seed, nowMs: io.now(), random: io.random, accountIds: accounts, group: group ?? null, ...(io.grayPost === undefined ? {} : { post: io.grayPost }) });
+  if (!result.ok) {
+    io.stderr(`gray-assistant accounts group: ${groupRefusal(result.code)}\n`);
+    printJson(io, { command: "accounts group", ok: false, relay_id: config.daemon.relayId, code: result.code });
+    return 1;
+  }
+  const where = group === undefined ? "in no group" : `in the group ${group.trim()}`;
+  if (result.grouped.length > 0) io.stdout(`gray-assistant accounts group: ${result.grouped.join(", ")} ${result.grouped.length === 1 ? "is" : "are"} ${where} on Gray\n`);
+  // An account Gray has not adopted (not pushed yet, or its vendor has no model in relay-stack.json) has no group to be in.
+  if (result.unknown.length > 0) io.stderr(`gray-assistant accounts group: Gray does not have ${result.unknown.join(", ")} yet (an account reaches Gray with accounts push): run accounts push, then this command again for ${result.unknown.length === 1 ? "it" : "them"}\n`);
+  printJson(io, { command: "accounts group", ok: result.unknown.length === 0, relay_id: config.daemon.relayId, group: group === undefined ? null : group.trim(), accounts: [...result.grouped], unknown: [...result.unknown] });
+  return result.unknown.length === 0 ? 0 : 1;
+}
+
+/** `accounts add --vendor <vendor> [--proxy <id>] [--id-prefix <text>]`: one API-key account per key on standard input. */
+async function accountsAddCommand(args: ParsedArgs, io: CliIo): Promise<number> {
+  assertFlags(args, ["config", "vendor", "proxy", "id-prefix"]);
+  // A key is never an argument: it would stay in the shell's history and show in the process list.
+  if (args.positionals.length !== 2) throw new RelayKitError("usage", "accounts add takes no argument: the API keys go on standard input, one a line, never on the command line");
+  const vendor = requiredFlag(args, "vendor");
+  const keys = stdinLines(io, "accounts add reads the API keys from standard input, one a line: gray-assistant accounts add --vendor <vendor> < keys.txt (in the kit's container: docker compose run --rm --no-deps -T agent accounts add --vendor <vendor> < keys.txt)");
+  const proxy = args.flags.get("proxy") ?? null;
+  return accountsFileCommand(args, io, "accounts add", async (file, source, relayId) => {
+    const ids = await file.addKeyAccounts(source, relayId, { vendor: vendor as Vendor, keys, proxyId: proxy, idPrefix: args.flags.get("id-prefix") ?? null });
+    io.stdout(`gray-assistant accounts add: added ${ids.length} ${vendor} account(s) to accounts.json${proxy === null ? "" : `, leaving through proxy ${proxy}`}: ${ids.join(", ")}\n`);
+    io.stdout(PUSH_NEXT);
+    return { vendor, proxy, accounts: [...ids] };
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
 // messages
 // ---------------------------------------------------------------------------------------------
 
@@ -1165,7 +1403,8 @@ async function loginCommand(args: ParsedArgs, io: CliIo): Promise<number> {
 /** Why `login --vendor` did not write the account, in words; a refusal names a field and a closed code, never a value. */
 function signInAccountRefusal(code: string, field: string | null, detail: string | null, accountId: string): string {
   if (field === "vendor") return "--vendor is anthropic (a Claude subscription) or chatgpt_codex (a ChatGPT/Codex subscription): the vendors an account is signed in for";
-  if (field === "proxy") return "--proxy is a URL: socks5://<user>:<password>@<host>:<port> (socks5, socks5h, http or https; a SOCKS URL names its port, and a password comes with a user name)";
+  if (field === "proxy" && code === "unknown") return "--proxy is a URL: socks5://<user>:<password>@<host>:<port>, or the id of a proxy in accounts.json's list; the text given is not a URL, and the list has no proxy of that id (`gray-assistant proxies` lists them)";
+  if (field === "proxy") return "--proxy is a URL: socks5://<user>:<password>@<host>:<port> (socks5, socks5h, http or https; a SOCKS URL names its port, and a password comes with a user name), or the id of a proxy in accounts.json's list";
   if (field === "account_id" && code === "taken") return `accounts.json already lists ${accountId} as another account (another vendor, or one with a key or a token): pick another id for the subscription`;
   if (field === "account_id") return "the account id is 1 to 128 letters, digits, `.`, `_`, `:` or `-`";
   if (code === "source_read_only") return "accounts.json cannot be written where the source reads it (its folder is not writable by gray-assistant)";
@@ -1285,6 +1524,9 @@ async function uiCommand(args: ParsedArgs, io: CliIo): Promise<number> {
     const { loadRelayConfigFile } = await import("./config-file.ts");
     const { mintUiLink, uiLinksDirectory } = await import("./ui/session.ts");
     const config = loadRelayConfigFile(configPathOf(args));
+    if ((config.daemon.ui?.origin ?? null) !== null) {
+      throw new RelayKitError("usage", "this relay's page is the operators' page on ui.origin, signed in to with a passkey: `gray-assistant ui enroll` makes the link that adds one");
+    }
     const port = uiPortFlag(args) ?? config.daemon.ui?.port ?? DEFAULT_UI_PORT;
     const link = mintUiLink(uiLinksDirectory(config.daemon.stateFile), io.now(), io.random);
     io.stdout(`gray-assistant ui link: for ${config.daemon.relayId}'s page on http://127.0.0.1:${port}\n`);
@@ -1292,8 +1534,13 @@ async function uiCommand(args: ParsedArgs, io: CliIo): Promise<number> {
     printJson(io, { command: "ui link", relay_id: config.daemon.relayId, port: BigInt(port), expires_at_ms: BigInt(link.expiresAtMs) });
     return 0;
   }
-  assertFlags(args, ["config", "port", "host", "ca", "verifier-module"]);
+  if (args.positionals[1] === "enroll") return uiEnrollCommand(args, io);
+  if (args.positionals[1] === "passkeys") return uiPasskeysCommand(args, io);
+  assertFlags(args, ["config", "port", "host", "ca", "verifier-module", "service"]);
   assertPositionals(args, 1);
+  // A page that stays up (the kit's `page` service): what it prints is kept as the container's log, so it prints no
+  // one-time link. `ui link` and `ui enroll` make one in the terminal of the person who asks.
+  const service = args.flags.has("service");
   const host = args.flags.get("host");
   // An address literal only (node:net isIP); a name would resolve to who knows what.
   if (host !== undefined && isIP(host) === 0) throw new RelayKitError("usage", "--host must be an IP address, such as 0.0.0.0 in the kit's container");
@@ -1307,6 +1554,7 @@ async function uiCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   const onSignal = (): void => resolveStop();
   process.once("SIGINT", onSignal);
   process.once("SIGTERM", onSignal);
+  void io.stopped?.then(resolveStop);
   let running;
   try {
     running = await startRelayUi({
@@ -1317,16 +1565,39 @@ async function uiCommand(args: ParsedArgs, io: CliIo): Promise<number> {
       ...(args.flags.has("verifier-module") ? { verifierModule: args.flags.get("verifier-module") as string } : {}),
       io: { stdout: io.stdout, stderr: io.stderr, now: io.now },
       random: io.random,
+      sleep: io.sleep,
+      ...uiOperations(args, io),
     });
   } catch (error) {
     process.removeListener("SIGINT", onSignal);
     process.removeListener("SIGTERM", onSignal);
     throw error;
   }
-  io.stdout(`gray-assistant ui: ${running.config.daemon.relayId}'s page on ${running.url} (this machine only)\n`);
-  printUiLink(io, running.mintLink(), running.port);
-  io.stdout(`Another link later: gray-assistant ui link${configArgumentFor(running.config.path)}${port === undefined ? "" : ` --port ${running.port}`}\n`);
-  printJson(io, { command: "ui", relay_id: running.config.daemon.relayId, url: running.url, port: BigInt(running.port) });
+  if (running.mode === "public") {
+    // The operators' page: the relay's own address in front of this listener, passkeys only.
+    io.stdout(`gray-assistant ui: ${running.config.daemon.relayId}'s page for your operators on ${running.url} (your TLS proxy forwards that address to port ${running.port} here)\n`);
+    const { passkeysPath, readPasskeys } = await import("./ui/passkeys.ts");
+    const enrolled = readPasskeys(passkeysPath(running.config.daemon.stateFile), io.random).passkeys.length;
+    if (enrolled === 0 && !service) {
+      const link = running.mintEnrollLink();
+      io.stdout("No one has a passkey for it yet. Open this link to add yours (it works once, within 15 minutes):\n");
+      io.stdout(`  ${link.url}\n`);
+    }
+    io.stdout(`${enrolled === 0 && service ? "No one has a passkey for it yet. The link that adds one" : "A passkey for another person"}: gray-assistant ui enroll${configArgumentFor(running.config.path)}\n`);
+    // Gray learns the page's address from a delivery's status, never from this start: a status also says what the
+    // source lists now, and Gray follows that (an account's proxy), which only a delivery then seals to the VM.
+    printJson(io, { command: "ui", relay_id: running.config.daemon.relayId, mode: "public", url: running.url, port: BigInt(running.port), passkeys: BigInt(enrolled) });
+  } else {
+    io.stdout(`gray-assistant ui: ${running.config.daemon.relayId}'s page on ${running.url} (this machine only)\n`);
+    const linkCommand = `gray-assistant ui link${configArgumentFor(running.config.path)}${port === undefined ? "" : ` --port ${running.port}`}`;
+    if (service) {
+      io.stdout(`A one-time link to sign in: ${linkCommand}\n`);
+    } else {
+      printUiLink(io, running.mintLink(), running.port);
+      io.stdout(`Another link later: ${linkCommand}\n`);
+    }
+    printJson(io, { command: "ui", relay_id: running.config.daemon.relayId, url: running.url, port: BigInt(running.port) });
+  }
   await stopped;
   await running.stop();
   io.stdout("gray-assistant ui: stopped\n");
@@ -1334,10 +1605,113 @@ async function uiCommand(args: ParsedArgs, io: CliIo): Promise<number> {
 }
 
 /**
- * `gray-assistant ui enroll`: a one-time link (15 minutes) that adds a passkey to the page on the relay's public origin
- * (`ui.public`). The origin is `--origin`, else where the running agent serves the page now (its status snapshot: the
- * tunnel's origin while it is up), else `ui.origin`, else `stack.token_url`'s. Printed to this terminal only.
+ * What the page does for an operator beyond editing the account file (docs/design/relay-operator-page.md section 7),
+ * each the command's own function with this config and the relay key: the sign-in is `login <account>`'s, the push is
+ * `accounts push`'s, and Gray's view of the accounts is the signed panel-view read. The config and the key are read
+ * at each use, so a `config set` between two of them holds.
  */
+function uiOperations(args: ParsedArgs, io: CliIo): Pick<import("./ui/server.ts").RelayUiOptions, "signIn" | "push" | "panelView" | "setGroup"> {
+  const loaded = async () => {
+    const { loadRelayConfigFile } = await import("./config-file.ts");
+    const config = loadRelayConfigFile(configPathOf(args));
+    const key = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "relay key", MAX_KEY_BYTES));
+    return { config, seed: key.seed };
+  };
+  return {
+    signIn: async (accountId, terminal, onEvent) => {
+      const { config, seed } = await loaded();
+      const { loginVm } = await import("./login-vm.ts");
+      // No local listener: the operator's browser is on their own machine, so its return is pasted into the page.
+      return loginVm({ config, seed, accountId, io: terminal, onEvent, listen: async () => null });
+    },
+    push: async () => {
+      const { config, seed } = await loaded();
+      const chain = await requireChainContext(args, "accounts push", io);
+      const { deliverCommand } = await import("./deliver.ts");
+      let stdout = "";
+      let stderr = "";
+      const exit = await deliverCommand({
+        config,
+        chain,
+        seed,
+        io: { stdout: (line) => (stdout += line), stderr: (line) => (stderr += line), now: io.now, random: io.random, sleep: io.sleep },
+        action: "accounts",
+        image: null,
+        wait: true,
+      });
+      return { exit, stdout, stderr };
+    },
+    panelView: async () => {
+      const { config, seed } = await loaded();
+      const { readPanelView } = await import("./panel-view.ts");
+      const read = await readPanelView({ config, seed, nowMs: io.now(), random: io.random });
+      return read.ok ? ({ accounts: read.view.accounts, health: read.view.health } as unknown as import("@gray/json").SerdeValue) : null;
+    },
+    setGroup: async (accountIds, group) => {
+      const { config, seed } = await loaded();
+      const { writeAccountGroup } = await import("./account-group.ts");
+      const written = await writeAccountGroup({ config, seed, nowMs: io.now(), random: io.random, accountIds, group, ...(io.grayPost === undefined ? {} : { post: io.grayPost }) });
+      return written.ok ? { grouped: written.grouped, unknown: written.unknown } : null;
+    },
+  };
+}
+
+/**
+ * `gray-assistant ui enroll`: a one-time link (15 minutes) that adds one person's passkey to the operators' page, the
+ * one the config names with `ui.origin`. Printed to this terminal only: give it to that person, and to no one else.
+ */
+async function uiEnrollCommand(args: ParsedArgs, io: CliIo): Promise<number> {
+  assertFlags(args, ["config"]);
+  assertPositionals(args, 2);
+  const { loadRelayConfigFile } = await import("./config-file.ts");
+  const config = loadRelayConfigFile(configPathOf(args));
+  const origin = config.daemon.ui?.origin ?? null;
+  if (origin === null) {
+    throw new RelayKitError("usage", "a passkey is for the operators' page, and this config names no address for it: set ui.origin (an https address of yours that your TLS proxy forwards to this host's port 7470), then `docker compose up -d page`");
+  }
+  const { mintUiEnrollLink } = await import("./ui/server.ts");
+  const link = mintUiEnrollLink(config.daemon.stateFile, origin, io.now(), io.random);
+  io.stdout(`gray-assistant ui enroll: a passkey for ${config.daemon.relayId}'s page on ${origin}\n`);
+  io.stdout("Give this link to the one person it is for; they open it and their browser makes the passkey (it works once, within 15 minutes):\n");
+  io.stdout(`  ${link.url}\n`);
+  printJson(io, { command: "ui enroll", relay_id: config.daemon.relayId, origin, expires_at_ms: BigInt(link.expiresAtMs) });
+  return 0;
+}
+
+/** `gray-assistant ui passkeys [revoke <id>]`: who has a passkey for the operators' page, and taking one away. */
+async function uiPasskeysCommand(args: ParsedArgs, io: CliIo): Promise<number> {
+  assertFlags(args, ["config"]);
+  const verb = args.positionals[2];
+  if (verb !== undefined && verb !== "list" && verb !== "revoke") throw new RelayKitError("usage", "ui passkeys lists them; `ui passkeys revoke <id>` takes one away");
+  assertPositionals(args, verb === "revoke" ? 4 : verb === undefined ? 2 : 3);
+  const { loadRelayConfigFile } = await import("./config-file.ts");
+  const config = loadRelayConfigFile(configPathOf(args));
+  const { passkeyByPrefix, passkeysPath, readPasskeys, updatePasskeys } = await import("./ui/passkeys.ts");
+  const path = passkeysPath(config.daemon.stateFile);
+  if (verb === "revoke") {
+    // A session signed in with it ends at its next request: the page checks every request's passkey against this file.
+    const removed = await updatePasskeys(path, io.random, (store) => {
+      const passkey = passkeyByPrefix(store, args.positionals[3] as string);
+      return { store: { userId: store.userId, passkeys: store.passkeys.filter((other) => other.id !== passkey.id) }, result: passkey };
+    });
+    io.stdout(`gray-assistant ui passkeys: revoked ${removed.label} (${removed.id.slice(0, 12)})\n`);
+    printJson(io, { command: "ui passkeys revoke", relay_id: config.daemon.relayId, id: removed.id, label: removed.label });
+    return 0;
+  }
+  const passkeys = readPasskeys(path, io.random).passkeys;
+  if (passkeys.length === 0) io.stdout("gray-assistant ui passkeys: no one has a passkey yet; `gray-assistant ui enroll` makes the link that adds one\n");
+  for (const passkey of passkeys) {
+    const used = passkey.last_used_at_ms === null ? "never used" : `last used ${new Date(passkey.last_used_at_ms).toISOString()}`;
+    io.stdout(`${passkey.id.slice(0, 12)}  ${passkey.label}  (${passkey.rp_id}; added ${new Date(passkey.created_at_ms).toISOString()}; ${used})\n`);
+  }
+  printJson(io, {
+    command: "ui passkeys",
+    relay_id: config.daemon.relayId,
+    passkeys: passkeys.map((passkey) => ({ id: passkey.id, label: passkey.label, host: passkey.rp_id, created_at_ms: BigInt(passkey.created_at_ms), last_used_at_ms: passkey.last_used_at_ms === null ? null : BigInt(passkey.last_used_at_ms) })),
+  });
+  return 0;
+}
+
 // ---------------------------------------------------------------------------------------------
 // stack
 // ---------------------------------------------------------------------------------------------

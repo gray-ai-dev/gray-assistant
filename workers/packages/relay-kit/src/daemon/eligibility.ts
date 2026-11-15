@@ -27,7 +27,8 @@ export type ParkReason =
   | "invalid_credential_format"
   | "invalid_egress_format"
   | "credential_unreadable"
-  | "missing_credential";
+  | "missing_credential"
+  | "unknown_proxy";
 
 /** One source account as the daemon plans it: the lane id and the metadata the pool needs. */
 export interface PlannedAccount {
@@ -47,9 +48,13 @@ export function planAccount(relayId: string, kind: SourceKind, account: SourceAc
   };
 }
 
-/** The metadata-only check: does the TEE have a credential class for this vendor/type pair? */
+/**
+ * The metadata-only check: does the TEE have a credential class for this vendor/type pair, and can the source hand
+ * the account over as it is written (`leftOut`)?
+ */
 export function metadataParkReason(account: SourceAccount): ParkReason | null {
-  return credentialClass(account.vendor, account.credentialType) === null ? "unsupported_credential_type" : null;
+  if (credentialClass(account.vendor, account.credentialType) === null) return "unsupported_credential_type";
+  return account.leftOut ?? null;
 }
 
 /**

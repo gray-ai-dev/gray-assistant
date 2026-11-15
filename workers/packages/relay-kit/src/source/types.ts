@@ -64,6 +64,11 @@ export interface SourceAccount {
    */
   readonly changeMark: string;
   readonly egress?: SourceEgress;
+  /**
+   * The source lists the account but cannot hand it over as it is written (the `file` source: its `proxy` names an id
+   * the file's list lacks). It is named with this closed reason and never sealed.
+   */
+  readonly leftOut?: "unknown_proxy";
 }
 
 /** How the source's software refreshes subscription tokens (critique R13). */

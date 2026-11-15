@@ -42,5 +42,20 @@ export function MenuItem({ onSelect, tone = 'default', disabled, icon, children 
   </BaseMenu.Item>;
 }
 
+/** A menu item that is a link (Base UI Menu.LinkItem): `newTab` opens it in a new tab, e.g. a page on another origin. */
+export function MenuLinkItem({ href, newTab, icon, children }: { href: string; newTab?: boolean; icon?: ReactNode; children: ReactNode }) {
+  return <BaseMenu.LinkItem className="ui-menu__item ui-menu__item--link" href={href} closeOnClick {...(newTab ? { target: '_blank', rel: 'noopener noreferrer' } : {})}>
+    {icon && <span className="ui-menu__icon" aria-hidden="true">{icon}</span>}{children}
+  </BaseMenu.LinkItem>;
+}
+
+/** Items that belong together under a quiet label that says what they share ("On your relay’s page"). */
+export function MenuGroup({ label, children }: { label: ReactNode; children: ReactNode }) {
+  return <BaseMenu.Group>
+    <BaseMenu.GroupLabel className="ui-menu__label">{label}</BaseMenu.GroupLabel>
+    {children}
+  </BaseMenu.Group>;
+}
+
 /** A rule between groups of menu items. */
 export function MenuSeparator() { return <BaseMenu.Separator className="ui-menu__separator" />; }

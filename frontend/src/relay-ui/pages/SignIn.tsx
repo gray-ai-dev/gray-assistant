@@ -49,17 +49,17 @@ function PasskeySignIn() {
   }
   return <Page size="narrow">
     <Stack gap={6}>
-      <PageHeader title="Sign in to gray-assistant" description="This page is your relay’s own: gray-assistant serves it from your relay’s address, and the keys you enter go to gray-assistant and nowhere else. Sign in with a passkey." />
+      <PageHeader title="Sign in to gray-assistant" description="Your relay’s own page. Sign in with a passkey." />
       {!supported && <Notice tone="warning" role="alert">This browser can’t use passkeys. Open the page in a current Chrome, Safari, Edge or Firefox.</Notice>}
       {failure && <Notice tone="danger" role="alert">{failure}</Notice>}
       <Panel>
         <Stack gap={4}>
-          <Text size="support" tone="muted">Your device asks for its fingerprint, face or PIN. No password is involved.</Text>
+          <Text size="support" tone="muted">Your device asks for its fingerprint, face or PIN.</Text>
           <div><Button variant="primary" loading={busy} disabled={!supported} onClick={() => void signIn()}>Sign in with a passkey</Button></div>
         </Stack>
       </Panel>
       <CodeBlock language="bash" title="First time here?" level={2} copyLabel="Copy command"
-        description="Add a passkey: run this on the relay’s machine, then open the link it prints on the device that will hold the passkey. The link works once, for 15 minutes."
+        description="Run this on the relay’s machine, then open the link it prints on this device."
         code="gray-assistant ui enroll" />
     </Stack>
   </Page>;
@@ -88,13 +88,13 @@ function CodeSignIn({ expired }: { expired: boolean }) {
   }
   return <Page size="narrow">
     <Stack gap={6}>
-      <PageHeader title="Sign in to gray-assistant" description="This page runs on your relay’s own machine. Sign in with the one-time link or code gray-assistant printed in its terminal." />
+      <PageHeader title="Sign in to gray-assistant" description="Use the link or the code gray-assistant printed in its terminal." />
       {expired && <Notice tone="warning" title="That sign-in link has been used or has expired">A link works once, for 10 minutes. Get a new one with the command below.</Notice>}
       {error && !error.field && <Notice tone="danger" role="alert">{error.text}</Notice>}
       <Panel>
         <form onSubmit={event => { event.preventDefault(); void submit(); }}>
           <Stack gap={4}>
-            <Field label="Sign-in code" hint="43 characters, the end of the link gray-assistant printed." error={error?.field ? error.text : undefined}>
+            <Field label="Sign-in code" hint="The last 43 characters of the link." error={error?.field ? error.text : undefined}>
               <TextInput mono required autoFocus autoComplete="off" spellCheck={false} value={code} onChange={event => setCode(event.target.value)} />
             </Field>
             <div><Button type="submit" variant="primary" loading={busy} disabled={!code.trim()}>Sign in</Button></div>
@@ -102,7 +102,7 @@ function CodeSignIn({ expired }: { expired: boolean }) {
         </form>
       </Panel>
       <CodeBlock language="bash" title="Get a new link" level={2} copyLabel="Copy command"
-        description="On the relay’s machine. gray-assistant prints the link and its code to that terminal only. Add --config <file> if your config isn’t at $GRAY_ASSISTANT_CONFIG, /etc/gray-assistant/gray-assistant.jsonc or ./gray-assistant.jsonc."
+        description="Run this on the relay’s machine."
         code="gray-assistant ui link" />
       <Text size="support" tone="muted">From another computer, forward the port first (<InlineCode>ssh -L 7470:127.0.0.1:7470 your-relay-host</InlineCode>), then open the link there.</Text>
     </Stack>
@@ -136,13 +136,13 @@ export function EnrollPage({ code }: { code: string }) {
   }
   return <Page size="narrow">
     <Stack gap={6}>
-      <PageHeader title="Add a passkey" description="This device will sign in to the gray-assistant page with its fingerprint, face or PIN. The link that opened this page works once." />
+      <PageHeader title="Add a passkey" description="This device will sign in with its fingerprint, face or PIN." />
       {!supported && <Notice tone="warning" role="alert">This browser can’t make passkeys. Open the link in a current Chrome, Safari, Edge or Firefox.</Notice>}
       {failure && !failure.field && <Notice tone="danger" role="alert">{failure.text}</Notice>}
       <Panel>
         <form onSubmit={event => { event.preventDefault(); void enroll(); }}>
           <Stack gap={4}>
-            <Field label="Name of this device" hint="So you can tell passkeys apart in gray-assistant ui passkeys list, e.g. “Ops laptop”." error={failure?.field ? failure.text : undefined}>
+            <Field label="Name of this device" hint="For example “Ops laptop”." error={failure?.field ? failure.text : undefined}>
               <TextInput required autoFocus maxLength={64} value={label} onChange={event => setLabel(event.target.value)} />
             </Field>
             <div><Button type="submit" variant="primary" loading={busy} disabled={!supported || !label.trim()}>Create passkey</Button></div>

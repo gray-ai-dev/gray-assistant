@@ -51,7 +51,7 @@ export function HealthPage({ relay }: { relay: RelayInfo }) {
 
   return <Page>
     <Stack gap={6}>
-      <PageHeader title="Health" description="gray-assistant’s own checks: its files, your account source, Gray’s release list, each lane and your scheduler. The same as gray-assistant doctor."
+      <PageHeader title="Health" description="The same checks as gray-assistant doctor."
         actions={lines !== null && <Button variant="primary" loading={view?.running} onClick={() => void run()}>Run checks again</Button>} />
       {health.error && <Notice tone="danger" role="alert" actions={<Button size="sm" onClick={() => void health.reload()}>Try again</Button>}>Couldn’t read the checks: {refusalText(health.error.code)}</Notice>}
       {view?.error && <Notice tone="danger" role="alert" actions={<Button size="sm" onClick={() => void run()}>Try again</Button>}>The checks couldn’t run: {refusalText(view.error)}</Notice>}
@@ -64,7 +64,7 @@ export function HealthPage({ relay }: { relay: RelayInfo }) {
         </Stack>
       </Panel>}
       {view && !view.running && lines === null && !view.error && <EmptyState title="Run the checks"
-        description="They take up to a minute: gray-assistant reads its files and your source, verifies Gray’s release list, attests each lane and calls your scheduler through its proxy."
+        description="They take up to a minute."
         actions={<Button variant="primary" onClick={() => void run()}>Run checks</Button>} />}
       {lines !== null && view && !view.running && <>
         {problems.length === 0

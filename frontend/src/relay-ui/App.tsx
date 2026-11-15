@@ -1,37 +1,44 @@
-// The relay's local page (`gray-assistant ui`): Gray's app bar and design system around four pages that gray-assistant serves on
-// the relay's own machine. The bar says where the page runs, so it is never mistaken for Gray's website: keys typed
-// here go to gray-assistant on the relay's machine and nowhere else.
+// The relay's local page (`gray-assistant ui`): Gray's app bar and design system around the screens gray-assistant
+// serves on the relay's own machine (docs/design/relay-operator-page.md section 7): the accounts, one account, the
+// proxies, and gray-assistant's checks. The bar says where the page runs, so it is never mistaken for Gray's website:
+// keys typed here go to gray-assistant on the relay's machine and nowhere else. Under the bar the shell says, quietly,
+// whether the last change has reached the VM.
 import { useEffect, useState, type ReactNode } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { BrandMark, BrandWordmark } from '../components/Brand';
 import { Menu as MenuIcon, Moon, ShieldCheck, Sun } from '../components/icons';
-import { Badge, Button, CodeBlock, Drawer, FixedLayer, IconButton, LinkButton, Notice, OverflowNav, Page, PageHeader, Skeleton, Stack, Text } from '../ui';
-import { ApiError, read, setCsrfToken, write, type Session, type UiMode } from './api';
+import { Badge, Button, CodeBlock, Drawer, FixedLayer, IconButton, LinkButton, Notice, OverflowNav, Page, PageHeader, Skeleton, Spinner, Stack, Text, toast } from '../ui';
+import { ApiError, read, setCsrfToken, write, type PushView, type Session, type UiMode } from './api';
+import { BUSY_MS, LIVE_MS, useLocal, useNow } from './data';
 import { href, interceptLinks, useRoute } from './router';
-import { AGENT_WORDS, clockText, ctAlertText, refusalText } from './words';
+import { screenOf, type Screen } from './screens';
+import { AGENT_WORDS, clockText, ctAlertText, pushWords, refusalText } from './words';
 import { AccountsPage } from './pages/Accounts';
 import { EnrollPage, SignInPage } from './pages/SignIn';
 import { AddAccountPage } from './pages/AddAccount';
 import { HealthPage } from './pages/Health';
-import { ReleasesPage } from './pages/Releases';
+import { AccountPage } from './pages/Account';
+import { BulkProxyPage } from './pages/BulkProxy';
+import { ProxiesPage } from './pages/Proxies';
 
-type PageKey = 'accounts' | 'releases' | 'image' | 'health';
+type PageKey = 'accounts' | 'proxies' | 'health';
 
 const PAGES: readonly { key: PageKey; label: string; href: string }[] = [
   { key: 'accounts', label: 'Accounts', href: href('/accounts') },
-  { key: 'releases', label: 'Releases', href: href('/releases') },
-  // The image page arrives with `gray-assistant stack` (rollout, rollback); the server says when it is there.
-  { key: 'image', label: 'Image', href: href('/image') },
+  { key: 'proxies', label: 'Proxies', href: href('/proxies') },
   { key: 'health', label: 'Health', href: href('/health') },
 ];
 
-function pageOf(path: string): PageKey | 'add-account' | 'enroll' | null {
-  if (path === '/' || path === '/accounts') return 'accounts';
-  // `gray-assistant ui enroll`'s one-time link (public mode).
-  if (/^\/enroll\/[A-Za-z0-9_-]{43}$/.test(path)) return 'enroll';
-  if (path === '/accounts/new') return 'add-account';
-  const key = path.slice(1) as PageKey;
-  return PAGES.some(page => page.key === key) ? key : null;
+/** The navigation entry a screen belongs to, and its name in the tab's title. */
+function placeOf(screen: Screen | null): { nav: PageKey | null; title: string } {
+  if (!screen) return { nav: null, title: 'Not found' };
+  if (screen.page === 'accounts') return { nav: 'accounts', title: 'Accounts' };
+  if (screen.page === 'add-account') return { nav: 'accounts', title: 'Add account' };
+  if (screen.page === 'bulk-proxy') return { nav: 'accounts', title: 'Change proxy' };
+  if (screen.page === 'account') return { nav: 'accounts', title: screen.id };
+  if (screen.page === 'proxies') return { nav: 'proxies', title: 'Proxies' };
+  if (screen.page === 'health') return { nav: 'health', title: 'Health' };
+  return { nav: null, title: 'Add a passkey' };
 }
 
 function useTheme(): [boolean, (dark: boolean) => void] {
@@ -58,13 +65,13 @@ export function App() {
   useEffect(() => { if (session.data) setCsrfToken(session.data.csrf_token); }, [session.data]);
   const signedOut = session.error?.code === 'signed_out';
   const info = signedOut ? null : session.data ?? null;
-  const page = pageOf(route.path);
-  const current = page === 'add-account' ? 'accounts' : page;
-  const links = info ? PAGES.filter(item => item.key !== 'image' || info.features.image).map(item => ({ ...item, current: item.key === current })) : [];
+  const screen = screenOf(route.path);
+  const page = screen?.page ?? null;
+  const place = placeOf(screen);
+  const links = info ? PAGES.map(item => ({ ...item, current: item.key === place.nav })) : [];
   useEffect(() => {
     setMenu(false);
-    const label = page === 'add-account' ? 'Add account' : page === 'enroll' ? 'Add a passkey' : PAGES.find(item => item.key === page)?.label;
-    document.title = signedOut && page !== 'enroll' ? 'Sign in · gray-assistant' : `${label ?? 'Not found'} · gray-assistant${info ? ` · ${info.relay_id}` : ''}`;
+    document.title = signedOut && page !== 'enroll' ? 'Sign in · gray-assistant' : `${place.title} · gray-assistant${info ? ` · ${info.relay_id}` : ''}`;
   }, [route.path, signedOut, info?.relay_id]);
 
   async function signOut() {
@@ -74,16 +81,19 @@ export function App() {
   }
 
   let content: ReactNode;
-  if (page === 'enroll' && mode === 'public' && !auth.isLoading) content = <EnrollPage code={route.path.slice('/enroll/'.length)} />;
+  if (screen?.page === 'enroll' && mode === 'public' && !auth.isLoading) content = <EnrollPage code={screen.code} />;
   else if (session.isLoading || (signedOut && auth.isLoading)) content = <Page><Skeleton lines={4} label="Loading gray-assistant’s page" /></Page>;
   else if (signedOut) content = <SignInPage mode={mode} expired={route.query.get('link') === 'expired'} />;
   else if (session.error || !info) content = <Unreachable error={session.error} onRetry={() => void session.refetch()} />;
-  else if (page === 'accounts') content = <AccountsPage relay={info} />;
-  else if (page === 'add-account') content = <AddAccountPage relay={info} query={route.query} />;
-  else if (page === 'releases') content = <ReleasesPage relay={info} />;
-  else if (page === 'health') content = <HealthPage relay={info} />;
+  else if (screen?.page === 'accounts') content = <AccountsPage />;
+  else if (screen?.page === 'add-account') content = <AddAccountPage query={route.query} />;
+  else if (screen?.page === 'bulk-proxy') content = <BulkProxyPage query={route.query} />;
+  // A new account, a new screen: nothing typed for one account stays for the next.
+  else if (screen?.page === 'account') content = <AccountPage key={screen.id} id={screen.id} part={screen.part} />;
+  else if (screen?.page === 'proxies') content = <ProxiesPage />;
+  else if (screen?.page === 'health') content = <HealthPage relay={info} />;
   else content = <Page size="narrow"><Stack gap={6}>
-    <PageHeader title="No page here" description="gray-assistant’s page has Accounts, Releases and Health." />
+    <PageHeader title="No page here" description="gray-assistant’s page has Accounts, Proxies and Health." />
     <div><LinkButton variant="primary" href={href('/accounts')}>Go to Accounts</LinkButton></div>
   </Stack></Page>;
 
@@ -100,7 +110,7 @@ export function App() {
       <span className="relay-ui-where">
         {mode === 'public'
           ? <Badge icon={<ShieldCheck size={14} aria-hidden="true" />} title={`gray-assistant serves this page from your relay at ${window.location.host}. Keys you enter here go to gray-assistant and nowhere else: Gray’s website never sees them.`}>gray-assistant page</Badge>
-          : <Badge icon={<ShieldCheck size={14} aria-hidden="true" />} title="gray-assistant serves this page on 127.0.0.1 of your relay’s machine, reached directly or through ssh -L. Keys you enter here go to gray-assistant there and nowhere else: Gray’s website never sees them.">gray-assistant page</Badge>}
+          : <Badge icon={<ShieldCheck size={14} aria-hidden="true" />} title="Served by gray-assistant on your relay’s machine. What you type here never reaches Gray’s website.">gray-assistant page</Badge>}
       </span>
       {links.length > 0 && <OverflowNav className="desktop-nav" label="Pages" links={links} />}
       <div className="account-nav">
@@ -128,9 +138,47 @@ export function App() {
     </Drawer>}
     <main id="main" tabIndex={-1}>
       {ctAlert && <Page className="relay-ui-banner"><Notice tone="danger" role="alert" title={ctAlert.title}>{ctAlert.detail}</Notice></Page>}
+      {info && page !== null && page !== 'enroll' && <PushStatus />}
       {content}
     </main>
   </>;
+}
+
+/**
+ * Whether the account file has reached the VM. A write of this page starts the push by itself; this line follows it:
+ * one quiet line while it runs and once it is sent, a notice with the command's own words and `Send again` when the VM
+ * refused it or it did not get there. Nothing before the first push.
+ */
+function PushStatus() {
+  const push = useLocal<PushView>('push', { live: data => data?.state === 'running' ? BUSY_MS : LIVE_MS });
+  const now = useNow(30_000);
+  const [sending, setSending] = useState(false);
+  const words = pushWords(push.data, now);
+  if (!words) return null;
+  async function again() {
+    setSending(true);
+    try {
+      await write('POST', 'push');
+      await push.reload();
+    } catch (error) {
+      const refusal = error instanceof ApiError ? error : null;
+      // A page started without the push (501): say what does it instead.
+      toast.error('Couldn’t send the accounts.', { description: refusal?.code === 'not_available' ? 'This page can’t send them. Run gray-assistant accounts push on the relay’s machine.' : refusalText(refusal?.code ?? 'internal', refusal?.detail) });
+    } finally {
+      setSending(false);
+    }
+  }
+  if (words.again) return <Page className="relay-ui-banner">
+    <Notice tone="danger" role="alert" title={words.text} actions={<Button size="sm" loading={sending} onClick={() => void again()}>Send again</Button>}>
+      {words.detail ?? 'gray-assistant gave no reason. gray-assistant accounts push on the relay’s machine prints it.'}
+    </Notice>
+  </Page>;
+  return <Page className="relay-ui-banner relay-ui-banner--quiet">
+    <span className="relay-ui-push" role="status">
+      {push.data?.state === 'running' && <Spinner />}
+      <Text as="span" size="meta" tone="muted">{words.text}</Text>
+    </span>
+  </Page>;
 }
 
 function Unreachable({ error, onRetry }: { error: ApiError | null; onRetry: () => void }) {

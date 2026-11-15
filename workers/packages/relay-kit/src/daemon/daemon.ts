@@ -690,7 +690,8 @@ class RelayDaemonImpl implements RelayDaemon {
       sources: this.#sourceHealthy
         ? [...this.#planned.values()]
             .map((planned) => {
-              const proxy = sourceProxyOf(planned.account.egress);
+              // An account left out for its proxy says nothing of one (deliver-accounts.ts).
+              const proxy = planned.account.leftOut === undefined ? sourceProxyOf(planned.account.egress) : undefined;
               return { sourceId: planned.account.sourceId, vendor: planned.vendor, credentialType: planned.credentialType, ...(proxy === undefined ? {} : { proxy }) };
             })
             .sort((left, right) => (left.sourceId < right.sourceId ? -1 : left.sourceId > right.sourceId ? 1 : 0))

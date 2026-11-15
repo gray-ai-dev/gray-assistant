@@ -19,6 +19,20 @@
  * the VM from then on. An `api_key` has none.
  * `changeMark` is the SHA-256 of the account entry's canonical JSON bytes: a rewritten key order does
  * not change it, and the mark is opaque (it is never logged, and it is not the secret).
+ *
+ * The file may keep its proxies in one list and have an account name an entry instead of an inline `egress`
+ * (docs/design/relay-operator-page.md section 6):
+ *
+ * ```json
+ * {"relay_id":"relay-1",
+ *  "proxies":[{"id":"proxy-sg","type":"socks5","host":"203.0.113.9","port":1080,"username":"u1","password":"…"}],
+ *  "accounts":[{"account_id":"claude-max-01","vendor":"anthropic","credential":{"type":"sign_in"},"proxy":"proxy-sg"}]}
+ * ```
+ *
+ * The reader resolves `proxy` to that entry, and from there on the account is the one with the same `egress` inline:
+ * its metadata, its secret and its change mark are that account's, so the mark changes when the entry it names does.
+ * An account names `proxy` or `egress`, never both. One naming an id the list lacks is still listed, marked
+ * `leftOut: "unknown_proxy"`, so it is named and never sealed, and the rest of the file is served.
  */
 import { jcsBytes, sha256BareHex } from "@gray/attest";
 import { parseStrict, type Json } from "@gray/json";
@@ -35,9 +49,9 @@ import {
 } from "@gray/relay-connector";
 import { z } from "zod";
 import { RelayKitError } from "../../errors.ts";
-import type { SourceAccount, SourceAccountStatus, SourceAdapter, SourceCredential, SourceRefresh } from "../../source/types.ts";
+import type { SourceAccount, SourceAccountStatus, SourceAdapter, SourceCredential, SourceEgress, SourceRefresh } from "../../source/types.ts";
 import type { SourceFileConfig } from "./config-types.ts";
-import { parseEgressValue, sourceEgressSchema } from "./egress.ts";
+import { parseEgressValue, sourceEgressSchema, type ParsedEgress } from "./egress.ts";
 import { MAX_SOURCE_ACCOUNTS, MODEL_ID, PRINTABLE_CREDENTIAL, U64_MAX } from "./limits.ts";
 import { selectAccounts } from "./select.ts";
 
@@ -76,6 +90,18 @@ const passwordCredentialSchema = z
  */
 const signInCredentialSchema = z.object({ type: z.literal("sign_in") }).strict();
 
+/** A proxy's id in the file's list: the pattern of an account id, at most 64 characters. */
+export const MAX_PROXY_ID_LENGTH = 64;
+
+export function isProxyId(text: string): boolean {
+  return text.length <= MAX_PROXY_ID_LENGTH && RESOURCE_ID.test(text);
+}
+
+const proxyIdSchema = z.string().max(MAX_PROXY_ID_LENGTH).regex(RESOURCE_ID);
+
+/** One entry of the file's `proxies`: an `egress` entry's members under the file's own name for it. */
+const proxySchema = sourceEgressSchema.extend({ id: proxyIdSchema }).strict();
+
 const accountSchema = z
   .object({
     account_id: z.string().regex(RESOURCE_ID),
@@ -87,6 +113,8 @@ const accountSchema = z
     weight: integer(1n, 1_000_000n).optional(),
     max_concurrency: integer(1n, 10_000n).optional(),
     egress: sourceEgressSchema.optional(),
+    // An entry of the file's `proxies`, by its id, in place of an inline `egress`.
+    proxy: proxyIdSchema.optional(),
   })
   .strict();
 
@@ -102,13 +130,24 @@ const fileSchema = z
     // R10: an empty list is valid. It is how the operator revokes the last account; refusing the
     // document kept the old snapshot (and the account serving) until its lease ended.
     accounts: z.array(z.unknown()).max(MAX_SOURCE_ACCOUNTS),
+    // At most a proxy an account: a list no file needs to exceed.
+    proxies: z.array(z.unknown()).max(MAX_SOURCE_ACCOUNTS).optional(),
   })
   .strict();
+
+/** One entry of the file's proxy list as it may be listed: its password stays in the file. */
+export interface ParsedProxy {
+  readonly id: string;
+  readonly egress: SourceEgress;
+  readonly hasPassword: boolean;
+}
 
 /** One parsed `accounts.json`: metadata for the daemon, and the secret by id for the push path. */
 export interface ParsedAccountsFile {
   readonly relayId: string;
   readonly accounts: readonly SourceAccount[];
+  /** The file's proxy list, in its order; empty without one. */
+  readonly proxies: readonly ParsedProxy[];
   credentialOf(sourceId: string): SourceCredential | null;
 }
 
@@ -141,6 +180,17 @@ export function parseAccountsSourceValue(value: unknown, options: ParseAccountsO
   if (parsed.data.accounts.length > options.maxAccounts) {
     throw new RelayKitError("source_shape_changed", "accounts");
   }
+  // The list first: an account's `proxy` is read against it. A refusal names the entry's place, never a value.
+  const proxies = new Map<string, { readonly parsed: ParsedEgress; readonly members: Record<string, unknown> }>();
+  for (const [index, raw] of (parsed.data.proxies ?? []).entries()) {
+    const entry = proxySchema.safeParse(raw);
+    if (!entry.success) {
+      throw new RelayKitError("source_shape_changed", `proxies.${index}.${entry.error.issues[0]?.path.map(String).join(".") ?? "member"}`);
+    }
+    if (proxies.has(entry.data.id)) throw new RelayKitError("source_shape_changed", `proxies.${index}.id`);
+    const { id: _id, ...members } = raw as Record<string, unknown>;
+    proxies.set(entry.data.id, { parsed: parseEgressValue(members, `proxies.${index}`), members });
+  }
   const credentials = new Map<string, SourceCredential>();
   const accounts: SourceAccount[] = [];
   const seen = new Set<string>();
@@ -154,7 +204,16 @@ export function parseAccountsSourceValue(value: unknown, options: ParseAccountsO
     const vendor = data.vendor as Vendor;
     if (seen.has(data.account_id)) throw new RelayKitError("source_shape_changed", `accounts.${index}.account_id`);
     seen.add(data.account_id);
-    const parsedEgress = data.egress === undefined ? undefined : parseEgressValue(data.egress, `accounts.${index}.egress`);
+    if (data.proxy !== undefined && data.egress !== undefined) {
+      throw new RelayKitError("source_shape_changed", `accounts.${index}.proxy (${data.account_id} names both proxy and egress; an account names one of them)`);
+    }
+    const named = data.proxy === undefined ? undefined : proxies.get(data.proxy);
+    const unknownProxy = data.proxy !== undefined && named === undefined;
+    const parsedEgress = data.egress === undefined ? named?.parsed : parseEgressValue(data.egress, `accounts.${index}.egress`);
+    // The entry as if its proxy were written inline: an account moved to the list keeps its mark, and the mark changes
+    // when the list entry it names does. One naming an id the list lacks is marked as written, so it is tried again
+    // once the list has that id.
+    const marked = named === undefined ? raw : inlined(raw, named.members);
     const status = (data.status === "paused" ? "disabled" : (data.status ?? "active")) as SourceAccountStatus;
     let credential: Credential;
     let expires: number | undefined;
@@ -163,14 +222,14 @@ export function parseAccountsSourceValue(value: unknown, options: ParseAccountsO
       if (credentialClass(vendor, "sign_in") === null) throw new RelayKitError("source_shape_changed", `accounts.${index}.credential.type`);
       credential = { type: "sign_in", value: "" };
       expires = undefined;
-      changeMark = sha256BareHex(accountEntryBytes(raw));
+      changeMark = sha256BareHex(accountEntryBytes(marked));
     } else if (data.credential.type === "password") {
       if (credentialClass(vendor, "password") === null) throw new RelayKitError("source_shape_changed", `accounts.${index}.credential.type`);
       const secret = data.credential.totp_secret === undefined ? undefined : normalizeTotpSecret(data.credential.totp_secret);
       if (secret === null) throw new RelayKitError("source_shape_changed", `accounts.${index}.credential.totp_secret`);
       credential = { type: "password", value: data.credential.value, username: data.credential.username, ...(secret === undefined ? {} : { totp_secret: secret }) };
       expires = undefined;
-      changeMark = sha256BareHex(accountEntryBytes(raw));
+      changeMark = sha256BareHex(accountEntryBytes(marked));
     } else {
       if (credentialClass(vendor, data.credential.type) === null) {
         throw new RelayKitError("source_shape_changed", `accounts.${index}.credential.type`);
@@ -186,7 +245,7 @@ export function parseAccountsSourceValue(value: unknown, options: ParseAccountsO
         ...(data.credential.refresh_token === undefined ? {} : { refresh_token: data.credential.refresh_token }),
       };
       expires = expiresAtMs(credential, `accounts.${index}.credential.expires_at`);
-      changeMark = sha256BareHex(accountEntryBytes(raw));
+      changeMark = sha256BareHex(accountEntryBytes(marked));
     }
     // The proxy password is held only by this parsed document, beside the account credential; it is
     // not a member of the `SourceAccount` metadata the daemon lists, logs or stores (K4-1).
@@ -205,15 +264,23 @@ export function parseAccountsSourceValue(value: unknown, options: ParseAccountsO
       ...(expires === undefined ? {} : { credentialExpiresAtMs: expires }),
       changeMark,
       ...(parsedEgress === undefined ? {} : { egress: parsedEgress.egress }),
+      ...(unknownProxy ? { leftOut: "unknown_proxy" as const } : {}),
     });
   }
   return {
     relayId: parsed.data.relay_id,
     accounts,
+    proxies: [...proxies.entries()].map(([id, proxy]) => ({ id, egress: proxy.parsed.egress, hasPassword: proxy.parsed.password !== undefined })),
     credentialOf(sourceId: string): SourceCredential | null {
       return credentials.get(sourceId) ?? null;
     },
   };
+}
+
+/** An account entry with the list entry its `proxy` names written as its `egress`. */
+function inlined(raw: unknown, members: Record<string, unknown>): unknown {
+  const { proxy: _proxy, ...rest } = raw as Record<string, unknown>;
+  return { ...rest, egress: members };
 }
 
 /** Parse `accounts.json` text. A syntax error is one sentence, never the parser's echo. */

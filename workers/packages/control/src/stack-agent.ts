@@ -17,9 +17,13 @@ import { TUNNEL_STATES } from "./tunnel.ts";
  * `ui_mode` says where gray-assistant's own page runs (where a key is typed on the relay's side, never on Gray's page), and
  * is absent while it runs nowhere: `loopback` on the relay machine's 127.0.0.1 at `ui_port` (`gray-assistant ui`, or
  * `ui.listen` beside the agent; the panel links to `http://127.0.0.1:<ui_port>/ui/…`), `public` on the relay's own
- * HTTPS origin (its `stack.token_url`, or the `ui.origin` its proxy serves), `tunnel` on the relay tunnel's
- * `https://<relay-id>.<relays zone>`. `ui_port` comes with `loopback` only. A closed word and a port, never an origin or
- * a path: the panel builds each address from what Gray already knows, and the status carries no free text.
+ * HTTPS origin, `tunnel` on the relay tunnel's `https://<relay-id>.<relays zone>`. `ui_port` comes with `loopback`
+ * only. `ui_origin` comes with `public` only (docs/design/relay-operator-page.md section 3): the origin the relay's
+ * config names for its page (`ui.origin`), which the panel's jumps open; a `public` status without it is an older
+ * gray-assistant's, whose page the panel looks for at the token service's origin (`stack.token_url`). A closed word, a
+ * port and an origin held to STACK_AGENT_UI_ORIGIN_PATTERN, never a path: the relay key signs where its page is, the
+ * panel builds every address under it, and the status carries no free text. It says where the page is set up, not that
+ * it answers now.
  *
  * `tunnel` is present only for an agent that keeps the relay tunnel (docs/relay-tunnel.md, the config's `tunnel`
  * section): `connected` while the rendezvous holds its name, `down` otherwise, so the panel can say whether the relay's
@@ -64,6 +68,12 @@ export const STACK_AGENT_ACCOUNT_IDS_MAX = 1000;
 /** Where gray-assistant's own page runs (above). */
 export const STACK_AGENT_UI_MODES = ["loopback", "public", "tunnel"] as const;
 export type StackAgentUiMode = (typeof STACK_AGENT_UI_MODES)[number];
+/**
+ * The page's public origin a status may name (`ui_origin`, docs/design/relay-operator-page.md section 3): https, a
+ * lower-case host and an optional port, nothing else (no path, query or user info), so the panel's link to it is an
+ * origin the relay key signed and never free text. Only with `ui_mode: "public"`.
+ */
+export const STACK_AGENT_UI_ORIGIN_PATTERN = /^https:\/\/[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?(:[0-9]{1,5})?$/;
 /** The local page's ports: unprivileged ones (gray-assistant binds 127.0.0.1 as its own user); 7470 by default. */
 export const STACK_AGENT_UI_PORT_MIN = 1024;
 export const STACK_AGENT_UI_PORT_MAX = 65_535;
@@ -168,6 +178,9 @@ export const stackAgentStatusSchema = z
     // Optional: an agent before the local page sends neither, and neither while the page is off.
     ui_mode: z.enum(STACK_AGENT_UI_MODES).optional(),
     ui_port: z.number().int().min(STACK_AGENT_UI_PORT_MIN).max(STACK_AGENT_UI_PORT_MAX).optional(),
+    // Where the relay set its page up for its operators (the config's `ui.origin`); absent from a gray-assistant
+    // before 1.7.0 and from a relay that set none. The panel links to it; it does not say the page is up now.
+    ui_origin: z.string().max(255).regex(STACK_AGENT_UI_ORIGIN_PATTERN).optional(),
     // Optional: an agent without the relay tunnel (or before it) sends none.
     tunnel: z.enum(TUNNEL_STATES).optional(),
     // Optional: an agent before it sends none; null once a token was issued after the latest refusal.
@@ -183,6 +196,7 @@ export const stackAgentStatusSchema = z
   .superRefine((s, ctx) => {
     if (s.accepted_compose && !unique(s.accepted_compose, (h) => h)) ctx.addIssue({ code: "custom", path: ["accepted_compose"], message: "a compose hash is listed twice" });
     if ((s.ui_mode === "loopback") !== (s.ui_port !== undefined)) ctx.addIssue({ code: "custom", path: ["ui_port"], message: "ui_port comes with ui_mode loopback, and only with it" });
+    if (s.ui_origin !== undefined && s.ui_mode !== "public") ctx.addIssue({ code: "custom", path: ["ui_origin"], message: "ui_origin comes with ui_mode public only" });
     if (!unique(s.replicas, (r) => r.origin)) ctx.addIssue({ code: "custom", path: ["replicas"], message: "an origin is listed twice" });
     if (!unique(s.parked, (p) => p.account_id)) ctx.addIssue({ code: "custom", path: ["parked"], message: "an account is listed twice" });
     if (s.sources && !unique(s.sources, (a) => a.account_id)) ctx.addIssue({ code: "custom", path: ["sources"], message: "an account is listed twice" });

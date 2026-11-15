@@ -1,5 +1,5 @@
 import { Autocomplete } from '@cloudflare/kumo/primitives/autocomplete';
-import type { InputHTMLAttributes } from 'react';
+import { useState, type InputHTMLAttributes } from 'react';
 import { cx } from './cx';
 import { usePopupPositionMethod } from './popup';
 import './select-field.css';
@@ -23,7 +23,15 @@ export function AutocompleteInput({ value, onValueChange, suggestions, mono, cla
   emptyText?: string;
 }) {
   const positionMethod = usePopupPositionMethod();
+  // With nothing to list the list stays closed. An open list, even an empty one, hides the rest of the page from
+  // assistive technology: the sheet's title and its Save button would be gone while a new name is typed.
+  const [open, setOpen] = useState(false);
+  const listed = suggestions.length > 0 || !!emptyText;
+  // Kept closed, the list tells nothing of a blur (it is closed already), so "open" is dropped here: suggestions that
+  // arrive later, with the field no longer in use, must not open it.
+  if (open && !listed) setOpen(false);
   return <Autocomplete.Root items={suggestions} filteredItems={suggestions} value={value} onValueChange={next => onValueChange(next)}
+    open={open && listed} onOpenChange={next => setOpen(next)}
     itemToStringValue={(item: Suggestion) => item.value} disabled={disabled} required={required}>
     <Autocomplete.Input className={cx('ui-input', mono && 'ui-input--mono', className)} placeholder={placeholder} autoComplete="off" spellCheck={false}
       id={id} translate={mono ? 'no' : undefined} {...rest} />

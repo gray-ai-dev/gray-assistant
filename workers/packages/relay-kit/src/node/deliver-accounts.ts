@@ -28,7 +28,7 @@ import type { LoadedRelayConfig } from "./config-file.ts";
 export interface SkippedAccount {
   readonly vendor: Vendor;
   readonly panelId: string | null;
-  readonly reason: "unsupported_credential_type" | "invalid_credential_format" | "invalid_egress_format" | "credential_unreadable" | "missing_credential" | "no_panel_id";
+  readonly reason: "unsupported_credential_type" | "invalid_credential_format" | "invalid_egress_format" | "credential_unreadable" | "missing_credential" | "unknown_proxy" | "no_panel_id";
   /** The credential's type, once its secret was read (`credentialFormatHint` names the form it needs). */
   readonly credentialType?: string;
 }
@@ -130,7 +130,8 @@ export async function readAccountsOnce(config: LoadedRelayConfig, deps: ReadAcco
   const sources = planned.flatMap((p) => {
     const id = panelId(p.vendor, p.account.sourceId);
     if (id === null) return [];
-    const proxy = sourceProxyOf(p.account.egress);
+    // An account left out for its proxy says nothing of one: Gray keeps the proxy the panel account has.
+    const proxy = p.account.leftOut === undefined ? sourceProxyOf(p.account.egress) : undefined;
     return [{ sourceId: id, vendor: p.vendor, credentialType: p.credentialType, ...(proxy === undefined ? {} : { proxy }) }];
   });
   const notFollowed = planned.flatMap((p): NotFollowed[] => {
