@@ -167,7 +167,7 @@ ${options.releaseFreshnessPublicKey === undefined ? "" : `    // Gray's freshnes
   },
 
   // ---- accounts ----------------------------------------------------------------------------
-  // file | http | cliproxyapi. file reads accounts.json beside this file (0600: it holds tokens).
+  // file | http. file reads accounts.json beside this file (0600: it holds tokens).
   "source": {
     "kind": "file",
     "path": "./accounts.json"
@@ -512,7 +512,7 @@ services:
 networks:
   relay:
     # Named after the compose project (the name above, or the one docker compose -p or COMPOSE_PROJECT_NAME gives),
-    # so the relay's own software (a CLIProxyAPI service, an http source) joins it by that name with
+    # so the relay's own software (the service an http source reads) joins it by that name with
     # \`external: true\` and the config's source.url names that service.
     name: "\${COMPOSE_PROJECT_NAME}"
 

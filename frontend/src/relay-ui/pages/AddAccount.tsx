@@ -68,8 +68,8 @@ export function AddAccountPage({ relay, query }: { relay: RelayInfo; query: URLS
         description="The key stays on the relay’s machine: gray-assistant writes it to accounts.json and seals it for Gray’s VM itself. Gray’s website never sees it." />
       {fromPanel && <Notice title={form.id ? 'Opened from Gray’s panel: paste the key' : 'Opened from Gray’s panel'}>{form.id ? null : 'Fill in the account and paste its key.'}</Notice>}
       <AgentNotice relay={accounts.data?.relay ?? relay} what="The account waits in accounts.json until then." />
-      {source && source.kind !== 'file' && <Notice tone="warning" title={`Add it in ${source.kind === 'cliproxyapi' ? 'CLIProxyAPI' : 'your relay software'} instead`}>
-        This relay’s accounts come from {source.kind === 'cliproxyapi' ? 'CLIProxyAPI' : 'its own software'}{source.url ? ` at ${source.url}` : ''}, not from accounts.json. Add the account there with the same ID{form.id ? ` (${form.id})` : ''}; gray-assistant reads it within {pollSeconds} seconds and seals it.
+      {source && source.kind !== 'file' && <Notice tone="warning" title="Add it in your relay software instead">
+        This relay’s accounts come from its own software{source.url ? ` at ${source.url}` : ''}, not from accounts.json. Add the account there with the same ID{form.id ? ` (${form.id})` : ''}; gray-assistant reads it within {pollSeconds} seconds and seals it.
       </Notice>}
       {source?.kind === 'file' && source.problem && <Notice tone="danger" role="alert" title="accounts.json can’t be read">Fix it first ({source.problem.detail}); this page won’t change a file gray-assistant refuses.</Notice>}
       {source?.kind === 'file' && !source.writable && !source.problem && <Notice tone="warning" title="accounts.json is read-only here">Its folder is mounted read-only for gray-assistant, so this page can’t add the account. Mount the folder writable, or add the entry by hand.</Notice>}

@@ -4,9 +4,9 @@
  *
  * ```jsonc
  * {"source": {
- *   "kind": "http",                        // file | http | cliproxyapi
- *   "url": "https://127.0.0.1:8317",       // http/cliproxyapi; http only to loopback unless allowed
- *   "token_file": "/run/secrets/management-key",
+ *   "kind": "http",                        // file | http
+ *   "url": "https://127.0.0.1:8317",       // http; clear text only to loopback unless allowed
+ *   "token_file": "/run/secrets/source-token",
  *   "select": {"vendors": ["anthropic"], "tags": ["lane"], "ids": ["ant-1"]},
  *   "allow_plain_http": false,
  *   "request_timeout_ms": 10000,
@@ -34,7 +34,6 @@ import { SOURCE_KINDS, type SourceAdapter } from "../../source/types.ts";
 import { readPrivateFile } from "../files.ts";
 import type { ResolvedSourceConfig, SourceCommonConfig, SourceDeps, SourceSelection } from "./config-types.ts";
 import { checkHttpSource, type SourceCheckReport } from "./check.ts";
-import { cliproxyAdapter } from "./cliproxyapi.ts";
 import { fileAdapter } from "./file.ts";
 import { httpAdapter } from "./http.ts";
 import {
@@ -142,7 +141,7 @@ function selectionOf(raw: z.infer<typeof sourceSelectSchema> | undefined, kind: 
   const tags = unique(raw.tags ?? raw.groups ?? []);
   if (tags.length > 0 && kind === "file") {
     // `file` has no group/tag member. Refusing beats silently selecting nothing, which would look
-    // like an empty pool. (`http` has `labels`, `cliproxyapi` its `label`.)
+    // like an empty pool. (`http` has `labels`.)
     throw new RelayKitError("source_unsupported", `select.tags is not available for kind ${kind}`);
   }
   const ids = unique(raw.ids ?? raw.source_ids ?? []);
@@ -152,8 +151,23 @@ function selectionOf(raw: z.infer<typeof sourceSelectSchema> | undefined, kind: 
   return { vendors: unique(raw.vendors ?? raw.platforms ?? []), tags, ids };
 }
 
+/**
+ * What a config that still names the `cliproxyapi` kind is told. gray-assistant read CLIProxyAPI's management API
+ * itself until 1.6.7; that reader was retired (2026-11-15): Gray names a standard, not an adapter for one software,
+ * and the reader followed an interface that is not Gray's (it took an account's proxy from a list that never had one,
+ * and sealed a subscription token with nothing in the VM able to refresh it). Every software hands its accounts over
+ * the same two ways.
+ */
+export const RETIRED_CLIPROXYAPI_SOURCE =
+  'source.kind "cliproxyapi" was retired in gray-assistant 1.6.8: hand the accounts over as any other software does, ' +
+  'in an accounts.json (kind "file") or over your two read-only account routes (kind "http"); a Claude or Codex subscription ' +
+  'is added and signed in inside the VM with `gray-assistant login <account> --vendor <anthropic|chatgpt_codex>`. relay-stack.md section 7 has both';
+
 /** Parse and resolve the `source` section. Refusals name a member path, never a value. */
 export function parseSourceConfig(value: unknown): ResolvedSourceConfig {
+  if (typeof value === "object" && value !== null && (value as { kind?: unknown }).kind === "cliproxyapi") {
+    throw new RelayKitError("invalid_source_config", RETIRED_CLIPROXYAPI_SOURCE);
+  }
   const parsed = sourceConfigSchema.safeParse(value);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
@@ -187,10 +201,10 @@ export function parseSourceConfig(value: unknown): ResolvedSourceConfig {
   }
   if (data.url === undefined) throw new RelayKitError("invalid_source_config", "url");
   if (data.token_file === undefined) throw new RelayKitError("invalid_source_config", "token_file");
-  if (data.path !== undefined) throw new RelayKitError("invalid_source_config", "path is not used by a remote kind");
+  if (data.path !== undefined) throw new RelayKitError("invalid_source_config", "path is not used by kind http");
   return {
     ...common,
-    kind: data.kind,
+    kind: "http",
     url: baseUrl(data.url, allowPlainHttp),
     path: null,
     tokenFile: pathMember(data.token_file, "token_file"),
@@ -214,14 +228,12 @@ export function createSourceAdapter(config: ResolvedSourceConfig, deps: SourceDe
       return fileAdapter(config, { readAccountsFile });
     case "http":
       return httpAdapter(config, { fetch: fetchImpl, readTokenFile, now });
-    case "cliproxyapi":
-      return cliproxyAdapter(config, { fetch: fetchImpl, readTokenFile, now });
   }
 }
 
 /**
  * `gray-assistant source check` and `doctor`'s `source_contract`: the `http` source's two routes against the standard's
- * "Account source" (`check.ts`). The other kinds are gray-assistant's own adapters and have nothing for a relay to check.
+ * "Account source" (`check.ts`). The `file` kind is gray-assistant's own reader and has nothing for a relay to check.
  */
 export async function checkSourceContract(config: ResolvedSourceConfig, deps: SourceDeps = {}): Promise<SourceCheckReport> {
   if (config.kind !== "http") throw new RelayKitError("source_unsupported", `source check reads the http source; this config's source is ${config.kind}`);

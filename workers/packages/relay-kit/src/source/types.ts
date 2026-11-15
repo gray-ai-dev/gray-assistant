@@ -16,7 +16,7 @@ import type { Credential, Vendor } from "@gray/relay-connector";
  */
 
 /** The source kinds of v1 (design v2 §A.8). */
-export const SOURCE_KINDS = ["file", "http", "cliproxyapi"] as const;
+export const SOURCE_KINDS = ["file", "http"] as const;
 export type SourceKind = (typeof SOURCE_KINDS)[number];
 
 /** An account's health as the relay's software states it. */

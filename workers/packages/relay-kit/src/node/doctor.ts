@@ -890,85 +890,72 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     }
   }
 
-  // The source: software, one live credential, and the parked list.
+  // The source: it answers, one live credential, and the parked list.
   const { createSourceAdapter } = await import("./source/config.ts");
   const source = createSourceAdapter(config.source);
   try {
-    const probe = await source.probe(AbortSignal.timeout(config.source.probeTimeoutMs));
-    const unsupported = probe.software === "unknown" || probe.software === "new-api" || probe.software === "one-api";
-    const label = `${probe.software}${probe.version === null ? "" : ` ${probe.version}`}`;
-    doctor.add(
-      "source_detected",
-      unsupported ? "fail" : "ok",
-      unsupported
-        ? `detected ${label}; gray-assistant has no built-in source for it: add the standard's two account routes to it and use the http source`
-        : `detected ${label}; unattended credential read: ${probe.credentialReadable ? "yes" : "no"}`,
-    );
-    if (unsupported) {
-      doctor.add("source_credential", "skip", "no built-in source for this software; add the two account routes and use the http source");
-    } else {
-      let snapshot: Awaited<ReturnType<typeof source.list>> | null = null;
-      try {
-        snapshot = await source.list(AbortSignal.timeout(config.source.requestTimeoutMs));
-      } catch (error) {
-        const code = error instanceof RelayKitError ? error.code : "io";
-        // The file source with no file yet (a kit just paired) or one that does not read: the import puts it in place.
-        const importHint = config.source.kind === "file" && (code === "io" || code === "unsafe_key_file") ? `; ${ACCOUNTS_IMPORT_HINT}` : "";
-        doctor.add("source_accounts", "fail", `the source answered the probe but its account list failed (${code})${importHint}`);
-        doctor.add("source_credential", "skip", "the source list failed; no credential was read");
-      }
-      if (snapshot !== null) {
-        let readable = 0;
-        let parked = 0;
-        const aliases = config.daemon.stack === null ? [] : readAccountAliasesFile(accountAliasesPath(config.daemon.stateFile));
-        for (const account of snapshot.accounts) {
-          const planned = planAccount(config.daemon.relayId, config.source.kind, account);
-          // The relay-stack origin seals under the panel id (S59): the source's own id, or the plain alias the agent
-          // gave an id that cannot be one; doctor names both here, on the relay's own machine only.
-          if (config.daemon.stack !== null && !STACK_ID_PATTERN.test(account.sourceId)) {
-            const alias = aliases === null ? undefined : aliases.find((a) => a.vendor === account.vendor && a.sourceId === account.sourceId);
-            if (alias !== undefined) {
-              doctor.add(`stack_account:${planned.accountId}`, "ok", `source account ${JSON.stringify(account.sourceId)} (${account.vendor}) is ${alias.panelId} in the panel`);
-            } else if (aliases === null) {
-              doctor.add(`stack_account:${planned.accountId}`, "fail", `source account ${JSON.stringify(account.sourceId)} (${account.vendor}) is not sealed to the relay-stack origin: ${accountAliasesPath(config.daemon.stateFile)} does not read, so the agent gives it no panel id; restore or remove the file (removing it gives the accounts new ids)`);
-            } else {
-              doctor.add(`stack_account:${planned.accountId}`, "skip", `source account ${JSON.stringify(account.sourceId)} (${account.vendor}) gets a plain panel id (${ACCOUNT_ALIAS_VENDOR_WORDS[account.vendor]}-<n>) when the agent next reads the source; gray-assistant accounts lists it then`);
-            }
-          }
-          const metadataReason = metadataParkReason(account);
-          if (metadataReason !== null) {
-            parked += 1;
-            doctor.add(`parked:${planned.accountId}`, "warn", `${planned.accountId} (${account.vendor}) parked: ${metadataReason}`);
-            continue;
-          }
-          try {
-            const read = await source.credential(account.sourceId, AbortSignal.timeout(config.source.requestTimeoutMs));
-            const reason = credentialParkReason(account.vendor, read.credential);
-            if (reason !== null) {
-              parked += 1;
-              const hint = reason === "invalid_credential_format" ? ` (${credentialFormatHint(account.vendor, read.credential.type)})` : "";
-              doctor.add(`parked:${planned.accountId}`, "warn", `${planned.accountId} (${account.vendor}) parked: ${reason}${hint}`);
-            } else {
-              readable += 1;
-            }
-          } catch {
-            parked += 1;
-            doctor.add(`parked:${planned.accountId}`, "warn", `${planned.accountId} (${account.vendor}) parked: credential_unreadable`);
+    await source.probe(AbortSignal.timeout(config.source.probeTimeoutMs));
+    doctor.add("source_detected", "ok", `the ${config.source.kind} source answers`);
+    let snapshot: Awaited<ReturnType<typeof source.list>> | null = null;
+    try {
+      snapshot = await source.list(AbortSignal.timeout(config.source.requestTimeoutMs));
+    } catch (error) {
+      const code = error instanceof RelayKitError ? error.code : "io";
+      // The file source with no file yet (a kit just paired) or one that does not read: the import puts it in place.
+      const importHint = config.source.kind === "file" && (code === "io" || code === "unsafe_key_file") ? `; ${ACCOUNTS_IMPORT_HINT}` : "";
+      doctor.add("source_accounts", "fail", `the source answered the probe but its account list failed (${code})${importHint}`);
+      doctor.add("source_credential", "skip", "the source list failed; no credential was read");
+    }
+    if (snapshot !== null) {
+      let readable = 0;
+      let parked = 0;
+      const aliases = config.daemon.stack === null ? [] : readAccountAliasesFile(accountAliasesPath(config.daemon.stateFile));
+      for (const account of snapshot.accounts) {
+        const planned = planAccount(config.daemon.relayId, config.source.kind, account);
+        // The relay-stack origin seals under the panel id (S59): the source's own id, or the plain alias the agent
+        // gave an id that cannot be one; doctor names both here, on the relay's own machine only.
+        if (config.daemon.stack !== null && !STACK_ID_PATTERN.test(account.sourceId)) {
+          const alias = aliases === null ? undefined : aliases.find((a) => a.vendor === account.vendor && a.sourceId === account.sourceId);
+          if (alias !== undefined) {
+            doctor.add(`stack_account:${planned.accountId}`, "ok", `source account ${JSON.stringify(account.sourceId)} (${account.vendor}) is ${alias.panelId} in the panel`);
+          } else if (aliases === null) {
+            doctor.add(`stack_account:${planned.accountId}`, "fail", `source account ${JSON.stringify(account.sourceId)} (${account.vendor}) is not sealed to the relay-stack origin: ${accountAliasesPath(config.daemon.stateFile)} does not read, so the agent gives it no panel id; restore or remove the file (removing it gives the accounts new ids)`);
+          } else {
+            doctor.add(`stack_account:${planned.accountId}`, "skip", `source account ${JSON.stringify(account.sourceId)} (${account.vendor}) gets a plain panel id (${ACCOUNT_ALIAS_VENDOR_WORDS[account.vendor]}-<n>) when the agent next reads the source; gray-assistant accounts lists it then`);
           }
         }
-        doctor.add(
-          "source_credential",
-          readable > 0 ? "ok" : "fail",
-          `${readable} account(s) with a live, readable credential, ${parked} parked of ${snapshot.accounts.length} selected`,
-        );
-        if (snapshot.accounts.length === 0) doctor.add("source_accounts", "fail", "the source selected no accounts");
+        const metadataReason = metadataParkReason(account);
+        if (metadataReason !== null) {
+          parked += 1;
+          doctor.add(`parked:${planned.accountId}`, "warn", `${planned.accountId} (${account.vendor}) parked: ${metadataReason}`);
+          continue;
+        }
+        try {
+          const read = await source.credential(account.sourceId, AbortSignal.timeout(config.source.requestTimeoutMs));
+          const reason = credentialParkReason(account.vendor, read.credential);
+          if (reason !== null) {
+            parked += 1;
+            const hint = reason === "invalid_credential_format" ? ` (${credentialFormatHint(account.vendor, read.credential.type)})` : "";
+            doctor.add(`parked:${planned.accountId}`, "warn", `${planned.accountId} (${account.vendor}) parked: ${reason}${hint}`);
+          } else {
+            readable += 1;
+          }
+        } catch {
+          parked += 1;
+          doctor.add(`parked:${planned.accountId}`, "warn", `${planned.accountId} (${account.vendor}) parked: credential_unreadable`);
+        }
       }
+      doctor.add(
+        "source_credential",
+        readable > 0 ? "ok" : "fail",
+        `${readable} account(s) with a live, readable credential, ${parked} parked of ${snapshot.accounts.length} selected`,
+      );
+      if (snapshot.accounts.length === 0) doctor.add("source_accounts", "fail", "the source selected no accounts");
     }
   } catch (error) {
     const code = error instanceof RelayKitError ? error.code : "io";
-    // A probe that throws is not a detection: say what failed and point at the two first-class
-    // sources, rather than guessing which software answered (K4-4).
-    doctor.add("source_detected", "fail", `the source could not be probed (${code}); for software without a built-in source, add the standard's two account routes and use the http source`);
+    // Say what failed and name the two sources there are (K4-4).
+    doctor.add("source_detected", "fail", `the ${config.source.kind} source did not answer (${code}); the account source is an accounts.json (kind "file") or the standard's two account routes on your software (kind "http")`);
     doctor.add("source_credential", "skip", "no source probe");
   }
   // The http source: the two routes against the standard's "Account source", as `gray-assistant source check` runs them.

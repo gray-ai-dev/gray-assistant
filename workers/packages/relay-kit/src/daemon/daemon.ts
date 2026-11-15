@@ -1709,7 +1709,7 @@ class RelayDaemonImpl implements RelayDaemon {
       try {
         read = await this.#options.source.credential(planned.account.sourceId, signal);
       } catch (error) {
-        // R04: a per-account source error (a 404, a malformed CLIProxyAPI/http record) must park
+        // R04: a per-account source error (a 404, a malformed http record) must park
         // that account, not abort every other account's bundle. Source-wide failures still throw.
         if (error instanceof RelayConnectorError || isPerAccountSourceError(error)) {
           this.#park(planned, "credential_unreadable");

@@ -34,6 +34,8 @@ export interface ImportedAccounts {
   readonly accounts: number;
   /** A file was there before. */
   readonly replaced: boolean;
+  /** The ids the file there before listed and this one does not. */
+  readonly removed: readonly string[];
 }
 
 /** The command's own text for the piped form, in every refusal that the other form's ownership causes. */
@@ -88,11 +90,20 @@ export function importAccountsFile(config: LoadedRelayConfig, source: string, de
   }
   const path = config.source.path;
   let replaced = false;
+  // The accounts the file there lists and this one does not: an import replaces the file whole, and `login --vendor`
+  // adds accounts to it, so a copy the relay keeps elsewhere may not have them. Named, never refused.
+  let removed: string[] = [];
   try {
     const existing = lstatSync(path);
     // Never through a link or onto a directory: the source refuses both when it reads.
     if (!existing.isFile() || existing.isSymbolicLink()) throw new RelayKitError("io", `${path} is not a regular file: remove it, then run the command again`);
     replaced = true;
+    try {
+      const kept = new Set(parsed.accounts.map((account) => account.sourceId));
+      removed = parseAccountsSourceText(readFileSync(path, "utf8"), { maxAccounts: config.source.maxAccounts }).accounts.map((account) => account.sourceId).filter((id) => !kept.has(id));
+    } catch {
+      // A file there that does not read lists nothing to compare.
+    }
   } catch (error) {
     if (error instanceof RelayKitError) throw error;
   }
@@ -101,5 +112,5 @@ export function importAccountsFile(config: LoadedRelayConfig, source: string, de
   } catch {
     throw new RelayKitError("io", `cannot write ${path}: its directory must be writable by the agent's user (the state volume compose.yaml mounts)`);
   }
-  return { relayId: parsed.relayId, path, accounts: parsed.accounts.length, replaced };
+  return { relayId: parsed.relayId, path, accounts: parsed.accounts.length, replaced, removed };
 }

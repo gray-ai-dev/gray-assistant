@@ -2,7 +2,7 @@
  * Plain panel ids for source accounts whose own id is not one (docs/confidential-lane-supply-implementation.md S59).
  *
  * The relay-stack origin holds each account under the id Gray's panel knows it by (daemon `#laneAccountId`). A source
- * may name accounts otherwise: CLIProxyAPI names them by e-mail address, which `STACK_ID_PATTERN` refuses and which
+ * may name accounts otherwise: by e-mail address, say, which `STACK_ID_PATTERN` refuses and which
  * must not reach Gray anyway. Such an account gets `<vendor word>-<n>` (`anthropic-1`, `openai-1`, `codex-1`) on the
  * relay's host, the lowest `n` that is neither another account's own panel id nor an alias already given, at first
  * sight. Aliases are kept for good (never pruned), so an account that leaves the source and comes back gets its id

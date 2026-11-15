@@ -257,7 +257,7 @@ export function phase2Candidate(answer: unknown, relayId: string, chain: ChainCo
   if (!parsed.success) throw new RelayKitError("usage", "Gray's answer names no lane instance this gray-assistant reads; upgrade gray-assistant, or tell Gray");
   const named = parsed.data;
   if (named.app_id === null || named.lane_origin === null || named.kms_ca_pubkey === null || !LIVE_DEPLOYMENTS.has(named.deployment)) {
-    throw new RelayKitError("usage", `Gray names no running VM for this relay yet (deployment ${named.deployment}): Deploy it in the panel, then run \`gray-assistant deliver\` again`);
+    throw new RelayKitError("usage", `Gray names no running VM for this relay yet (deployment ${named.deployment}): apply relay-stack.json again (the apply queues the Deploy), wait until the VM waits for your delivery, then run \`gray-assistant deliver\` again`);
   }
   if (!isLaneBinding({ appId: named.app_id, kmsCaPubkey: named.kms_ca_pubkey })) throw new RelayKitError("usage", "Gray's answer names a lane instance that is not an app id and a KMS key");
   let laneOrigin: string;
@@ -334,7 +334,7 @@ export function phase2Boot(facts: StackBootFacts | null | undefined, relayId: st
   if (facts.phase === "empty_slot") return { ok: true, running: null, seq: 0, previous: null };
   if (facts.phase !== "sealed") return { ok: false, code: "stack_boot_not_sealed", message: "the VM's quote was taken before pre-launch sealed the boot" };
   if (!isRelayDesignationClaim(facts.image)) {
-    return { ok: false, code: "stack_boot_phase1", message: "the VM is a phase-1 boot (its image comes from your token service): run the agent (`gray-assistant run`) for it, not a delivery" };
+    return { ok: false, code: "stack_boot_phase1", message: "the VM is a phase-1 boot (its image comes from a token service, which gray-assistant no longer runs): delete the VM and pair again on a current release (relay-stack.md section 10), then deliver" };
   }
   return { ok: true, running: facts.image.image, seq: facts.image.seq, previous: facts.image.previous };
 }
@@ -406,6 +406,11 @@ async function cliAccounts(config: LoadedRelayConfig, nowMs: number): Promise<Re
 export function proxyText(egress: { readonly type: string; readonly host: string; readonly port: number | bigint }): string {
   return `${egress.type}://${egress.host.includes(":") ? `[${egress.host}]` : egress.host}:${String(egress.port)}`;
 }
+
+/** A command other than `deliver` on a kit that has adopted no VM yet (a kit just paired, before its first delivery). */
+export const VM_NOT_ADOPTED = "stack_vm_not_adopted";
+/** `accounts push` or `registry set` to a VM that still waits for its first delivery. */
+export const EMPTY_SLOT = "relay_empty_slot";
 
 /** How a sealed account leaves the VM, in words: its proxy, or the VM's own address. */
 export function leavesThrough(egress: { readonly type: string; readonly host: string; readonly port: number | bigint } | undefined): string {
@@ -515,7 +520,8 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
   const postStatus = options.agentStatusPost ?? defaultPost;
   const agentAnswerOnce = (): Promise<unknown> => (agentAnswer ??= cliAgentAnswer(config, seed, nextIssuedMs(), null, postStatus));
   if (vm === null) {
-    if (action !== "deliver") throw new RelayKitError("usage", "no stack VM adopted yet: `gray-assistant deliver` adopts the VM Gray deployed once its quote proves it");
+    // A state, not a misuse: a refusal with a code, which `login --vendor` reads to make the first delivery itself.
+    if (action !== "deliver") return refuse(VM_NOT_ADOPTED, "no stack VM adopted yet: `gray-assistant deliver` adopts the VM Gray deployed once its quote proves it");
     candidate = phase2Candidate(await (options.stackInstance ?? (async () => get((await agentAnswerOnce()) as Json, "instance")))(), relayId, options.chain);
     vm = { origin: candidate.laneOrigin, instance: { appId: candidate.appId, kmsCaPubkey: candidate.kmsCaPubkey } };
     io.stdout(`gray-assistant ${name}: Gray names app ${candidate.appId} at ${candidate.laneOrigin}; it is adopted once its quote proves it\n`);
@@ -592,12 +598,12 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
       sendAccounts = true;
       break;
     case "accounts":
-      if (boot.running === null) return refuse("relay_empty_slot", "the VM waits for its first delivery: run `gray-assistant deliver`");
+      if (boot.running === null) return refuse(EMPTY_SLOT, "the VM waits for its first delivery: run `gray-assistant deliver`");
       target = null;
       sendAccounts = true;
       break;
     case "registry":
-      if (boot.running === null) return refuse("relay_empty_slot", "the VM waits for its first delivery: run `gray-assistant deliver`, which seals the login too");
+      if (boot.running === null) return refuse(EMPTY_SLOT, "the VM waits for its first delivery: run `gray-assistant deliver`, which seals the login too");
       target = boot.running;
       sendAccounts = false;
       break;
@@ -966,7 +972,7 @@ async function phase2Restart(
     if (again !== null && again.ok && attestationMismatch(again, vm.origin, relayId) === null && bootKeys(again) !== before.keys) {
       const now = phase2Boot(again.stackBoot, relayId, relayKeyHex);
       if (now.ok && now.running === null && before.running !== null) {
-        return refuse("relay_empty_slot", "the VM restarted into the empty slot (it kept no boot box): run `gray-assistant deliver`", { request_id: request.request_id });
+        return refuse(EMPTY_SLOT, "the VM restarted into the empty slot (it kept no boot box): run `gray-assistant deliver`", { request_id: request.request_id });
       }
       if (now.ok && now.running === null) {
         io.stdout(`gray-assistant ${name}: the new boot attests the empty slot, as the one before; it waits for its first delivery (\`gray-assistant deliver\`)\n`);

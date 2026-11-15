@@ -54,7 +54,7 @@ export function AccountsPage({ relay }: { relay: RelayInfo }) {
           : <Button variant="primary" disabled title={source.problem ? 'Fix accounts.json first.' : 'accounts.json is read-only here.'}>Add account</Button>)} />
       <AgentNotice relay={view?.relay ?? relay} />
       {accounts.error && <Notice tone="danger" role="alert" actions={<Button size="sm" onClick={() => void accounts.reload()}>Try again</Button>}>Couldn’t read the accounts: {refusalText(accounts.error.code)}</Notice>}
-      {source && source.kind !== 'file' && <Notice title={`Accounts come from ${source.kind === 'cliproxyapi' ? 'CLIProxyAPI' : 'your relay software'}`}>
+      {source && source.kind !== 'file' && <Notice title="Accounts come from your relay software">
         Add, change and remove accounts there{source.url ? ` (${source.url})` : ''}: gray-assistant reads them every {pollSeconds} seconds and seals each one itself. This page changes accounts only for the file source, accounts.json.
       </Notice>}
       {source?.problem && <Notice tone="danger" role="alert" title="accounts.json can’t be read">

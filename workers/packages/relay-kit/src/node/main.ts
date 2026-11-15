@@ -40,7 +40,7 @@
  *     gray-assistant stack rollout <image> | rollback | restart [--config <gray-assistant.jsonc>] [--no-wait] [--timeout <s>]
  *     gray-assistant stack status [--config <gray-assistant.jsonc>]
  *     gray-assistant debug get <request id> [--out <file>] [--config <gray-assistant.jsonc>]
- *     gray-assistant login <account> [--config <gray-assistant.jsonc>]
+ *     gray-assistant login <account> [--vendor <anthropic|chatgpt_codex> [--proxy <url>]] [--config <gray-assistant.jsonc>]
  *     gray-assistant ui [--config <gray-assistant.jsonc>] [--port <n>] [--ca <pem>] [--verifier-module <mjs>]
  *     gray-assistant ui link [--config <gray-assistant.jsonc>] [--port <n>]
  *     gray-assistant ui enroll [--config <gray-assistant.jsonc>] [--origin <https origin>]
@@ -283,7 +283,9 @@ function usage(): string {
     "                                     restart waits for the new boot's own attestation)",
     "       gray-assistant stack status [--config <config>]",
     "       gray-assistant debug get <request id> [--out <file>] [--config <config>]   (a request's record the customer authorized; the VM holds it 24 h)",
-    "       gray-assistant login <account> [--config <config>]   (signs a subscription account in inside the VM, by your software there)",
+    "       gray-assistant login <account> [--vendor <anthropic|chatgpt_codex> [--proxy <url>]] [--config <config>]",
+    "                                        (signs a subscription account in inside the VM, by your software there; with --vendor it first",
+    "                                        adds the account to accounts.json, with --proxy leaving through that proxy, and seals it)",
     "       gray-assistant ui [--config <config>] [--port <n>] [--host <address>] [--ca <pem>] [--verifier-module <module.mjs>]",
     "                                    (the local page, on 127.0.0.1; in the kit's container --host 0.0.0.0, published on the host's 127.0.0.1 only)",
     "       gray-assistant ui link [--config <config>] [--port <n>]   (a one-time sign-in link for the local page)",
@@ -1028,6 +1030,9 @@ async function accountsImportCommand(args: ParsedArgs, io: CliIo): Promise<numbe
   const config = loadRelayConfigFile(configPathOf(args));
   const result = importAccountsFile(config, args.positionals[2] as string);
   io.stdout(`gray-assistant accounts import: ${result.accounts} account(s) of relay ${result.relayId} written to ${result.path} (0600), where the file source reads them${result.replaced ? "; the file there before is replaced" : ""}\n`);
+  if (result.removed.length > 0) {
+    io.stdout(`gray-assistant accounts import: the file there before also listed ${result.removed.join(", ")}: no longer in the source. An account added with \`login --vendor\` is in that file only: add it to yours and import again to keep it.\n`);
+  }
   io.stdout(`the copy at ${args.positionals[2] as string} is no longer needed: remove it from the kit directory (it holds the accounts' credentials)\n`);
   io.stdout("next: gray-assistant doctor (each account's state), then gray-assistant deliver (the first time) or gray-assistant accounts push\n");
   printJson(io, { command: "accounts import", ok: true, relay_id: result.relayId, path: result.path, accounts: BigInt(result.accounts), replaced: result.replaced });
@@ -1134,16 +1139,81 @@ function text(value: unknown): string | null {
 // login
 // ---------------------------------------------------------------------------------------------
 
-/** `login <account>` (docs/design/relay-sign-in-in-vm.md): the sign-in inside the VM. */
+/**
+ * `login <account>` (docs/design/relay-sign-in-in-vm.md): the sign-in inside the VM. With `--vendor` the account is
+ * first written to the file source as a `sign_in` account (with `--proxy`, leaving through that proxy) and sealed, as
+ * `accounts push` seals it, so one command adds a subscription and signs it in.
+ */
 async function loginCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   if (args.positionals[1] === undefined) throw new RelayKitError("usage", "login needs an account id (gray-assistant login <account>)");
-  return loginVmCommand(args, io);
+  assertFlags(args, ["config", "vendor", "proxy"]);
+  assertPositionals(args, 2);
+  const vendor = args.flags.get("vendor");
+  if (vendor === undefined) {
+    if (args.flags.has("proxy")) throw new RelayKitError("usage", "--proxy goes with --vendor: gray-assistant login <account> --vendor <anthropic|chatgpt_codex> --proxy <url> adds the account with its proxy, seals it and signs it in");
+    return loginVmCommand(args, io);
+  }
+  const sealed = await loginAddAccount(args, io, vendor);
+  return sealed !== 0 ? sealed : loginVmCommand(args, io);
+}
+
+/** Why `login --vendor` did not write the account, in words; a refusal names a field and a closed code, never a value. */
+function signInAccountRefusal(code: string, field: string | null, detail: string | null, accountId: string): string {
+  if (field === "vendor") return "--vendor is anthropic (a Claude subscription) or chatgpt_codex (a ChatGPT/Codex subscription): the vendors an account is signed in for";
+  if (field === "proxy") return "--proxy is a URL: socks5://<user>:<password>@<host>:<port> (socks5, socks5h, http or https; a SOCKS URL names its port, and a password comes with a user name)";
+  if (field === "account_id" && code === "taken") return `accounts.json already lists ${accountId} as another account (another vendor, or one with a key or a token): pick another id for the subscription`;
+  if (field === "account_id") return "the account id is 1 to 128 letters, digits, `.`, `_`, `:` or `-`";
+  if (code === "source_read_only") return "accounts.json cannot be written where the source reads it (its folder is not writable by gray-assistant)";
+  if (code === "source_unreadable") return "accounts.json does not read as the source reads it; put it right first (`gray-assistant doctor` names the member)";
+  return `accounts.json was not changed (${code}${detail === null ? "" : `: ${detail}`})`;
+}
+
+/** `login <account> --vendor <vendor> [--proxy <url>]`, before the sign-in: the account in the file source, then sealed. */
+async function loginAddAccount(args: ParsedArgs, io: CliIo, vendor: string): Promise<number> {
+  const accountId = args.positionals[1] as string;
+  const { checkLoginAccountId } = await import("./login-vm.ts");
+  checkLoginAccountId(accountId);
+  const { loadRelayConfigFile } = await import("./config-file.ts");
+  const config = loadRelayConfigFile(configPathOf(args));
+  if (config.source.kind !== "file") {
+    throw new RelayKitError(
+      "usage",
+      `--vendor adds the account to accounts.json, and this relay's accounts come from its own software (source.kind "${config.source.kind}"): list ${accountId} there with "credential_type": "sign_in", run gray-assistant accounts push, then gray-assistant login ${accountId}`,
+    );
+  }
+  const { ensureSignInAccount } = await import("./ui/accounts-file.ts");
+  const { UiRefusal } = await import("./ui/refusal.ts");
+  const { addAndSeal, refusalOf } = await import("./login-add.ts");
+  const configFlag = args.flags.get("config");
+  const flags = new Map(configFlag === undefined ? [] : [["config", configFlag] as const]);
+  // One of the two delivery commands, as its own command line would run it; its output goes on, and its last line is read.
+  const command = async (action: "accounts" | "deliver"): Promise<{ code: number; refusal: string | null }> => {
+    const lines: string[] = [];
+    const tee: CliIo = { ...io, stdout: (line) => (lines.push(line), io.stdout(line)) };
+    const code = await deliverCli({ ...args, positionals: action === "accounts" ? ["accounts", "push"] : ["deliver"], flags, multiFlags: new Map() }, tee, action, null);
+    return { code, refusal: code === 0 ? null : refusalOf(lines) };
+  };
+  return addAndSeal(
+    accountId,
+    vendor,
+    {
+      ensure: async () => {
+        try {
+          return await ensureSignInAccount(config.source, config.daemon.relayId, { accountId, vendor: vendor as Vendor, proxy: args.flags.get("proxy") ?? null });
+        } catch (error) {
+          if (error instanceof UiRefusal) throw new RelayKitError("usage", signInAccountRefusal(error.code, error.field, error.detail, accountId));
+          throw error;
+        }
+      },
+      push: () => command("accounts"),
+      deliver: () => command("deliver"),
+    },
+    io,
+  );
 }
 
 /** `login <account>`: the sign-in inside the relay's stack VM (`./login-vm.ts`). */
 async function loginVmCommand(args: ParsedArgs, io: CliIo): Promise<number> {
-  assertFlags(args, ["config"]);
-  assertPositionals(args, 2);
   const accountId = args.positionals[1] as string;
   const { checkLoginAccountId, loginVm } = await import("./login-vm.ts");
   checkLoginAccountId(accountId);

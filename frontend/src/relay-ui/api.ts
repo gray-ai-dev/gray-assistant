@@ -20,7 +20,7 @@ export type RelayInfo = {
   config_path: string;
   /** gray-assistant finds this config without `--config` ($GRAY_ASSISTANT_CONFIG, /etc/gray-assistant, ./gray-assistant.jsonc). */
   config_default: boolean;
-  source: { kind: 'file' | 'http' | 'cliproxyapi' };
+  source: { kind: 'file' | 'http' };
   agent: { state: AgentState; as_of_ms: number | null; ready: boolean; paused: boolean };
   features: { image: boolean };
   /** The relay tunnel and its CT monitor's verdict (docs/relay-tunnel.md); null without a tunnel section. */
@@ -51,7 +51,7 @@ export type Account = {
 export type AccountsView = {
   relay: RelayInfo;
   source: {
-    kind: 'file' | 'http' | 'cliproxyapi';
+    kind: 'file' | 'http';
     path: string | null;
     url: string | null;
     exists: boolean;

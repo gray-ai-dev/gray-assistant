@@ -21,7 +21,7 @@ export const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 export const MIN_REQUEST_TIMEOUT_MS = 100;
 export const MAX_REQUEST_TIMEOUT_MS = 120_000;
 
-/** The detection probe's deadline and its bounds. */
+/** The probe's deadline (`doctor`'s `source_detected`) and its bounds. */
 export const DEFAULT_PROBE_TIMEOUT_MS = 2_000;
 export const MIN_PROBE_TIMEOUT_MS = 100;
 export const MAX_PROBE_TIMEOUT_MS = 30_000;

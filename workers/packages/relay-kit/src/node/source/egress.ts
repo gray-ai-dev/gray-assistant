@@ -8,8 +8,8 @@
  *
  * A parsed value is field by field, not a URL string. The metadata half is `{type, host, port,
  * username}`; the password is returned separately and only reaches `SourceAdapter.credential()`
- * (K4-1), never `SourceAccount`. For CLIProxyAPI's `proxy_url` the platform `URL` does the parsing,
- * and a URL that would need a guess (a path or query, a SOCKS URL with no port, a password with no
+ * (K4-1), never `SourceAccount`. For a proxy written as a URL (the gray-assistant page's proxy field) the platform
+ * `URL` does the parsing, and a URL that would need a guess (a path or query, a SOCKS URL with no port, a password with no
  * username) is refused as ambiguous instead of silently taking one reading.
  */
 import { z } from "zod";
@@ -93,7 +93,7 @@ function decodeCredential(text: string, detail: string): string | undefined {
 }
 
 /**
- * Parse one `proxy_url` as CLIProxyAPI stores it in an auth file. The reading is field by field;
+ * Parse one proxy written as a URL (`socks5://user:password@host:port`). The reading is field by field;
  * an explicit port is required for SOCKS because neither RFC 1928 nor the URL parser supplies a
  * default one.
  */

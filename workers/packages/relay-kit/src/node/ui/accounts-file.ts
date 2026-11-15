@@ -51,7 +51,7 @@ export interface UiAccountsView {
   readonly kind: ResolvedSourceConfig["kind"];
   /** `file` only: the accounts file. */
   readonly path: string | null;
-  /** `http`/`cliproxyapi` only: the software the agent reads accounts from. */
+  /** `http` only: the software the agent reads accounts from. */
   readonly url: string | null;
   /** The file exists; false before the first account is added. */
   readonly exists: boolean;
@@ -151,22 +151,25 @@ function newEntry(input: NewAccountInput): Record<string, unknown> {
     if (input.models.length === 0 || input.models.length > 256 || input.models.some((model) => !MODEL_ID.test(model))) throw fieldRefusal("models", "invalid");
     entry["models"] = [...new Set(input.models)];
   }
-  if (input.proxy !== null) {
-    let proxy;
-    try {
-      proxy = parseEgressUrl(input.proxy, "proxy");
-    } catch {
-      throw fieldRefusal("proxy", "invalid");
-    }
-    entry["egress"] = {
-      type: proxy.egress.type,
-      host: proxy.egress.host,
-      port: proxy.egress.port,
-      ...(proxy.egress.username === undefined ? {} : { username: proxy.egress.username }),
-      ...(proxy.password === undefined ? {} : { password: proxy.password }),
-    };
-  }
+  if (input.proxy !== null) entry["egress"] = egressEntry(input.proxy);
   return entry;
+}
+
+/** A proxy URL as the file's `egress` member; a URL that does not read is the `proxy` field's refusal, never its value. */
+function egressEntry(url: string): Record<string, string | number> {
+  let proxy;
+  try {
+    proxy = parseEgressUrl(url, "proxy");
+  } catch {
+    throw fieldRefusal("proxy", "invalid");
+  }
+  return {
+    type: proxy.egress.type,
+    host: proxy.egress.host,
+    port: proxy.egress.port,
+    ...(proxy.egress.username === undefined ? {} : { username: proxy.egress.username }),
+    ...(proxy.password === undefined ? {} : { password: proxy.password }),
+  };
 }
 
 /** A pasted secret, checked with the TEE's own format rule for its vendor (`invalid_credential` names no value). */
@@ -233,6 +236,44 @@ export async function addAccount(source: ResolvedSourceConfig, relayId: string, 
     if (indexOf(document, input.accountId) >= 0) throw fieldRefusal("account_id", "taken");
     return applyEdits(current, modify(current, ["accounts", -1], entry, { isArrayInsertion: true, formattingOptions: FORMATTING }));
   });
+}
+
+/** What `ensureSignInAccount` did to the file. */
+export type SignInAccountChange = "added" | "proxy_set" | "unchanged";
+
+/**
+ * A subscription account as a `sign_in` account of the file source (no token: it is signed in inside the VM), for
+ * `gray-assistant login <account> --vendor <vendor> [--proxy <url>]`. An account the file does not name is added at the
+ * end. One it names must already be that vendor's `sign_in` account (`account_id` `taken` otherwise: this never turns
+ * an account with a key or a token into another kind); a proxy given here then replaces its proxy, and none given
+ * leaves it as it is. Refusals name the field and a closed code, never a value.
+ */
+export async function ensureSignInAccount(
+  source: ResolvedSourceConfig,
+  relayId: string,
+  input: { readonly accountId: string; readonly vendor: Vendor; readonly proxy: string | null },
+): Promise<SignInAccountChange> {
+  if (!RESOURCE_ID.test(input.accountId)) throw fieldRefusal("account_id", "invalid");
+  if (!(VENDORS as readonly string[]).includes(input.vendor) || credentialClass(input.vendor, "sign_in") === null) throw fieldRefusal("vendor", "no_sign_in");
+  const egress = input.proxy === null ? null : egressEntry(input.proxy);
+  let change: SignInAccountChange = "unchanged";
+  await editAccountsFile(source, relayId, (current, document) => {
+    const index = indexOf(document, input.accountId);
+    if (index < 0) {
+      change = "added";
+      const entry = { account_id: input.accountId, vendor: input.vendor, credential: { type: "sign_in" }, ...(egress === null ? {} : { egress }) };
+      return applyEdits(current, modify(current, ["accounts", -1], entry, { isArrayInsertion: true, formattingOptions: FORMATTING }));
+    }
+    const listed = (get(document, "accounts") as Json[])[index];
+    if (get(listed, "vendor") !== input.vendor || get(get(listed, "credential"), "type") !== "sign_in") throw fieldRefusal("account_id", "taken");
+    if (egress === null) return current;
+    const now = get(listed, "egress");
+    const same = now !== undefined && (["type", "host", "username", "password"] as const).every((member) => get(now, member) === egress[member]) && Number(get(now, "port")) === egress["port"];
+    if (same) return current;
+    change = "proxy_set";
+    return applyEdits(current, modify(current, ["accounts", index, "egress"], egress, { formattingOptions: FORMATTING }));
+  });
+  return change;
 }
 
 /** Replace the credential of one account that holds a pasted secret. */
