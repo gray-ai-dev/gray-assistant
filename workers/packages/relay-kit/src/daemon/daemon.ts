@@ -54,6 +54,7 @@ import { EMPTY_DAEMON_STATE } from "./state.ts";
 import { DaemonTransportError, type DaemonStackInstance, type DaemonStackInstanceView, type StackBindingChoice, type StackInstanceValues, type DaemonAlert, type DaemonAttestResult, type DaemonControl, type DaemonControlLoad, type DaemonHealth, type DaemonHealthReason, type DaemonLogEvent, type DaemonReleaseListStatus, type DaemonReplicaStatus, type DaemonSourceProxy, type DaemonStackSecondaryStatus, type DaemonState, type DaemonStateLoad, type DaemonStatus, type RelayDaemon, type RelayDaemonOptions, type ReleaseRefusal, type StackReleaseDecision } from "./types.ts";
 import { normalizeHttpsOrigin, type CheckedVerifiedReport } from "../verified-report.ts";
 import { tunnelOriginOf } from "../lane-origin.ts";
+import { failedChecksText } from "./failed-checks.ts";
 import { attestationMismatch, stackBootDecision } from "./stack-boot.ts";
 import { DaemonVersionError, VersionLedger } from "./versions.ts";
 import type { SourceAccount, SourceCredential, SourceEgress, SourceSnapshot } from "../source/types.ts";
@@ -125,7 +126,7 @@ export const STACK_CANDIDATE_RETRY_MAX_MS = 5_000;
 const LIVE_DEPLOYMENTS: ReadonlySet<string> = new Set(["deploying", "running", "restarting"]);
 
 /** Why an account is not sealed to the relay-stack origin; the log and doctor name this rule. */
-export const STACK_ACCOUNT_ID_RULE = `on the relay-stack origin an account is sealed under its panel id: its source account_id when that matches ${STACK_ID_PATTERN.source} and no alias holds it, else the plain alias gray-assistant gives it (gray-assistant accounts lists both)`;
+export const STACK_ACCOUNT_ID_RULE = `on the stack origin an account is sealed under its panel id: its source account_id when that matches ${STACK_ID_PATTERN.source} and no alias holds it, else the plain alias gray-assistant gives it (gray-assistant accounts lists both)`;
 
 /** The verified bundle the policy step uploads and compares the lane's registry against. */
 interface LoadedPolicy {
@@ -362,7 +363,7 @@ class RelayDaemonImpl implements RelayDaemon {
     }
     if (options.policyBundle === undefined || options.policyBundle === null) {
       // S23: a relay-stack lane runs no policy module, so a relay with no other origin needs no bundle.
-      if (policyOrigins(this.#config).length > 0) throw new RelayKitError("invalid_policy_bundle", "a policy bundle is required for every lane origin but the relay-stack one");
+      if (policyOrigins(this.#config).length > 0) throw new RelayKitError("invalid_policy_bundle", "a policy bundle is required for every lane origin but the stack one");
       this.#policy = null;
     } else {
       const parsedPolicy = parsePolicyBundleValue(options.policyBundle);
@@ -466,7 +467,7 @@ class RelayDaemonImpl implements RelayDaemon {
       const kept = await this.#options.aliasStore.read().catch(() => null);
       if (kept === null) {
         this.#aliasesReadable = false;
-        this.#log({ level: "error", event: "account_aliases_unreadable", detail: "the account aliases file does not read; accounts without a panel id of their own are not sealed to the relay-stack origin until it is fixed" });
+        this.#log({ level: "error", event: "account_aliases_unreadable", detail: "the account aliases file does not read; accounts without a panel id of their own are not sealed to the stack origin until it is fixed" });
       } else {
         for (const alias of kept) this.#adoptAlias(alias);
       }
@@ -692,7 +693,8 @@ class RelayDaemonImpl implements RelayDaemon {
             .map((planned) => {
               // An account left out for its proxy says nothing of one (deliver-accounts.ts).
               const proxy = planned.account.leftOut === undefined ? sourceProxyOf(planned.account.egress) : undefined;
-              return { sourceId: planned.account.sourceId, vendor: planned.vendor, credentialType: planned.credentialType, ...(proxy === undefined ? {} : { proxy }) };
+              const stated = planned.account.statedMaxConcurrency;
+              return { sourceId: planned.account.sourceId, vendor: planned.vendor, credentialType: planned.credentialType, ...(proxy === undefined ? {} : { proxy }), ...(stated === undefined ? {} : { maxConcurrency: Number(stated) }) };
             })
             .sort((left, right) => (left.sourceId < right.sourceId ? -1 : left.sourceId > right.sourceId ? 1 : 0))
         : null,
@@ -946,6 +948,9 @@ class RelayDaemonImpl implements RelayDaemon {
     if (!result.ok) {
       this.#fail(replica, `attest_${result.stage}_${result.code}`);
       if (result.stage === "pinning") replica.lastError = "release_pending";
+      // The replica's error stays the closed code; the agent's log says which checks the report failed.
+      const checks = failedChecksText(result.failedChecks);
+      if (checks !== "") this.#log({ level: "warn", event: "attest_checks_failed", origin: replica.origin, code: `attest_${result.stage}_${result.code}`, checks });
       return false;
     }
     // The report is the origin's, with the keyset and TLS key it signed. Through Gray's entry

@@ -162,6 +162,7 @@ export function parseHttpAccounts(value: unknown, maxAccounts: number): ParsedHt
       models: data.models === undefined || data.models === "*" ? "*" : [...data.models],
       weight: BigInt(data.weight ?? 1),
       maxConcurrency: BigInt(data.max_concurrency ?? 1),
+      ...(data.max_concurrency === undefined ? {} : { statedMaxConcurrency: BigInt(data.max_concurrency) }),
       status: STATUS_OF[data.status],
       ...(data.limited_until_ms === undefined ? {} : { limitedUntilMs: data.limited_until_ms }),
       ...(data.expires_at_ms === undefined ? {} : { credentialExpiresAtMs: data.expires_at_ms }),

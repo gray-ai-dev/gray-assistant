@@ -51,7 +51,13 @@ export interface SourceAccount {
   /** Exact public model ids, or `"*"` for every model of the vendor (the default when the source has no list). */
   readonly models: readonly string[] | "*";
   readonly weight: bigint;
+  /** The scheduler's limit: the source's `max_concurrency`, else the standard's default, 1. */
   readonly maxConcurrency: bigint;
+  /**
+   * The `max_concurrency` the source states for the account, absent when it states none. Gray takes it as the panel
+   * account's concurrency when it adopts the account (the agent status's `sources[].max_concurrency`).
+   */
+  readonly statedMaxConcurrency?: bigint;
   readonly status: SourceAccountStatus;
   /** Unix ms until which a `limited` account stays out of the picks, when the source knows it. */
   readonly limitedUntilMs?: number;

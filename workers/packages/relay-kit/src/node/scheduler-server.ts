@@ -51,7 +51,7 @@ export async function startReferenceScheduler(options: StartSchedulerOptions): P
   const resolvePath = (path: string): string => (isAbsolute(path) ? path : resolve(base, path));
 
   const check = loadVerifiedReport(resolvePath(config.attestationReportPath), config, now);
-  const keyText = readPrivateFile(resolvePath(config.relayKeyPath), "relay key", 64 * 1024);
+  const keyText = readPrivateFile(resolvePath(config.relayKeyPath), "deployment key", 64 * 1024);
   let key: Awaited<ReturnType<typeof buildKeyFromText>>;
   try {
     key = await buildKeyFromText(keyText);

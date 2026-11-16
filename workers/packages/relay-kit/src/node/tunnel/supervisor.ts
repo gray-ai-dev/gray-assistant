@@ -269,7 +269,7 @@ export async function startTunnel(options: {
 }): Promise<RunningTunnel> {
   const { config } = options;
   const label = tunnelLabel(options.relayId);
-  if (label === null) throw new Error("the relay id has no tunnel label");
+  if (label === null) throw new Error("the relay_id has no tunnel label");
   const paths = tunnelPaths(config);
   mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
   const spawnChild = options.seams?.spawn ?? ((command, args, env) => nodeSpawn(command, [...args], { env, stdio: ["ignore", "pipe", "pipe"] }));

@@ -763,10 +763,10 @@ export function parseRelayDaemonConfig(value: unknown): RelayDaemonConfig {
     const tunnelOrigin = tunnelOriginOf(origin);
     if (tunnelOrigin === null) continue;
     if (tunnelOrigin.relayId !== parsed.data.relay_id) {
-      throw new RelayKitError("usage", "invalid daemon config: a lane origin through Gray's entry (/v1/peer/tunnel/<relay>) must name this config's relay_id");
+      throw new RelayKitError("usage", "invalid daemon config: a lane origin through Gray's entry (/v1/peer/tunnel/<relay_id>) must name this config's relay_id");
     }
     if (stack?.laneOrigin !== origin) {
-      throw new RelayKitError("usage", "invalid daemon config: a lane origin through Gray's entry (/v1/peer/tunnel/<relay>) reaches only the relay-stack VM: it must be stack.lane_origin");
+      throw new RelayKitError("usage", "invalid daemon config: a lane origin through Gray's entry (/v1/peer/tunnel/<relay_id>) reaches only your deployment's VM: it must be stack.lane_origin");
     }
   }
   if (parsed.data.ui?.public === true && stack === null && tunnel === null && parsed.data.ui.origin === undefined) {
@@ -775,7 +775,7 @@ export function parseRelayDaemonConfig(value: unknown): RelayDaemonConfig {
   if (parsed.data.policy_bundle === undefined && origins.some((origin) => origin !== stack?.laneOrigin)) {
     throw new RelayKitError(
       "usage",
-      "invalid daemon config: policy_bundle is required: every lane origin but a relay-stack one (stack.lane_origin, which runs no policy module) installs the relay's policy before its credentials",
+      "invalid daemon config: policy_bundle is required: every lane origin but the stack one (stack.lane_origin, which runs no policy module) installs your policy before its credentials",
     );
   }
   return {
@@ -839,7 +839,7 @@ export function policyOrigins(config: Pick<RelayDaemonConfig, "lane" | "stack">)
  * relay-stack VM is reached only through Gray's entry.
  */
 export const STACK_LANE_ORIGIN_TUNNEL_RULE =
-  "invalid daemon config: stack.lane_origin is Gray's entry tunnel route, https://<entry>/v1/peer/tunnel/<relay_id>: since kit 1.1.0 a relay-stack VM takes no inbound connection, so a plain https origin does not reach it";
+  "invalid daemon config: stack.lane_origin is Gray's entry tunnel route, https://<entry>/v1/peer/tunnel/<relay_id>: since kit 1.1.0 a deployment's VM takes no inbound connection, so a plain https origin does not reach it";
 
 /** The `stack` section's cross-member rules; refusals name members, never values. */
 function stackConfigOf(stack: z.infer<typeof stackSchema>, instances: ReadonlyMap<string, LaneBinding>, stateFile: string, tunnel: TunnelConfig | null): StackConfig {

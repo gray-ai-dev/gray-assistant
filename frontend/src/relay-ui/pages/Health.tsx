@@ -21,7 +21,7 @@ export function checkTitle(id: string): string {
   const subject = rest.join(':');
   const host = (() => { try { return new URL(subject).host; } catch { return subject; } })();
   const titles: Record<string, string> = {
-    config: 'Configuration', key_permissions: 'Relay key file', key_content: 'Relay key', accounts_permissions: 'accounts.json file', token_permissions: 'Source token file',
+    config: 'Configuration', key_permissions: 'Deployment key file', key_content: 'Deployment key', accounts_permissions: 'accounts.json file', token_permissions: 'Source token file',
     admin_token_permissions: 'Admin token file', policy_bundle: 'Policy bundle', state_permissions: 'State folder', release_key: 'Gray’s published values', source_detected: 'Account source',
     source_credential: 'Reading a key', source_accounts: 'Selected accounts', release_list: 'Gray’s release list', release_freshness: 'Release list freshness', scheduler_tls: 'Scheduler certificate',
     scheduler_echo: 'Scheduler proxy', stack_files: 'Stack files', stack_registry: 'Registry token', stack_challenge: 'Pull-token service', stack_release_status: 'Release status',
@@ -85,7 +85,7 @@ export function HealthPage({ relay }: { relay: RelayInfo }) {
             <Text size="meta" tone="muted">{line.message}</Text>
           </li>)}</List>
         </Disclosure>}
-        {skipped.length > 0 && <Text size="meta" tone="muted">Not run from this page: {skipped.map(line => checkTitle(line.id)).join(', ')}. gray-assistant doctor on the relay’s host runs {skipped.length === 1 ? 'it' : 'them'}.</Text>}
+        {skipped.length > 0 && <Text size="meta" tone="muted">Not run from this page: {skipped.map(line => checkTitle(line.id)).join(', ')}. gray-assistant doctor on your machine runs {skipped.length === 1 ? 'it' : 'them'}.</Text>}
       </>}
     </Stack>
   </Page>;

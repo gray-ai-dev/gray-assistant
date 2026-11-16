@@ -7,9 +7,11 @@
  * and Caddy snippets that terminate TLS in front of the agent's plain HTTP.
  *
  * Nothing here talks to the lane or the relay software, and plain `init` is offline by construction. `init --pair`
- * (`pairWorkspace`, S57) makes one request to Gray: the code, the key's public half and its signature, answered with
- * the values it writes into the config. Then it reads the signed release list Gray's answer names (a public GET,
- * verified with the answer's keys as the agent verifies it) and records what the list names as accepted at pairing.
+ * (`pairWorkspace`, S57) asks Gray's chain terms for the code, checks them against what the kit knows without Gray
+ * (`../chain/trust.ts`: Gray's release keys, Base's DstackKms and its KMS), reads Gray's signed release list with a key
+ * built into the kit and the chain through the terms' two endpoints, and only then signs the guardian's approvals of
+ * the release Gray will deploy and makes the pairing request: the code, the key's public half, its signature and the
+ * approvals, answered with the values it writes into the config.
  */
 import { chmodSync, existsSync, lstatSync, mkdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -30,10 +32,9 @@ import {
 } from "@gray/control/stack-pairing";
 import { tunnelName } from "@gray/control/tunnel";
 import { get, isObject, parseStrict, toJsonString, type Json } from "@gray/json";
-import { isStackRelayImage, osImageProvenance, relayImageRegistry, releaseFreshnessLocation } from "@gray/lane-verify";
+import { isStackRelayImage, osImageProvenance, relayImageRegistry, releaseFreshnessLocation, type ReleaseList } from "@gray/lane-verify";
 import { ALLOW_MODULE_BASE64 } from "../assets/allow-module.ts";
 import { decodeBase64 } from "../base64.ts";
-import { MAX_PAIRING_ACCEPTANCES } from "../daemon/config.ts";
 import { fetchReleaseList, ReleaseListError } from "../daemon/releases.ts";
 import { RELAY_KIT_VERSION } from "../endpoints.ts";
 import { RelayKitError } from "../errors.ts";
@@ -56,12 +57,10 @@ import {
   PAIRED_COMPOSE_FILE,
   pairedComposeText,
   pairedConfigText,
-  printableReleaseName,
   registrationDocuments,
   relayImagePlaceholder,
   utcSecondsMs,
   type InitDocumentOptions,
-  type PairingAcceptedHash,
 } from "../init.ts";
 import { generateRelayKey, relayPublicKeyHex, relayKeyValue, verifyRelayKeyPair, type RelayKeyFile } from "../keys.ts";
 import { prepareAndSignPolicyBundle } from "../policy-bundle.ts";
@@ -72,9 +71,12 @@ import { initWorkspaceInterpreter } from "./interpreter.ts";
 import { buildKeyFromText } from "./scheduler-load.ts";
 import { APP_ID_PATTERN, KMS_CA_PUBKEY_PATTERN } from "../lane-binding.ts";
 import { checkedAddress, releaseHash } from "../chain/app-auth.ts";
+import { kitErrorIn, readDstackKmsCa } from "../chain/checks.ts";
 import { PAIRING_APPROVAL_LIFETIME_SECONDS, pairingGuardianJson, pairingGuardianPart } from "../chain/guardian.ts";
 import { GUARDIAN_KEY_FILE, RECOVERY_KEY_FILE, generateGuardianKey, type GuardianKeyFile } from "../chain/guardian-key.ts";
-import { checkedRpcUrl } from "../chain/rpc.ts";
+import { checkReleaseCompose } from "../chain/release-compose.ts";
+import { checkedRpcUrl, rpcLabel } from "../chain/rpc.ts";
+import { builtInKmsCaPubkey, isLoopbackOrigin, pairingChainVerdict, pairingReleaseKeys, pairingRpcEndpoints, type PinnedReleaseKeys } from "../chain/trust.ts";
 import { readGuardianKeyFile, writeGuardianKeyFile } from "./chain.ts";
 
 const URL_MAX = 2048;
@@ -151,7 +153,7 @@ function checkedUrl(value: string, what: string, httpsOnly: boolean, originOnly 
 export async function initWorkspace(options: InitWorkspaceOptions): Promise<InitWorkspaceResult> {
   const directory = options.directory;
   const relayId = options.relayId ?? RELAY_ID_PLACEHOLDER;
-  if (!TOKEN.test(relayId)) throw new RelayKitError("usage", "the relay id must match [A-Za-z0-9._:-]{1,128}");
+  if (!TOKEN.test(relayId)) throw new RelayKitError("usage", "the relay_id must match [A-Za-z0-9._:-]{1,128}");
   const schedulerUrl = checkedUrl(options.schedulerUrl ?? SCHEDULER_URL_PLACEHOLDER, "scheduler URL", true, true);
   const laneOrigin = checkedUrl(options.laneOrigin ?? LANE_ORIGIN_PLACEHOLDER, "lane origin", true, true);
   const releaseListUrl = checkedUrl(options.releaseListUrl ?? RELEASE_LIST_PLACEHOLDER, "release-list URL", false);
@@ -274,6 +276,17 @@ export interface PairWorkspaceOptions {
    */
   readonly registryUser?: string;
   readonly registryExpiresAt?: string;
+  /**
+   * The release keys to read Gray's list with for a Gray on this machine's loopback (a test's fake console): its
+   * operator's `--release-public-key` and `--release-freshness-public-key`. Refused for any other Gray, whose keys are
+   * built into the kit (`../chain/trust.ts`), so no command Gray hands out can name a key of Gray's choosing.
+   */
+  readonly releaseKeys?: PinnedReleaseKeys;
+  /**
+   * The two RPC endpoints the operator chose (`--rpc`, twice), which the pairing reads the chain through and writes into
+   * `chain.rpc`. Without them: on Base the public endpoints built into the kit, never the ones Gray's terms name.
+   */
+  readonly rpc?: readonly string[];
 }
 
 /** The pairing's guardian: the address, and the kit's key file when the kit holds the key. */
@@ -295,17 +308,6 @@ export interface PairingGuardian {
   readonly recovery: { readonly address: string; readonly keyPath: string; readonly generated: boolean } | null;
 }
 
-/**
- * What `init --pair` took from Gray's signed release list: the hashes it accepted, the OS images it left to the
- * operator (their texts do not prove a production image, so only `releases accept` takes one), and the list's refusal
- * code when it could not be read (then nothing is accepted and the current release waits `delay_days`).
- */
-export interface PairingAcceptance {
-  readonly accepted: readonly PairingAcceptedHash[];
-  readonly unverifiedOsImages: readonly string[];
-  readonly listError: string | null;
-}
-
 export type PairWorkspaceResult =
   | {
       readonly ok: true;
@@ -322,8 +324,10 @@ export type PairWorkspaceResult =
       readonly placeholders: readonly string[];
       /** Whether Gray's answer named the relay's image (else `stack.relay_images` is a placeholder). */
       readonly image: boolean;
-      /** What the pairing accepted from Gray's release list; null when Gray's answer names no list. */
-      readonly releases: PairingAcceptance | null;
+      /** Gray's signed release list as the pairing verified it, and with which key (`../chain/trust.ts`). */
+      readonly releaseList: { readonly url: string; readonly keySource: string };
+      /** What the kit took from Gray without a value of its own to hold it to, for the operator to look at. */
+      readonly warnings: readonly string[];
       /** The guardian of the relay's contract (phase 2); its approvals of the first release come with P5's pairing answer. */
       readonly guardian: PairingGuardian;
     }
@@ -386,37 +390,36 @@ function readPairAnswer(body: string): PairAnswer | null {
 const PAIRED_RELEASE_LIST_MAX_AGE = 86_400;
 
 /**
- * The releases Gray's signed list names now, which pairing accepts: every compose release with a `git_commit` (no
- * other is ever acceptable) and every OS image whose own texts prove a production image. A dev image is never
- * accepted; one whose texts do not bind it is left to `releases accept`. A list that does not verify accepts nothing.
+ * Gray's signed list at `url`, verified with `keys` (never a key Gray's answer alone names) as the agent verifies it,
+ * or the refusal code when it does not verify or cannot be read.
  */
-async function pairingAcceptance(release: NonNullable<PairAnswer["release"]>, nowMs: number, timeoutMs: number): Promise<PairingAcceptance> {
-  // The answer's schema checked both keys' form (64 lower-case hex).
-  const publicKey = lowerHexBytes(release.public_key) as Uint8Array;
-  const freshnessKey = release.freshness_public_key === null ? null : (lowerHexBytes(release.freshness_public_key) as Uint8Array);
-  let verified;
+async function verifiedPairingList(url: string, keys: PinnedReleaseKeys, nowMs: number, timeoutMs: number): Promise<{ readonly ok: true; readonly list: ReleaseList } | { readonly ok: false; readonly code: string }> {
   try {
-    verified = await fetchReleaseList(createPlainDaemonFetch({ timeoutMs }), release.list, {
-      publicKey,
+    const verified = await fetchReleaseList(createPlainDaemonFetch({ timeoutMs }), url, {
+      publicKey: lowerHexBytes(keys.publicKey) as Uint8Array,
       maxAgeSeconds: PAIRED_RELEASE_LIST_MAX_AGE,
       nowMs,
-      freshness: freshnessKey === null ? null : { publicKey: freshnessKey, url: releaseFreshnessLocation(release.list) },
+      freshness: keys.freshnessPublicKey === null ? null : { publicKey: lowerHexBytes(keys.freshnessPublicKey) as Uint8Array, url: releaseFreshnessLocation(url) },
     });
+    return { ok: true, list: verified.list };
   } catch (error) {
-    return { accepted: [], unverifiedOsImages: [], listError: error instanceof ReleaseListError ? error.code : "fetch_failed" };
+    return { ok: false, code: error instanceof ReleaseListError ? error.code : "fetch_failed" };
   }
-  const accepted: PairingAcceptedHash[] = [];
-  for (const entry of verified.list.releases) {
-    if (entry.git_commit === null) continue;
-    accepted.push({ hash: entry.compose_hash, kind: "release", name: printableReleaseName(entry.git_tag ?? `commit ${entry.git_commit.slice(0, 12)}`) });
-  }
-  const unverifiedOsImages: string[] = [];
-  for (const image of verified.list.osImages) {
+}
+
+/**
+ * The hashes of a verified list the guardian may approve at pairing: a compose release with a `git_commit` (no other is
+ * ever acceptable) and an OS image whose own texts prove a production image (never a dev image, nor one its texts do
+ * not bind), as `kind:hash`.
+ */
+function approvableHashes(list: ReleaseList): ReadonlySet<string> {
+  const hashes = new Set<string>();
+  for (const entry of list.releases) if (entry.git_commit !== null) hashes.add(`release:${entry.compose_hash}`);
+  for (const image of list.osImages) {
     const provenance = osImageProvenance(image);
-    if (!provenance.ok) unverifiedOsImages.push(image.os_image_hash);
-    else if (!provenance.isDev) accepted.push({ hash: image.os_image_hash, kind: "os_image", name: printableReleaseName(provenance.version ?? "unversioned") });
+    if (provenance.ok && !provenance.isDev) hashes.add(`os_image:${image.os_image_hash}`);
   }
-  return { accepted: accepted.slice(0, MAX_PAIRING_ACCEPTANCES), unverifiedOsImages, listError: null };
+  return hashes;
 }
 
 /** `YYYY-MM-DDTHH:MM:SSZ`, the form the config's other instants take. */
@@ -448,7 +451,7 @@ function pairRegistryLogin(user: string | undefined, expiresAt: string | undefin
  */
 export async function pairWorkspace(options: PairWorkspaceOptions): Promise<PairWorkspaceResult> {
   const code = normalizePairingCode(options.code);
-  if (code === null) throw new RelayKitError("usage", "--pair is not a pairing code (GRAY- and six groups of four characters, as the relay's Integration page shows it)");
+  if (code === null) throw new RelayKitError("usage", "--pair is not a pairing code (GRAY- and six groups of four characters, as the Integration page shows it)");
   const gray = grayOrigin(options.gray);
   const directory = options.directory;
   const force = options.force === true;
@@ -460,6 +463,8 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
   const composePath = join(directory, PAIRED_COMPOSE_FILE);
   const registryLogin = pairRegistryLogin(options.registryUser, options.registryExpiresAt, options.nowMs ?? Date.now());
   const releaseDelaySeconds = releaseDelayFlag(options.releaseDelayHours ?? String(DEFAULT_RELEASE_DELAY_HOURS), "--release-delay");
+  const pinned = pinnedReleaseKeys(gray, options.releaseKeys ?? null);
+  const givenRpc = operatorRpc(options.rpc ?? null);
   if (copyKey) assertWritable(keyPath, force);
   assertWritable(configPath, force);
   if (composeImage !== null) assertWritable(composePath, force);
@@ -470,37 +475,35 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
   const pairingRecovery = guardianForPairing(recoveryKeyPath);
 
   const key: RelayKeyFile =
-    keySource === null ? await generateRelayKey() : await buildKeyFromText(readPrivateFile(keySource, "relay key", 64 * 1024));
+    keySource === null ? await generateRelayKey() : await buildKeyFromText(readPrivateFile(keySource, "deployment key", 64 * 1024));
   if (keySource === null) await verifyRelayKeyPair(key);
   const publicKeyHex = relayPublicKeyHex(key);
   const fingerprint = relayKeyFingerprint(publicKeyHex) as string;
   const nowMs = options.nowMs ?? Date.now();
   const timeoutMs = options.timeoutMs ?? PAIR_TIMEOUT_MS;
 
-  // Phase 2 (docs/design/relay-no-always-on-host.md 13.3): ask Gray's chain terms for this code first; when Gray names
-  // some, compute the relay's contract and sign the guardian's approvals of the first release with the kit's guardian
-  // key, which the pairing request then carries.
-  let phase2: Phase2Pairing | null = null;
+  // Phase 2 (docs/design/relay-no-always-on-host.md 13.3): ask Gray's chain terms for this code first, check them and
+  // the release they name (`phase2Part`), then compute the relay's contract and sign the guardian's approvals of the
+  // first release with the kit's guardian key, which the pairing request then carries.
   const terms = await chainTerms(gray, code, timeoutMs);
   if (!terms.ok) return terms.failure;
   // A relay runs on its own contract: Gray names no chain terms when it cannot deploy one for this relay now.
   if (terms.chain === null) {
-    return { ok: false, reason: "refused", status: null, code: null, text: "Gray offers no contract for this relay now (no chain terms for this code); tell Gray, and pair again once it does" };
+    return { ok: false, reason: "refused", status: null, code: null, text: "Gray offers no contract for this deployment now (no chain terms for this code); tell Gray, and pair again once it does" };
   }
-  const prepared = await phase2Part(terms.chain, pairingGuardian, pairingRecovery.address, releaseDelaySeconds, nowMs, timeoutMs);
+  const prepared = await phase2Part(terms.chain, pairingGuardian, pairingRecovery.address, releaseDelaySeconds, nowMs, timeoutMs, { gray, pinned, rpc: givenRpc });
   if (!prepared.ok) return prepared.failure;
-  phase2 = prepared.pairing;
-  const signature = bytesToLowerHex(await ed25519Sign(key.seed, pairMessage(code, publicKeyHex, phase2?.part ?? null)));
+  const phase2 = prepared.pairing;
+  const signature = bytesToLowerHex(await ed25519Sign(key.seed, pairMessage(code, publicKeyHex, phase2.part)));
   // A new guardian key is on disk (0600, synced) before the request that carries its approvals: Gray may keep them even
   // when its answer is lost, and a contract naming a guardian whose key this kit lost could never be paused or vetoed.
-  // A retry finds the file and signs with the same key (`guardianForPairing`). A phase-1 pairing sends no approval: its
-  // key is written with the kit, once Gray paired.
-  if (pairingGuardian.generated !== null && phase2 !== null) {
+  // A retry finds the file and signs with the same key (`guardianForPairing`).
+  if (pairingGuardian.generated !== null) {
     ensureDirectory(directory);
     writeGuardianKeyFile(guardianKeyPath, pairingGuardian.generated);
   }
-  // The same for the recovery key, which only a phase-2 pairing names: its address is in the contract Gray deploys.
-  if (pairingRecovery.generated !== null && phase2 !== null) {
+  // The same for the recovery key: its address is in the contract Gray deploys.
+  if (pairingRecovery.generated !== null) {
     ensureDirectory(directory);
     writeGuardianKeyFile(recoveryKeyPath, pairingRecovery.generated);
   }
@@ -512,7 +515,7 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
       method: "POST",
       // No header names the operator or the machine: the code, the key, the version and the guardian part are the whole request.
       headers: { "content-type": "application/json", accept: "application/json", "user-agent": "gray-assistant" },
-      body: JSON.stringify({ code, public_key: publicKeyHex, signature, agent_version: RELAY_KIT_VERSION, ...(phase2 === null ? {} : { guardian: phase2.part }) }),
+      body: JSON.stringify({ code, public_key: publicKeyHex, signature, agent_version: RELAY_KIT_VERSION, guardian: phase2.part }),
       redirect: "error",
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -524,7 +527,7 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
       reason: "unreachable",
       status: null,
       code: null,
-      text: `Gray did not answer at ${gray}${PAIR_PATH}; check --gray and this machine's network, then run the command again (make a new code if the relay's Integration page says this one was used)`,
+      text: `Gray did not answer at ${gray}${PAIR_PATH}; check --gray and this machine's network, then run the command again (make a new code if the Integration page says this one was used)`,
     };
   }
   if (status < 200 || status > 299) {
@@ -538,48 +541,49 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
     return { ok: false, reason: "malformed", status, code: null, text: "Gray's answer names another key than the one this command sent; tell Gray, and pair again with a new code" };
   }
   // The contract's address is the relay id's: an answer for another relay than the terms named is not this pairing's.
-  if (phase2 !== null && answer.relay_id !== phase2.terms.relay_id) {
-    return { ok: false, reason: "malformed", status, code: null, text: "Gray's answer names another relay than its chain terms did; tell Gray, and pair again with a new code" };
+  if (answer.relay_id !== phase2.terms.relay_id) {
+    return { ok: false, reason: "malformed", status, code: null, text: "Gray's answer names another relay_id than its chain terms did; tell Gray, and pair again with a new code" };
   }
 
   const placeholders: string[] = [];
-  if (answer.release === null) placeholders.push("lane.release_list", "lane.release_public_key");
   const image = answer.image !== null && isStackRelayImage(answer.image) ? answer.image : null;
   const registryHost = answer.registry !== null && REGISTRY_HOST.test(answer.registry) ? answer.registry : image === null ? null : relayImageRegistry(image);
   if (registryHost === null) placeholders.push("stack.registry.host");
   if (image === null) placeholders.push("stack.relay_images");
   if (registryLogin === null) placeholders.push("stack.registry.username");
-  // The config's own default: the tunnel's origin (`tunnel.ts` tunnelName, as config.ts derives it).
+  // Written out: a phase-2 config has no `tunnel` member (no agent here keeps one), whose origin was the default. The
+  // VM's measured identity names this URL (stack-boot.ts), so it stays Gray's record's (the relay tunnel's origin
+  // unless the relay named its own).
   const name = answer.tunnel === null ? null : tunnelName(answer.relay_id, answer.tunnel.zone);
-  const tunnelOrigin = name === null ? null : `https://${name}`;
-  const tokenUrl = answer.token_url !== null && answer.token_url !== tunnelOrigin ? answer.token_url : tunnelOrigin === null ? TOKEN_URL_PLACEHOLDER : null;
+  const tokenUrl = answer.token_url ?? (name === null ? TOKEN_URL_PLACEHOLDER : `https://${name}`);
   if (tokenUrl === TOKEN_URL_PLACEHOLDER) placeholders.push("stack.token_url");
-  // Gray paired the key: the code is spent. A list that cannot be read now only means nothing is accepted at pairing.
-  const releases = answer.release === null ? null : await pairingAcceptance(answer.release, nowMs, timeoutMs);
+  // The list and keys the guardian checked the release with, not what the answer names again: they must agree.
+  const release = phase2.release;
+  const warnings = [...phase2.warnings];
+  if (answer.release !== null && (answer.release.list !== release.list || answer.release.public_key !== release.publicKey)) {
+    warnings.push(`Gray's pairing answer names another release list or key than its chain terms did; the config keeps the ones the guardian checked (${release.list})`);
+  }
   const text = pairedConfigText({
     relayId: answer.relay_id,
-    release: answer.release === null ? null : { list: answer.release.list, publicKey: answer.release.public_key, freshnessPublicKey: answer.release.freshness_public_key },
+    release: { list: release.list, publicKey: release.publicKey, freshnessPublicKey: release.freshnessPublicKey },
     reportOrigin: answer.report_origin,
     tokenUrl,
-    tunnel: answer.tunnel === null ? null : { server: answer.tunnel.server, zone: answer.tunnel.zone },
+    tunnel: null,
     relayImage: image ?? relayImagePlaceholder(registryHost ?? REGISTRY_HOST_PLACEHOLDER),
     registryHost: registryHost ?? REGISTRY_HOST_PLACEHOLDER,
     registryLogin,
     pairing: { gray, fingerprint, pairedAt: utcSeconds(answer.paired_ms) },
-    acceptedAtPairing: releases?.accepted ?? [],
-    chain:
-      phase2 === null
-        ? null
-        : {
-            chainId: phase2.terms.chain_id,
-            rpc: [phase2.terms.rpc[0]!, phase2.terms.rpc[1]!],
-            proposer: phase2.terms.proposer,
-            guardian: phase2.part.guardian,
-            guardianKey: GUARDIAN_KEY_FILE,
-            contract: phase2.part.contract,
-            dstackKms: phase2.terms.dstack_kms,
-            releaseDelaySeconds,
-          },
+    acceptedAtPairing: [],
+    chain: {
+      chainId: phase2.terms.chain_id,
+      rpc: [phase2.terms.rpc[0]!, phase2.terms.rpc[1]!],
+      proposer: phase2.terms.proposer,
+      guardian: phase2.part.guardian,
+      guardianKey: GUARDIAN_KEY_FILE,
+      contract: phase2.part.contract,
+      dstackKms: phase2.terms.dstack_kms,
+      releaseDelaySeconds,
+    },
   });
 
   ensureDirectory(directory);
@@ -591,12 +595,9 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
   // 0600 like every kit file.
   writePrivateFile(configPath, text, { force });
   files.push(configPath);
-  // A phase-2 pairing's was written before the request (above).
-  if (pairingGuardian.generated !== null) {
-    if (phase2 === null) writeGuardianKeyFile(guardianKeyPath, pairingGuardian.generated);
-    files.push(guardianKeyPath);
-  }
-  if (phase2 !== null && pairingRecovery.generated !== null) files.push(recoveryKeyPath);
+  // Both were written before the request (above).
+  if (pairingGuardian.generated !== null) files.push(guardianKeyPath);
+  if (pairingRecovery.generated !== null) files.push(recoveryKeyPath);
   // Public: it names the image and the mounts, no secret, and `docker compose` reads it as the operator.
   if (composeImage !== null) {
     // A kit paired before (any kit, those of the old name too) keeps its project and state volume: a new pairing keeps the state.
@@ -616,21 +617,52 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
     files,
     placeholders,
     image: image !== null,
-    releases,
+    releaseList: { url: release.list, keySource: phase2.keySource },
+    warnings,
     guardian: {
       address: pairingGuardian.address,
       keyPath: pairingGuardian.keyPath,
       generated: pairingGuardian.generated !== null,
-      phase2: phase2 === null ? null : { contract: phase2.part.contract, chainId: phase2.terms.chain_id, composeHash: phase2.terms.compose_hash, osImageHash: phase2.terms.os_image_hash, releaseDelaySeconds },
-      recovery: phase2 === null ? null : { address: pairingRecovery.address, keyPath: recoveryKeyPath, generated: pairingRecovery.generated !== null },
+      phase2: { contract: phase2.part.contract, chainId: phase2.terms.chain_id, composeHash: phase2.terms.compose_hash, osImageHash: phase2.terms.os_image_hash, releaseDelaySeconds },
+      recovery: { address: pairingRecovery.address, keyPath: recoveryKeyPath, generated: pairingRecovery.generated !== null },
     },
   };
 }
 
-/** A phase-2 pairing's terms and the guardian part made from them. */
+/**
+ * `--release-public-key` (and its freshness key): for a Gray on loopback only, checked before any network. Any other
+ * Gray's keys are built into the kit, so a command Gray hands out cannot swap in a key of its own.
+ */
+function pinnedReleaseKeys(gray: string, pinned: PinnedReleaseKeys | null): PinnedReleaseKeys | null {
+  if (pinned === null) return null;
+  if (!isLoopbackOrigin(gray)) {
+    throw new RelayKitError("usage", "--release-public-key is for a test Gray on this machine's loopback only: Gray's own release keys are built into gray-assistant");
+  }
+  const hex = /^[0-9a-f]{64}$/;
+  if (!hex.test(pinned.publicKey) || (pinned.freshnessPublicKey !== null && (!hex.test(pinned.freshnessPublicKey) || pinned.freshnessPublicKey === pinned.publicKey))) {
+    throw new RelayKitError("usage", "--release-public-key and --release-freshness-public-key are two keys of 32 bytes as 64 lower-case hex");
+  }
+  return pinned;
+}
+
+/** `--rpc`, given twice: two endpoints the kit takes (https, or http on loopback) of different origins. Checked before any network. */
+function operatorRpc(rpc: readonly string[] | null): readonly [string, string] | null {
+  if (rpc === null) return null;
+  if (rpc.length !== 2) throw new RelayKitError("usage", "--rpc is given twice: two RPC endpoints of different providers, which the chain checks read and must agree");
+  const checked = [checkedRpcUrl(rpc[0]!, "--rpc"), checkedRpcUrl(rpc[1]!, "--rpc")] as const;
+  if (new URL(checked[0]).origin === new URL(checked[1]).origin) throw new RelayKitError("usage", "--rpc names one origin twice: give two independent endpoints (two providers)");
+  return checked;
+}
+
+/** A phase-2 pairing's terms, the guardian part made from them, and what the kit checked them with. */
 interface Phase2Pairing {
   readonly terms: PairChainTerms;
   readonly part: PairGuardian;
+  /** Gray's list as the guardian checked the release in it: the terms' URL and the keys of `../chain/trust.ts`. */
+  readonly release: { readonly list: string; readonly publicKey: string; readonly freshnessPublicKey: string | null };
+  /** Where those keys come from, for the operator's line. */
+  readonly keySource: string;
+  readonly warnings: readonly string[];
 }
 
 type PairFailure = Extract<PairWorkspaceResult, { ok: false }>;
@@ -691,10 +723,22 @@ function parsePlainJson(text: string): unknown {
 const bareHash = (hash: string): string => hash.replace(/^0x/, "").toLowerCase();
 
 /**
- * The guardian part for Gray's terms: the release they name must be in Gray's signed release list (a compose release
- * with a commit and a production OS image, the ones pairing accepts) before the guardian approves it; then the contract's
- * address for this guardian and recovery address and the approvals, signed with the kit's guardian key and valid for
- * `PAIRING_APPROVAL_LIFETIME_SECONDS`.
+ * The guardian part for Gray's terms, made only once the terms hold up against what the kit knows without Gray
+ * (`../chain/trust.ts`, provider review 2026-11-17 items 17 and 18), every refusal before the code is spent:
+ *
+ * 1. Base, unless Gray is a test's on loopback (then another chain is taken with a warning), and on Base the DstackKms
+ *    built into the kit; the chain is read through the operator's `--rpc`, else on Base the kit's own public endpoints,
+ *    never Gray's (`pairingRpcEndpoints`), two of different origins, which `chain.rpc` then names;
+ * 2. Gray's signed release list, read with a release key built into the kit (or the one pinned for a test Gray on
+ *    loopback), never one the terms alone name; terms without a list are refused;
+ * 3. the release they name is in it: a compose release with a commit and a production OS image;
+ * 4. the chain, through those two endpoints: both answer the terms' chain and the same DstackKms KMS key, which on Base
+ *    must be the one built into the kit;
+ * 5. the compose passes the checks `releases check` and `deliver` run (its published text, the closed policy with the
+ *    list's image and the release keys, the KMS lease, the vault bind), with that KMS as its key provider.
+ *
+ * Then the contract's address for this guardian and recovery address and the approvals, signed with the kit's guardian
+ * key and valid for `PAIRING_APPROVAL_LIFETIME_SECONDS`.
  */
 async function phase2Part(
   terms: PairChainTerms,
@@ -703,21 +747,62 @@ async function phase2Part(
   releaseDelaySeconds: bigint,
   nowMs: number,
   timeoutMs: number,
+  trust: { readonly gray: string; readonly pinned: PinnedReleaseKeys | null; readonly rpc: readonly [string, string] | null },
 ): Promise<{ readonly ok: true; readonly pairing: Phase2Pairing } | { readonly ok: false; readonly failure: PairFailure }> {
   const refused = (text: string): { ok: false; failure: PairFailure } => ({ ok: false, failure: { ok: false, reason: "refused", status: null, code: null, text } });
+  const malformed = (text: string): { ok: false; failure: PairFailure } => ({ ok: false, failure: { ok: false, reason: "malformed", status: null, code: null, text } });
+  const warnings: string[] = [];
+  const chain = pairingChainVerdict(trust.gray, terms.chain_id, terms.dstack_kms);
+  if (!chain.ok) return refused(chain.text);
+  if (chain.warning !== null) warnings.push(chain.warning);
+  // The endpoints every chain read from now on goes through: the operator's, else on Base the kit's own, never Gray's.
+  const chosen = pairingRpcEndpoints(terms.chain_id, terms.rpc, trust.rpc);
+  if (chosen.note !== null) warnings.push(chosen.note);
   let rpc: [string, string];
   try {
-    rpc = [checkedRpcUrl(terms.rpc[0]!, "the chain terms' first endpoint"), checkedRpcUrl(terms.rpc[1]!, "the chain terms' second endpoint")];
+    rpc = [checkedRpcUrl(chosen.rpc[0]!, "the first RPC endpoint"), checkedRpcUrl(chosen.rpc[1]!, "the second RPC endpoint")];
   } catch {
-    return { ok: false, failure: { ok: false, reason: "malformed", status: null, code: null, text: "Gray's chain terms name an RPC endpoint the kit cannot use; tell Gray" } };
+    return malformed("Gray's chain terms name an RPC endpoint the kit cannot use; tell Gray");
   }
-  if (terms.release !== null) {
-    const listed = await pairingAcceptance(terms.release, nowMs, timeoutMs);
-    if (listed.listError !== null) return refused(`Gray's signed release list could not be verified (${listed.listError}), so the guardian approves nothing; run the command again (the code is not spent)`);
-    const accepted = new Set(listed.accepted.map((entry) => `${entry.kind}:${entry.hash}`));
-    if (!accepted.has(`release:${bareHash(terms.compose_hash)}`)) return refused("The release Gray will deploy is not a release in its signed list, so the guardian does not approve it; tell Gray (the code is not spent)");
-    if (!accepted.has(`os_image:${bareHash(terms.os_image_hash)}`)) return refused("The OS image Gray will deploy is not a production image its signed list proves, so the guardian does not approve it; tell Gray (the code is not spent)");
+  // One provider answering twice is one witness (chain/config.ts refuses such a config too).
+  if (new URL(rpc[0]).origin === new URL(rpc[1]).origin) return malformed("Gray's chain terms name one RPC origin twice; the chain checks need two independent endpoints: tell Gray (the code is not spent)");
+
+  const keys = pairingReleaseKeys(trust.gray, terms.release, trust.pinned);
+  if (!keys.ok || terms.release === null) return refused(keys.ok ? "Gray's chain terms name no signed release list" : keys.text);
+  const listUrl = terms.release.list;
+  const listed = await verifiedPairingList(listUrl, keys, nowMs, timeoutMs);
+  if (!listed.ok) return refused(`Gray's signed release list does not verify with ${keys.source} (${listed.code}), so the guardian approves nothing; run the command again, and tell Gray if it repeats (the code is not spent)`);
+  const approvable = approvableHashes(listed.list);
+  if (!approvable.has(`release:${bareHash(terms.compose_hash)}`)) return refused("The release Gray will deploy is not a release in its signed list, so the guardian does not approve it; tell Gray (the code is not spent)");
+  if (!approvable.has(`os_image:${bareHash(terms.os_image_hash)}`)) return refused("The OS image Gray will deploy is not a production image its signed list proves, so the guardian does not approve it; tell Gray (the code is not spent)");
+
+  // The KMS the contract's VMs take their keys from: Base's, built in, which the terms' endpoints must read as well.
+  const builtIn = builtInKmsCaPubkey(terms.chain_id, terms.dstack_kms);
+  let onChain: string | null;
+  try {
+    onChain = await readDstackKmsCa(rpc, terms.chain_id, checkedAddress(terms.dstack_kms, "Gray's DstackKms"), { timeoutMs });
+  } catch (error) {
+    const detail = kitErrorIn(error)?.detail ?? "they could not be read";
+    return refused(`the RPC endpoints ${rpcLabel(rpc[0])} and ${rpcLabel(rpc[1])} do not read the chain as Gray's terms say (${detail}); run the command again, and tell Gray if it repeats (the code is not spent)`);
   }
+  if (builtIn !== null && onChain !== builtIn) {
+    return refused(
+      `${rpcLabel(rpc[0])} and ${rpcLabel(rpc[1])} answer Base DstackKms's KMS key as ${onChain ?? "none"}, not the one built into gray-assistant (${builtIn.slice(-16)}): they do not read Base as it is, or Phala changed its KMS; tell Gray (the code is not spent)`,
+    );
+  }
+  const kmsCa = builtIn ?? onChain;
+  if (kmsCa === null) warnings.push(`DstackKms ${terms.dstack_kms} on chain ${terms.chain_id} publishes no KMS key, so the key provider of the release Gray will deploy is not checked here`);
+  const content = checkReleaseCompose(listed.list, terms.compose_hash, {
+    kmsCaPubkey: kmsCa ?? "",
+    releasePublicKey: keys.publicKey,
+    ...(keys.freshnessPublicKey === null ? {} : { releaseFreshnessPublicKey: keys.freshnessPublicKey }),
+    preLaunchSha256: null,
+  });
+  const failing = content.checks.filter((check) => !check.ok && !(kmsCa === null && check.name === "key_provider"));
+  if (failing.length > 0) {
+    return refused(`The release Gray will deploy does not pass your checks (${failing.map((check) => `${check.name}: ${check.detail}`).join("; ")}), so the guardian does not approve it; tell Gray (the code is not spent)`);
+  }
+
   const privateKey = guardian.generated?.privateKey ?? readGuardianKeyFile(guardian.keyPath).privateKey;
   const part = await pairingGuardianPart({
     deployment: {
@@ -735,7 +820,10 @@ async function phase2Part(
     privateKey,
   });
   const wire = pairGuardianSchema.parse(pairingGuardianJson(part));
-  return { ok: true, pairing: { terms: { ...terms, rpc }, part: wire } };
+  return {
+    ok: true,
+    pairing: { terms: { ...terms, rpc }, part: wire, release: { list: listUrl, publicKey: keys.publicKey, freshnessPublicKey: keys.freshnessPublicKey }, keySource: keys.source, warnings },
+  };
 }
 
 /**
@@ -774,8 +862,9 @@ export function pairSummary(result: Extract<PairWorkspaceResult, { ok: true }>):
     ...(result.guardian.phase2 === null
       ? {}
       : { contract: result.guardian.phase2.contract, chain_id: result.guardian.phase2.chainId, release_delay_seconds: Number(result.guardian.phase2.releaseDelaySeconds), approved: { compose_hash: result.guardian.phase2.composeHash, os_image_hash: result.guardian.phase2.osImageHash } }),
-    accepted_at_pairing: (result.releases?.accepted ?? []).map((entry) => ({ kind: entry.kind, hash: entry.hash, name: entry.name })),
-    ...(result.releases === null || result.releases.listError === null ? {} : { release_list_error: result.releases.listError }),
+    release_list: result.releaseList.url,
+    release_key: result.releaseList.keySource,
+    warnings: [...result.warnings],
   };
 }
 

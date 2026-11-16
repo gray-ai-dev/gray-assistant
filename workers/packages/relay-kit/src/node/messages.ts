@@ -91,8 +91,8 @@ async function signedPost(options: MessagesRequestOptions, path: string, request
 function refusalReason(status: number, text: string): string {
   const code = errorCodeOf(text);
   if (status === 404 && code !== "lane_stack_relay_unknown") return "this Gray does not answer a kit's messages request yet (HTTP 404)";
-  if (code === "lane_stack_relay_unknown") return "Gray knows no key for this relay (lane_stack_relay_unknown): it is not paired there";
-  if (code === "lane_stack_signature_invalid") return "Gray did not accept the signature (lane_stack_signature_invalid): relay-key.json is not the key the relay paired";
+  if (code === "lane_stack_relay_unknown") return "Gray knows no key for this deployment (lane_stack_relay_unknown): it is not paired there";
+  if (code === "lane_stack_signature_invalid") return "Gray did not accept the signature (lane_stack_signature_invalid): relay-key.json is not the key you paired";
   if (code === "lane_stack_messages_future" || code === "lane_stack_messages_stale") return `Gray refused the request's time (${code}): this machine's clock is off; set it right`;
   return `Gray refused the request (HTTP ${status}${code === null ? "" : ` ${code}`})`;
 }
@@ -159,21 +159,21 @@ export async function messagesCommand(options: MessagesRequestOptions & { readon
   }
   const { answer } = read;
   if (answer.messages.length === 0) {
-    io.stdout(`gray-assistant messages: no unread message from Gray for relay ${relayId}\n`);
+    io.stdout(`gray-assistant messages: no unread message from Gray for deployment ${relayId}\n`);
     io.stdout(`${toJsonString({ command: "messages", ok: true, relay_id: relayId, unread: 0n, through_ms: null, messages: [], seen: false })}\n`);
     return 0;
   }
-  io.stdout(`gray-assistant messages: ${answer.unread} unread message${answer.unread === 1 ? "" : "s"} from Gray for relay ${relayId}, newest first\n`);
+  io.stdout(`gray-assistant messages: ${answer.unread} unread message${answer.unread === 1 ? "" : "s"} from Gray for deployment ${relayId}, newest first\n`);
   for (const m of answer.messages) {
     io.stdout(`[${utc(m.at_ms)}] ${plainLine(m.title)}\n`);
     if (m.body.trim() !== "") io.stdout(`  ${plainLine(m.body)}\n`);
     if (m.command !== undefined) io.stdout(`  run: ${plainLine(m.command)}\n`);
   }
   const unlisted = answer.unread - answer.messages.length;
-  if (unlisted > 0) io.stdout(`${unlisted} older one${unlisted === 1 ? " is" : "s are"} not listed here: the relay's Messages page in Gray's console lists every message\n`);
+  if (unlisted > 0) io.stdout(`${unlisted} older one${unlisted === 1 ? " is" : "s are"} not listed here: the Messages page in Gray's console lists every message\n`);
   const json = { command: "messages", ok: true, relay_id: relayId, unread: BigInt(answer.unread), through_ms: answer.through_ms === null ? null : BigInt(answer.through_ms), messages: answer.messages.map(messageJson) };
   if (!options.seen || answer.through_ms === null) {
-    io.stdout("tell the relay's operator what they say, then mark them seen: gray-assistant messages --seen\n");
+    io.stdout("tell the operator what they say, then mark them seen: gray-assistant messages --seen\n");
     io.stdout(`${toJsonString({ ...json, seen: false })}\n`);
     return 0;
   }
@@ -196,7 +196,7 @@ export async function unreadMessagesNote(options: MessagesRequestOptions): Promi
   try {
     const read = await readKitMessages({ ...options, timeoutMs: options.timeoutMs ?? MESSAGES_NOTE_TIMEOUT_MS });
     if (!read.ok || read.answer.unread === 0) return null;
-    return `note: ${unreadSummary(read.answer)}: run \`gray-assistant messages\` and tell the relay's operator`;
+    return `note: ${unreadSummary(read.answer)}: run \`gray-assistant messages\` and tell the operator`;
   } catch {
     return null;
   }

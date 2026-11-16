@@ -153,7 +153,7 @@ function lastIssue(config: LoadedRelayConfig): ReturnType<typeof lastPullTokenIs
 
 function stackOf(config: LoadedRelayConfig): NonNullable<LoadedRelayConfig["daemon"]["stack"]> {
   const stack = config.daemon.stack;
-  if (stack === null) throw new RelayKitError("usage", "the config has no `stack` section: `gray-assistant stack` is for a relay-stack lane");
+  if (stack === null) throw new RelayKitError("usage", "the config has no `stack` section: `gray-assistant stack` is for a deployment's lane");
   return stack;
 }
 

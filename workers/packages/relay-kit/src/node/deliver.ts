@@ -59,6 +59,7 @@ import type { ChainCheckResult } from "../chain/checks.ts";
 import type { ReleaseContentResult } from "../chain/release-compose.ts";
 import { AGENT_STATUS_PATH, agentStatusDocument, signAgentStatus } from "../daemon/agent-status.ts";
 import { credentialFormatHint } from "../daemon/eligibility.ts";
+import { failedChecksClause, failedChecksJson, failedChecksText } from "../daemon/failed-checks.ts";
 import { attestationMismatch } from "../daemon/stack-boot.ts";
 import { DaemonTransportError, type DaemonAttestResult, type DaemonFetch, type DaemonSourceAccount, type DaemonStackInstance } from "../daemon/types.ts";
 import { LANE_ENDPOINTS, RELAY_KIT_VERSION } from "../endpoints.ts";
@@ -98,7 +99,7 @@ const DELIVER_WAIT_POLL_MS = 10_000;
 const UNKNOWN_PROXY_HINT = "its `proxy` names an id accounts.json's `proxies` list lacks: `gray-assistant proxies` lists them, `gray-assistant accounts proxy` gives the account another";
 
 const MISSING_CREDENTIAL_HINT =
-  'the source gave no secret for it: give it one there, or list a subscription you sign in inside the VM with "credential": {"type": "sign_in"}';
+  'the source gave no secret for it: give it one there, or list an account that signs in inside the VM with "credential": {"type": "sign_in"}';
 /** The largest answer the VM gives (a receipt, a refusal). */
 const ANSWER_MAX_BYTES = 64 * 1024;
 
@@ -173,7 +174,7 @@ export function designationStatePath(config: LoadedRelayConfig): string {
  */
 export function readDesignationState(path: string): DesignationState {
   const fail = (): never => {
-    throw new RelayKitError("io", `${path} does not read: it holds the designation seq this relay issued (fix it or restore it, never delete it)`);
+    throw new RelayKitError("io", `${path} does not read: it holds the designation seq this deployment issued (fix it or restore it, never delete it)`);
   };
   let text: string;
   try {
@@ -224,7 +225,7 @@ export function phase2Vm(config: LoadedRelayConfig, chain: ChainContext): { read
   if (instance === null) throw new RelayKitError("usage", `lane.instances names no app for ${vm.origin}`);
   const contract = chain.chain.contract.slice(2).toLowerCase();
   if (instance.appId !== contract) {
-    throw new RelayKitError("usage", `the stack VM's app is ${instance.appId}, but chain.contract is ${chain.chain.contract}: a delivery goes only to the app of the relay's own contract`);
+    throw new RelayKitError("usage", `the stack VM's app is ${instance.appId}, but chain.contract is ${chain.chain.contract}: a delivery goes only to the app of your own contract`);
   }
   return { origin: vm.origin, instance };
 }
@@ -260,7 +261,7 @@ export function phase2Candidate(answer: unknown, relayId: string, chain: ChainCo
   if (!parsed.success) throw new RelayKitError("usage", "Gray's answer names no lane instance this gray-assistant reads; upgrade gray-assistant, or tell Gray");
   const named = parsed.data;
   if (named.app_id === null || named.lane_origin === null || named.kms_ca_pubkey === null || !LIVE_DEPLOYMENTS.has(named.deployment)) {
-    throw new RelayKitError("usage", `Gray names no running VM for this relay yet (deployment ${named.deployment}): apply relay-stack.json again (the apply queues the Deploy), wait until the VM waits for your delivery, then run \`gray-assistant deliver\` again`);
+    throw new RelayKitError("usage", `Gray names no running VM for this deployment yet (deployment ${named.deployment}): apply relay-stack.json again (the apply queues the Deploy), wait until the VM waits for your delivery, then run \`gray-assistant deliver\` again`);
   }
   if (!isLaneBinding({ appId: named.app_id, kmsCaPubkey: named.kms_ca_pubkey })) throw new RelayKitError("usage", "Gray's answer names a lane instance that is not an app id and a KMS key");
   let laneOrigin: string;
@@ -271,11 +272,11 @@ export function phase2Candidate(answer: unknown, relayId: string, chain: ChainCo
   }
   const tunnel = tunnelOriginOf(laneOrigin);
   if (tunnel === null || tunnel.relayId !== relayId) {
-    throw new RelayKitError("usage", `Gray names ${laneOrigin}, which is not the entry's tunnel to this relay's VM (${relayId}); ask Gray to correct the relay's lane instance`);
+    throw new RelayKitError("usage", `Gray names ${laneOrigin}, which is not the entry's tunnel to this deployment's VM (${relayId}); ask Gray to correct your lane instance`);
   }
   const contract = chain.chain.contract.slice(2).toLowerCase();
   if (named.app_id !== contract) {
-    throw new RelayKitError("usage", `Gray names app ${named.app_id}, but chain.contract is ${chain.chain.contract}: a delivery goes only to the app of the relay's own contract`);
+    throw new RelayKitError("usage", `Gray names app ${named.app_id}, but chain.contract is ${chain.chain.contract}: a delivery goes only to the app of your own contract`);
   }
   return { appId: named.app_id, kmsCaPubkey: named.kms_ca_pubkey, laneOrigin, adoptedMs: 0 };
 }
@@ -319,13 +320,13 @@ async function cliAgentAnswer(
   try {
     answer = await post(url, toJsonString(await signAgentStatus(status, seed)));
   } catch {
-    throw new RelayKitError("io", `Gray did not answer at ${url}, so the relay's VM is not known yet; run the command again`);
+    throw new RelayKitError("io", `Gray did not answer at ${url}, so your VM is not known yet; run the command again`);
   }
-  if (answer.status < 200 || answer.status > 299) throw new RelayKitError("io", `Gray refused the status that asks for the relay's VM (HTTP ${answer.status})`);
+  if (answer.status < 200 || answer.status > 299) throw new RelayKitError("io", `Gray refused the status that asks for your VM (HTTP ${answer.status})`);
   try {
     return parseStrict(answer.text);
   } catch {
-    throw new RelayKitError("io", "Gray's answer naming the relay's VM is not JSON");
+    throw new RelayKitError("io", "Gray's answer naming your VM is not JSON");
   }
 }
 
@@ -333,9 +334,9 @@ async function cliAgentAnswer(
 export type Phase2Boot = { readonly ok: true; readonly running: null; readonly seq: 0; readonly previous: null } | { readonly ok: true; readonly running: string; readonly seq: number; readonly previous: string | null } | { readonly ok: false; readonly code: string; readonly message: string };
 
 export function phase2Boot(facts: StackBootFacts | null | undefined, relayId: string, relayKeyHex: string): Phase2Boot {
-  if (facts === null || facts === undefined) return { ok: false, code: "stack_boot_missing", message: "the VM measured no relay-stack boot" };
+  if (facts === null || facts === undefined) return { ok: false, code: "stack_boot_missing", message: "the VM measured no stack boot" };
   if (facts.identity.relayId !== relayId || facts.identity.publicKey !== relayKeyHex) {
-    return { ok: false, code: "stack_identity_mismatch", message: "the VM's measured identity is not this relay and this relay key (relay-key.json)" };
+    return { ok: false, code: "stack_identity_mismatch", message: "the VM's measured identity is not this deployment and this key (relay-key.json)" };
   }
   if (facts.phase === "empty_slot") return { ok: true, running: null, seq: 0, previous: null };
   if (facts.phase !== "sealed") return { ok: false, code: "stack_boot_not_sealed", message: "the VM's quote was taken before pre-launch sealed the boot" };
@@ -435,10 +436,10 @@ function vmRefusal(status: number, code: string | null, what: "boot box" | "acco
       return `the VM has seen a newer designation than this one (designation_seq_below): ${DESIGNATION_STATE_FILE} is behind; run the command again`;
     case "designation_signature_invalid":
     case "bad_relay_signature":
-      return `the VM did not accept the signature (${code}): relay-key.json is not the key the VM measured. Run the command from the kit directory of the pairing this VM was deployed for; a relay paired again deletes its VM and Deploys again (relay-stack.md section 10)`;
+      return `the VM did not accept the signature (${code}): relay-key.json is not the key the VM measured. Run the command from the kit directory of the pairing this VM was deployed for; a deployment paired again deletes its VM and Deploys again (relay-stack.md section 10)`;
     case "unknown_relay":
     case "boot_box_relay_mismatch":
-      return `the VM serves another relay (${code}): the config's relay_id is not the one the VM booted with. Run the command with this relay's own gray-assistant.jsonc (the kit directory of its pairing)`;
+      return `the VM serves another deployment (${code}): the config's relay_id is not the one the VM booted with. Run the command with this deployment's own gray-assistant.jsonc (the kit directory of its pairing)`;
     case "boot_box_replay":
       return "the VM took a later delivery in this boot (boot_box_replay): this machine's clock is behind; set it right and run the command again";
     case "relay_empty_slot":
@@ -449,7 +450,7 @@ function vmRefusal(status: number, code: string | null, what: "boot box" | "acco
     case "vault_write_failed":
       return `the VM could not keep the ${what} now (${code}); run the command again in a minute`;
     case "vault_not_serving":
-      return `the VM that answered is not the relay's serving one (vault_not_serving): Gray is still finishing a Deploy or rollout (a second VM takes over, the first drains), and nothing was kept. Nothing is wrong with the ${what}: run the command again in a few minutes; \`gray-assistant doctor\` shows the VM once it serves`;
+      return `the VM that answered is not the serving one (vault_not_serving): Gray is still finishing a Deploy or rollout (a second VM takes over, the first drains), and nothing was kept. Nothing is wrong with the ${what}: run the command again in a few minutes; \`gray-assistant doctor\` shows the VM once it serves`;
     case "boot_box_unsupported":
       return "the VM keeps no boot box (boot_box_unsupported): its Gray release is older than this delivery. Delete the VM and Deploy again (relay-stack.md section 6); if the new VM answers the same, report this line to Gray";
     default:
@@ -489,10 +490,10 @@ export async function deliverCommand(options: DeliverOptions): Promise<number> {
       io.stdout(`${toJsonString({ command: name.replace(" ", "."), ok: false, relay_id: options.config.daemon.relayId, code: NOT_SERVING, waited_s: BigInt(Math.round(waitedMs / 1000)) })}\n`);
       return 1;
     };
-    const state = `the VM that answered is not the relay's serving one (409 ${NOT_SERVING}): Gray is still finishing a Deploy or rollout (a second VM takes over and the first drains), and the VM kept nothing of the ${outcome.what}`;
+    const state = `the VM that answered is not the serving one (409 ${NOT_SERVING}): Gray is still finishing a Deploy or rollout (a second VM takes over and the first drains), and the VM kept nothing of the ${outcome.what}`;
     if (!options.wait) return refused(`${state}. Nothing is wrong with the ${outcome.what}: run the command again in a few minutes (without --no-wait it waits by itself)`);
     if (waitedMs >= timeoutMs) {
-      return refused(`${state}. Waited ${Math.round(waitedMs / 1000)} s (${attempt} tries) and it still does not serve: run the command again in 10 minutes; if it is refused then too, the relay's VM page in Gray's console shows where the Deploy stands, and \`gray-assistant messages\` what Gray says about it`);
+      return refused(`${state}. Waited ${Math.round(waitedMs / 1000)} s (${attempt} tries) and it still does not serve: run the command again in 10 minutes; if it is refused then too, your VM page in Gray's console shows where the Deploy stands, and \`gray-assistant messages\` what Gray says about it`);
     }
     if (attempt === 1) say(`${state}. This passes by itself, usually within a few minutes: trying again every ${DELIVER_WAIT_POLL_MS / 1000} s, for up to ${Math.round(timeoutMs / 1000)} s`);
     else say(`still not the serving VM after ${Math.round(waitedMs / 1000)} s; trying again`);
@@ -506,7 +507,7 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
   const name = COMMAND_NAMES[action];
   const relayId = config.daemon.relayId;
   const stack = config.daemon.stack;
-  if (stack === null) throw new RelayKitError("usage", `the config has no \`stack\` section: \`gray-assistant ${name}\` is for a relay-stack VM`);
+  if (stack === null) throw new RelayKitError("usage", `the config has no \`stack\` section: \`gray-assistant ${name}\` is for a deployment's VM`);
   if (!RELAY_ID.test(relayId)) throw new RelayKitError("usage", "relay_id is not an id a designation names");
   const refuse = (code: string, message: string, extra: JsonObject = {}): number => {
     io.stderr(`gray-assistant ${name}: ${message}\n`);
@@ -545,9 +546,13 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
     if (error instanceof RelayKitError && (error.code === "usage" || error.code === "io")) throw error;
     return refuse("attest_transport_io", "the stack VM could not be attested; `gray-assistant doctor` checks the path to it");
   }
-  if (!attested.ok) return refuse(`attest_${attested.stage}_${attested.code}`, `the stack VM did not attest (attest_${attested.stage}_${attested.code}); nothing was sent`);
+  if (!attested.ok) {
+    // The code stays the word guides and agents match on; the checks the report failed follow it, as doctor says them.
+    const code = `attest_${attested.stage}_${attested.code}`;
+    return refuse(code, `the stack VM did not attest (${code})${failedChecksClause(attested.failedChecks)}; nothing was sent`, failedChecksJson(attested.failedChecks));
+  }
   const mismatch = attestationMismatch(attested, vm.origin, relayId);
-  if (mismatch !== null) return refuse(mismatch, `the attestation is not this relay's VM at ${vm.origin} (${mismatch}); nothing was sent`);
+  if (mismatch !== null) return refuse(mismatch, `the attestation is not this deployment's VM at ${vm.origin} (${mismatch}); nothing was sent`);
   const boot = phase2Boot(attested.stackBoot, relayId, relayKeyHex);
   if (!boot.ok) return refuse(`attest_${boot.code}`, `${boot.message} (attest_${boot.code}); nothing was sent`);
   io.stdout(`gray-assistant ${name}: the VM attests ${boot.running === null ? "the empty slot: it waits for its first delivery" : `${boot.running} (designation seq ${boot.seq})`}\n`);
@@ -564,7 +569,7 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
   if (!content.ok) {
     for (const check of content.checks.filter((c) => !c.ok)) io.stderr(`gray-assistant ${name}: compose ${check.name}: ${check.detail}\n`);
     const code = CONTENT_CODES[content.code] ?? "compose_refused";
-    return refuse(code, `the VM's compose does not pass this relay's checks (${code}); nothing was sent`);
+    return refuse(code, `the VM's compose does not pass this deployment's checks (${code}); nothing was sent`);
   }
   io.stdout(`gray-assistant ${name}: the VM's compose passes (Gray's published text, hashed and checked here: the closed policy, the KMS, the lease, the vault)\n`);
 
@@ -576,11 +581,11 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
     chain = options.chainCheck !== undefined ? await options.chainCheck(compose, osImage) : (await (await import("./chain.ts")).chainChecksFor(options.chain, compose, osImage, { nowMs: io.now() })).result;
   } catch (error) {
     if (error instanceof RelayKitError && error.code === "usage") throw error;
-    return refuse("chain_unreachable", "the relay's contract could not be read; nothing was sent");
+    return refuse("chain_unreachable", "your contract could not be read; nothing was sent");
   }
   if (!chain.ok) {
     for (const check of chain.checks.filter((c) => !c.ok)) io.stderr(`gray-assistant ${name}: chain ${check.name}: ${check.detail}\n`);
-    return refuse(`chain_${chain.reason}`, `the relay's contract does not allow this VM (chain ${chain.reason}: ${chain.detail}); nothing was sent`);
+    return refuse(`chain_${chain.reason}`, `your contract does not allow this VM (chain ${chain.reason}: ${chain.detail}); nothing was sent`);
   }
   io.stdout(`gray-assistant ${name}: the contract ${options.chain.chain.contract} allows this VM's compose and OS image (block ${chain.block}, both endpoints agree)\n`);
 
@@ -721,8 +726,11 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
         io.stderr(`gray-assistant ${name}: note: the source lists ${who} as ${said.status}; Gray does not take an account's status from the source, so it is sealed and serves like the others. To keep it from serving, pause it on Gray (relay-stack.md section 9, "The panel's API": PATCH accounts with "status": "paused")\n`);
       }
       if (said.members.length > 0) {
-        io.stderr(`gray-assistant ${name}: note: the source names ${said.members.join(", ")} for ${who}; on Gray these are the panel account's own (every model of its vendor, weight 1, concurrency 10 when adopted), and the source's values are not used. Set them on Gray (relay-stack.md section 9, "The panel's API")\n`);
+        io.stderr(`gray-assistant ${name}: note: the source names ${said.members.join(" and ")} for ${who}; on Gray these are the panel account's own (every model of its vendor and weight 1 when adopted), and the source's values are not used. Set them on Gray (relay-stack.md section 9, "The panel's API")\n`);
       }
+    }
+    if ((accounts.concurrencyStated ?? 0) > 0) {
+      io.stderr(`gray-assistant ${name}: note: the source states max_concurrency for ${accounts.concurrencyStated} account(s); Gray adopts a new account with it as its concurrency (10 when the source states none), and an account Gray has already keeps the concurrency set on Gray. Change that on Gray (relay-stack.md section 9, "The panel's API")\n`);
     }
     if (accounts.accounts.length === 0 && accounts.listed > 0) {
       // Nothing is sent. A first delivery would start the relay's image with no account, which serves nothing while the
@@ -896,8 +904,10 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
       }
     }
     if (io.now() >= deadline) {
-      return refuse("not_attested", `timed out after ${Math.round(timeoutMs / 1000)} s: the VM does not attest ${box.designation.image} yet; \`gray-assistant doctor\` and the panel show where it stands (the boot box is on the VM: nothing needs sending again)`, {
+      const last = lastReportWords(again);
+      return refuse("not_attested", `timed out after ${Math.round(timeoutMs / 1000)} s: the VM does not attest ${box.designation.image} yet; \`gray-assistant doctor\` and the panel show where it stands (the boot box is on the VM: nothing needs sending again)${last.text}`, {
         request_id: request.request_id,
+        ...last.json,
       });
     }
   }
@@ -907,6 +917,15 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
 function wholeNumber(value: unknown): number | undefined {
   if (typeof value === "bigint") return value <= BigInt(Number.MAX_SAFE_INTEGER) && value >= 0n ? Number(value) : undefined;
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+/**
+ * What a wait that timed out adds when the last report it fetched did not verify: the code and the checks the report
+ * failed, in the sentence and in the JSON line. Nothing for a VM that did not answer (the usual state while it restarts).
+ */
+function lastReportWords(last: DaemonAttestResult | null): { readonly text: string; readonly json: JsonObject } {
+  if (last === null || last.ok || last.failedChecks === undefined || last.failedChecks.checks.length === 0) return { text: "", json: {} };
+  return { text: `. Its last report did not verify (attest_${last.stage}_${last.code}: ${failedChecksText(last.failedChecks)})`, json: failedChecksJson(last.failedChecks) };
 }
 
 /** What tells one boot of the VM from the next: the keys it attested (a new boot makes new ones). */
@@ -950,7 +969,9 @@ async function phase2Restart(
     before = { keys: bootKeys(first), running: boot.running, seq: boot.seq };
     io.stdout(`gray-assistant ${name}: the VM attests ${boot.running === null ? "the empty slot" : `${boot.running} (designation seq ${boot.seq})`}\n`);
   } else {
-    io.stderr(`gray-assistant ${name}: the VM does not attest now; the restart is requested all the same\n`);
+    // Not a refusal (a VM that does not attest is what a restart is for), but the reason is said where there is one.
+    const why = first !== null && !first.ok && failedChecksClause(first.failedChecks) !== "" ? ` (attest_${first.stage}_${first.code})${failedChecksClause(first.failedChecks)}` : "";
+    io.stderr(`gray-assistant ${name}: the VM does not attest now${why}; the restart is requested all the same\n`);
   }
   const done = (extra: JsonObject): number => {
     io.stdout(`${toJsonString({ command: "stack.restart", ok: true, relay_id: relayId, ...extra })}\n`);
@@ -1001,7 +1022,8 @@ async function phase2Restart(
       }
     }
     if (io.now() >= deadline) {
-      return refuse("not_attested", `timed out after ${Math.round(timeoutMs / 1000)} s: no new boot of the VM attests yet; \`gray-assistant doctor\` and the panel show where it stands`, { request_id: request.request_id });
+      const last = lastReportWords(again);
+      return refuse("not_attested", `timed out after ${Math.round(timeoutMs / 1000)} s: no new boot of the VM attests yet; \`gray-assistant doctor\` and the panel show where it stands${last.text}`, { request_id: request.request_id, ...last.json });
     }
   }
 }

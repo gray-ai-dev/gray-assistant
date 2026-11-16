@@ -52,6 +52,7 @@ import {
   STACK_AGENT_PARKED_MAX,
   STACK_AGENT_REPLICA_PHASES,
   STACK_AGENT_REPLICAS_MAX,
+  STACK_AGENT_SOURCE_MAX_CONCURRENCY,
   STACK_AGENT_SOURCE_VENDORS,
   STACK_AGENT_SOURCES_MAX,
   STACK_AGENT_STATUS_MAX_BYTES,
@@ -225,6 +226,8 @@ function sourceAccounts(accounts: readonly DaemonSourceAccount[], panelId: (vend
       vendor: a.vendor,
       credential_type: types.includes(a.credentialType) ? a.credentialType : null,
       ...(a.proxy === undefined ? {} : { proxy: a.proxy === null ? null : { type: a.proxy.type, host: a.proxy.host, port: BigInt(a.proxy.port) } }),
+      // Within the console's bound (the standard's 1 to 10000), else left out: the console then adopts with its default.
+      ...(a.maxConcurrency === undefined || !Number.isInteger(a.maxConcurrency) || a.maxConcurrency < 1 || a.maxConcurrency > STACK_AGENT_SOURCE_MAX_CONCURRENCY ? {} : { max_concurrency: BigInt(a.maxConcurrency) }),
     });
     if (out.length === STACK_AGENT_SOURCES_MAX) break;
   }

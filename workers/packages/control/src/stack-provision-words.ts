@@ -332,15 +332,15 @@ export type RelayAlertKind = (typeof RELAY_ALERT_KINDS)[number];
  * Gray's operators decided the VM a relay asked for (`vm_decided`; provision.ts `decideQuota`): the notice's title by
  * the decision, and what to do. A refusal's message carries the operators' reason before it.
  */
-export const VM_APPROVED_TITLE = "Gray approved your relay's VM";
-export const VM_REFUSED_TITLE = "Gray did not approve your relay's VM";
-export const VM_APPROVED_FIX = "Press Deploy on the VM tab, or have your agent apply the relay again.";
+export const VM_APPROVED_TITLE = "Gray approved your VM";
+export const VM_REFUSED_TITLE = "Gray did not approve your VM";
+export const VM_APPROVED_FIX = "Press Deploy on the VM tab, or have your agent apply the deployment again.";
 export const VM_REFUSED_FIX = "Ask Gray before asking again.";
-export const VM_RECLAIMED_KEPT = "Your relay's record, models, prices and pairing are kept.";
-export const VM_RECLAIMED_FIX = "When you are ready, press Deploy on the VM tab (or have your agent apply the relay again), then deliver your accounts again.";
+export const VM_RECLAIMED_KEPT = "Your deployment's record, models, prices and pairing are kept.";
+export const VM_RECLAIMED_FIX = "When you are ready, press Deploy on the VM tab (or have your agent apply the deployment again), then deliver your accounts again.";
 /**
  * What to do about the VM's lease past its renewal (`lease_expiring`), in the alert's e-mail and webhook; the panel's
  * Overview, Credentials and Alerts say the same (frontend relay-stack-health.ts, whose test holds the two together).
  */
-export const LEASE_OVERDUE_FIX = `gray-assistant normally renews it well before then. Past it the VM serves no account. On your relay's host, in gray-assistant's kit directory, run ${kitRun("doctor")}.`;
-export const LEASE_EXPIRED_FIX = `The VM serves no account until gray-assistant renews it. On your relay's host, in gray-assistant's kit directory, run ${kitRun("doctor")}.`;
+export const LEASE_OVERDUE_FIX = `gray-assistant normally renews it well before then. Past it the VM serves no account. On your machine, in gray-assistant's kit directory, run ${kitRun("doctor")}.`;
+export const LEASE_EXPIRED_FIX = `The VM serves no account until gray-assistant renews it. On your machine, in gray-assistant's kit directory, run ${kitRun("doctor")}.`;

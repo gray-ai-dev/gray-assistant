@@ -114,7 +114,7 @@ export function AddAccountPage({ query }: { query: URLSearchParams }) {
           <Fieldset disabled={busy} gap={5}>
             <div><SegmentedControl aria-label="Kind of account" value={form.kind}
               onValueChange={kind => { set({ kind, vendor: vendorsOf(kind).includes(form.vendor) ? form.vendor : vendorsOf(kind)[0]! }); setErrors({}); }}
-              options={[{ value: 'subscription', label: 'Subscription' }, { value: 'key', label: 'API key' }]} /></div>
+              options={[{ value: 'subscription', label: 'Account sign-in' }, { value: 'key', label: 'API key' }]} /></div>
             <FormGrid columns={2}>
               <Field label="Vendor" error={errors['vendor']}>
                 <SelectField value={form.vendor} onValueChange={value => set({ vendor: value as Vendor })}>

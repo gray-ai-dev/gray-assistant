@@ -266,20 +266,20 @@ export type PairAnswer = z.infer<typeof pairAnswerSchema>;
  * envelope) with its HTTP status, and the sentence gray-assistant prints. None names a value from the request.
  */
 export const PAIR_REFUSALS = {
-  lane_stack_pairing_code_unknown: { status: 404, text: "Gray knows no such pairing code. Check it was copied whole, or make a new one on the relay's Integration page." },
-  lane_stack_pairing_code_expired: { status: 410, text: "The pairing code expired (codes last 15 minutes). Make a new one on the relay's Integration page." },
-  lane_stack_pairing_code_used: { status: 409, text: "The pairing code was already used. Make a new one on the relay's Integration page to pair again." },
+  lane_stack_pairing_code_unknown: { status: 404, text: "Gray knows no such pairing code. Check it was copied whole, or make a new one on the Integration page." },
+  lane_stack_pairing_code_expired: { status: 410, text: "The pairing code expired (codes last 15 minutes). Make a new one on the Integration page." },
+  lane_stack_pairing_code_used: { status: 409, text: "The pairing code was already used. Make a new one on the Integration page to pair again." },
   lane_stack_pairing_signature_invalid: { status: 401, text: "The key's signature over the code did not verify." },
-  lane_stack_pairing_key_taken: { status: 409, text: "This key is already paired with another relay. Pair this relay with a key of its own." },
+  lane_stack_pairing_key_taken: { status: 409, text: "This key is already paired with another deployment. Pair this deployment with a key of its own." },
   lane_stack_pairing_key_mismatch: {
     status: 409,
-    text: "This relay's stack endpoints name another key. Pair with that key (--key <relay-key.json>) or ask Gray to update the endpoints.",
+    text: "This deployment's stack endpoints name another key. Pair with that key (--key <relay-key.json>) or ask Gray to update the endpoints.",
   },
-  lane_stack_pairing_locked: { status: 409, text: "This relay's VM is running with the key it has; delete the VM before pairing another key." },
+  lane_stack_pairing_locked: { status: 409, text: "This deployment's VM is running with the key it has; delete the VM before pairing another key." },
   lane_stack_pairing_rate_limited: { status: 429, text: "Too many pairing attempts from this address. Wait a minute and try again." },
   lane_stack_pairing_guardian_unavailable: {
     status: 409,
-    text: "This relay is not on phase 2 now, so Gray takes no guardian at pairing. Run init --pair again with the same code: it asks Gray's chain terms first.",
+    text: "This deployment is not on phase 2 now, so Gray takes no guardian at pairing. Run init --pair again with the same code: it asks Gray's chain terms first.",
   },
   // LANE_STACK_PHASE2_MIN_KIT: an older kit cannot finish a phase-2 delivery (its restart request fails its own check).
   lane_stack_pairing_kit_outdated: {

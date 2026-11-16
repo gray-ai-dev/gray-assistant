@@ -97,7 +97,7 @@ export type StackEjection = {
   contact?: { text: string; href: string } | null;
 };
 /** The title over an ejection, the same on Overview and in the alert (@gray/control RELAY_ALERT_WORDS.relay_ejected). */
-export const EJECTION_TITLE = 'Gray took your relay out of routing';
+export const EJECTION_TITLE = 'Gray took your deployment out of routing';
 /** The reasons Gray refused a pairing attempt with one of the relay's codes (@gray/control/stack-pairing PAIR_REFUSALS). */
 export type PairingRefusalReason = 'used' | 'expired' | 'replaced' | 'signature' | 'key_taken' | 'key_mismatch' | 'locked';
 /** The relay record's `pairing`: the latest code (never its value), the key Gray holds, the latest refused attempt, and why no code can be made now. */
@@ -229,19 +229,19 @@ export type StackList = { relays: StackRelay[]; kit?: StackKit | null; standard_
 export function buildInstructions(kit: StackKit, standardUrl: string | null, setup?: { code: string; until: string; guideUrl: string } | null): string {
   if (setup) {
     return [
-      'Port the relay software in the current directory to Gray\'s relay integration standard, as a private Docker image that runs in Gray\'s confidential VM, then set the relay up on Gray.',
+      'Port the software in the current directory to Gray\'s integration standard, as a private Docker image that runs in Gray\'s confidential VM, then set it up on Gray.',
       '',
       `1. First claim the one-time provider setup code ${setup.code} (valid until ${setup.until}, single use) as ${setup.guideUrl} step 1 says, before anything else.`,
-      `2. Download Gray's relay kit from ${kit.url} into a new directory outside this repository. Check that its SHA-256 is ${kit.sha256} (sha256sum, or shasum -a 256 on macOS) and stop if it is not. Then unpack it there.`,
+      `2. Download Gray's kit from ${kit.url} into a new directory outside this repository. Check that its SHA-256 is ${kit.sha256} (sha256sum, or shasum -a 256 on macOS) and stop if it is not. Then unpack it there.`,
       `3. Read the kit's AGENTS.md (deploy/relay/kit/AGENTS.md in the unpacked kit)${standardUrl ? ` and the standard it points to, ${standardUrl}` : ''}. Follow its stages 1 to 3 on the software here: port it to the standard yourself, pass Gray's conformance tool${kit.conformance_image ? ` (the image ${kit.conformance_image}, where AGENTS.md says gray-conformance)` : ''}, and push the image to my private registry.`,
       '4. Never send a credential, token or key anywhere, never put one in the image, and never print one. If pushing needs a registry login, log in with docker login --password-stdin from the registry-password file without reading it, or ask me to log in.',
-      `5. When conformance passes on the pushed image, follow ${setup.guideUrl} from step 3: ask me for the relay's name, an e-mail address Gray may write to about this relay (release proposals, the traffic window, VM and account problems go there; if Gray sends it a 6-digit code, ask me for it and apply it) and how long a Gray release should wait for my veto (its release delay); draft the model table (Gray model ID, vendor, the vendor's name, price) from the models and prices this software already has configured, read-only, with the guide's relay-models.json for Gray's model IDs and reference prices, and show me the whole table to confirm once (I may change all prices at once or drop rows) before you apply it; then register the relay, pin the image by digest, pair gray-assistant on my relay host, connect gray-assistant to this software's accounts, add the models and prices I confirmed, ask Gray for the VM, and wait for Gray. Every time you read the guide's status, read its messages first and tell me what Gray says in them (a release to approve, a Deploy I can make now, a problem); once you told me, mark them seen as the guide says, so you do not tell me the same ones again. If the relay already exists on Gray, the guide's status says what it needs (an older pairing pairs gray-assistant again). If you may write only in one directory, point HOME at a directory inside it first. Never ask me for an account key.`,
+      `5. When conformance passes on the pushed image, follow ${setup.guideUrl} from step 3: ask me for the deployment's name, an e-mail address Gray may write to about this deployment (release proposals, the traffic window, VM and account problems go there; if Gray sends it a 6-digit code, ask me for it and apply it) and how long a Gray release should wait for my veto (its release delay); draft the model table (Gray model ID, vendor, the vendor's name, price) from the models and prices this software already has configured, read-only, with the guide's relay-models.json for Gray's model IDs and reference prices, and show me the whole table to confirm once (I may change all prices at once or drop rows) before you apply it; then register the deployment, pin the image by digest, pair gray-assistant on my machine, connect gray-assistant to this software's accounts, add the models and prices I confirmed, ask Gray for the VM, and wait for Gray. Every time you read the guide's status, read its messages first and tell me what Gray says in them (a release to approve, a Deploy I can make now, a problem); once you told me, mark them seen as the guide says, so you do not tell me the same ones again. If the deployment already exists on Gray, the guide's status says what it needs (an older pairing pairs gray-assistant again). If you may write only in one directory, point HOME at a directory inside it first. Never ask me for an account key.`,
     ].join('\n');
   }
   return [
-    'Port the relay software in the current directory to Gray\'s relay integration standard, as a private Docker image that runs in Gray\'s confidential VM.',
+    'Port the software in the current directory to Gray\'s integration standard, as a private Docker image that runs in Gray\'s confidential VM.',
     '',
-    `1. Download Gray's relay kit from ${kit.url} into a new directory outside this repository. Check that its SHA-256 is ${kit.sha256} (sha256sum, or shasum -a 256 on macOS) and stop if it is not. Then unpack it there.`,
+    `1. Download Gray's kit from ${kit.url} into a new directory outside this repository. Check that its SHA-256 is ${kit.sha256} (sha256sum, or shasum -a 256 on macOS) and stop if it is not. Then unpack it there.`,
     `2. Read the kit's AGENTS.md (deploy/relay/kit/AGENTS.md in the unpacked kit)${standardUrl ? ` and the standard it points to, ${standardUrl}` : ''}. Follow its stages 1 to 3 on the software here: port it to the standard yourself, pass Gray's conformance tool${kit.conformance_image ? ` (the image ${kit.conformance_image}, where AGENTS.md says gray-conformance)` : ''}, and push the image to my private registry.`,
     '3. Never send a credential, token or key anywhere, never put one in the image, and never print one. If pushing needs a registry login, log in with docker login --password-stdin from the registry-password file without reading it, or ask me to log in.',
     '4. When conformance passes on the pushed image, tell me its reference by digest (registry/path@sha256:...) and the conformance result. I paste the reference into "Pin your image" on Gray\'s console.',
@@ -355,7 +355,8 @@ export function windowName(seconds: number) {
 export const CHECK_FAILURE: Readonly<Record<string, string>> = {
   // The lane holds a proxy's credential only through a sealed account that uses the proxy.
   credential_missing: 'The lane has no credential for this proxy yet. Check it after an account that uses it has been sent with gray-assistant.',
-  proxy_unreachable: 'The VM could not connect to the proxy.',
+  // A proxy at a private or internal address is refused at egress's dial and reads as this (deploy/tee/egress dial_guard.go).
+  proxy_unreachable: 'The VM could not connect to the proxy. Use its public address: private and internal addresses (such as 10.x, 192.168.x, 127.x) are not allowed.',
   proxy_auth_failed: 'The proxy refused its user name and password.',
   proxy_refused: 'The proxy refused to open a tunnel to the vendor.',
   upstream_unreachable: 'The proxy could not reach the vendor.',
@@ -364,8 +365,8 @@ export const CHECK_FAILURE: Readonly<Record<string, string>> = {
 };
 /** A check's state and what it found, in words. */
 export function checkResult(check: Pick<StackProxyCheck, 'vendor' | 'state' | 'outcome' | 'code' | 'latency_ms'>): { status: Status; detail: string } {
-  if (check.state === 'expired') return { status: { label: 'No answer', tone: 'warning' }, detail: 'The relay’s VM did not answer in time. Is the relay running? Run the check again.' };
-  if (check.outcome === null) return { status: { label: 'Pending', tone: 'info' }, detail: 'Waiting for the relay’s VM to run it.' };
+  if (check.state === 'expired') return { status: { label: 'No answer', tone: 'warning' }, detail: 'Your VM did not answer in time. Is it running? Run the check again.' };
+  if (check.outcome === null) return { status: { label: 'Pending', tone: 'info' }, detail: 'Waiting for your VM to run it.' };
   if (check.outcome === 'ok') return { status: { label: 'OK', tone: 'success' }, detail: `Reached ${VENDOR_LABEL[check.vendor]}${check.latency_ms == null ? '' : ` in ${check.latency_ms.toLocaleString('en-US')} ms`}.` };
   return { status: { label: 'Failed', tone: 'danger' }, detail: (check.code && CHECK_FAILURE[check.code]) ?? `The check failed (${check.code ?? 'no reason given'}).` };
 }
@@ -519,7 +520,7 @@ export function ownCallsInput(form: Record<OwnCallOp, OwnCallForm>): OwnCalls {
 /** The relay's own record; blank fields are not named yet (null). The server holds the exact rules (@gray/control stack.ts). */
 export function relayInput(form: RelayForm): RelayInput {
   const token_url = optional(form.tokenUrl), registry = optional(form.registry), image = optional(form.image);
-  if (token_url !== null && !/^https:\/\/[^/?#\s]+\/?$/.test(token_url)) throw new Error('Pull-token service: an https origin such as https://tokens.example.com, without a path, or leave it empty to use the relay tunnel.');
+  if (token_url !== null && !/^https:\/\/[^/?#\s]+\/?$/.test(token_url)) throw new Error('Pull-token service: an https origin such as https://tokens.example.com, without a path, or leave it empty to use the tunnel.');
   if (registry !== null && /[/\s@]|:\/\//.test(registry)) throw new Error('Registry: a host name with an optional port, as docker login takes it, without a scheme or path.');
   if (image !== null && !/@sha256:[0-9a-f]{64}$/.test(image)) throw new Error('Image: pin it by digest, <repository>@sha256:<64 hex digits>.');
   let settings: unknown;

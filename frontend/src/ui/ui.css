@@ -231,6 +231,42 @@
 .ui-tabs__item:focus-visible { outline: 2px solid var(--focus-color); outline-offset: -3px; }
 .ui-tabs__count { padding: 0 6px; border-radius: 4px; background: var(--muted-surface); color: var(--muted); font-size: var(--text-micro); }
 
+/* OptionCards: the options side by side, each a card its title's link covers (the link's ::after, which also draws the
+   keyboard focus around the whole card). At rest a hairline card and an empty ring; under the pointer a darker edge
+   and ring; the chosen one a 2px ink edge (an inset shadow over the border, so nothing moves) and a filled check. Every
+   card is drawn alike otherwise: a quiet icon tile, dotted facts. A card with an icon keeps it in a rail: the facts'
+   marks sit under it and every line of text starts on the title's edge. Footers line up at the cards' feet. */
+.ui-option-cards__list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); gap: var(--space-4); margin: 0; padding: 0; list-style: none; }
+.ui-option-card { --ui-option-rail: 16px; --ui-option-gap: var(--space-2); --ui-option-indent: 0px; position: relative; display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; padding: var(--space-5); border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--surface); transition: border-color .12s ease, box-shadow .12s ease; }
+.ui-option-card--icon { --ui-option-rail: 32px; --ui-option-gap: var(--space-3); --ui-option-indent: calc(var(--ui-option-rail) + var(--ui-option-gap)); }
+@media (hover: hover) and (pointer: fine) {
+  .ui-option-card:hover { border-color: var(--strong-border); }
+  .ui-option-card:hover .ui-option-card__mark { border-color: var(--muted); }
+}
+.ui-option-card[data-current] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.ui-option-card__head { display: flex; align-items: flex-start; gap: var(--ui-option-gap); }
+.ui-option-card__icon { display: flex; flex: none; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: var(--radius); background: var(--muted-surface); color: var(--text); font-size: 18px; }
+.ui-option-card__mark { display: flex; flex: none; align-items: center; justify-content: center; position: absolute; top: var(--space-5); right: var(--space-5); width: 20px; height: 20px; border: 1.5px solid var(--strong-border); border-radius: 50%; color: var(--accent-foreground); pointer-events: none; }
+.ui-option-card[data-current] .ui-option-card__mark { border-color: var(--accent); background: var(--accent); }
+.ui-option-card__heading { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.ui-option-card__title { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-right: calc(20px + var(--space-3)); }
+.ui-option-card__title > .ui-option-card__link { margin-right: 0; }
+.ui-option-card__link { align-self: flex-start; color: var(--text); font-size: var(--text-section); font-weight: var(--weight-strong); line-height: var(--leading-snug); text-decoration: none; margin-right: calc(20px + var(--space-3)); }
+.ui-option-card__link::after { content: ""; position: absolute; inset: -1px; border-radius: var(--radius-card); }
+.ui-option-card__link:hover { text-decoration: none; }
+.ui-option-card__link:focus-visible { outline: none; }
+.ui-option-card__link:focus-visible::after { outline: 2px solid var(--focus-color); outline-offset: 2px; }
+.ui-option-card__promise { margin: 0; color: var(--text); font-size: var(--text-body); line-height: var(--leading-body); }
+.ui-option-card__facts { display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: 0; list-style: none; color: var(--muted); font-size: var(--text-support); line-height: var(--leading-body); }
+.ui-option-card__facts > li { display: flex; gap: var(--ui-option-gap); min-width: 0; }
+.ui-option-card__bullet { display: flex; flex: none; align-items: center; justify-content: center; width: var(--ui-option-rail); height: calc(var(--text-support) * 1.625); }
+.ui-option-card__dot { width: 4px; height: 4px; border-radius: 50%; background: currentColor; }
+.ui-option-card__footer { margin: auto 0 0; padding: var(--space-4) 0 0 var(--ui-option-indent); border-top: 1px solid var(--border); color: var(--text); font-size: var(--text-support); font-weight: var(--weight-medium); line-height: var(--leading-snug); }
+@media (max-width: 600px) {
+  .ui-option-card { padding: var(--space-4); }
+  .ui-option-card__mark { top: var(--space-4); right: var(--space-4); }
+}
+
 /* SectionNav: a band under the app bar, on its surface and its edges (24px, 16px on phones), with the section's name
    before its tabs, set apart by a short rule like the app bar's before its account controls, so it never reads as a
    tab. The band's rule is the strip's: the current tab's underline stands on it. On a phone the name takes its own

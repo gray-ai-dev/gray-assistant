@@ -54,9 +54,9 @@ export function AccountsPage() {
       <SourceNotice source={source} />
       {accounts.loading && <Skeleton rows={4} label="Loading the accounts" />}
       {view && source?.kind === 'file' && !source.problem && list.length === 0 && <EmptyState title="No accounts yet"
-        description="Add a subscription and sign it in, or paste API keys."
+        description="Add an account and sign it in, or paste API keys."
         actions={canEdit && <LinkButton variant="primary" href={href('/accounts/new')}>Add account</LinkButton>} />}
-      {view && source && source.kind !== 'file' && list.length === 0 && <EmptyState title="Your relay software lists no account" />}
+      {view && source && source.kind !== 'file' && list.length === 0 && <EmptyState title="Your software lists no account" />}
 
       {list.length > 0 && <Stack gap={3}>
         {(groups.length > 0 || picked.length > 0) && <Inline gap={3}>

@@ -22,7 +22,7 @@
  * Nothing printed or logged is a token; the prompt's URL and code are the vendor's, meant for the person.
  */
 import { bytesToLowerHex, ed25519PublicKey } from "@gray/attest";
-import { get, isObject, parseStrictBytes, toJsonString, type Json } from "@gray/json";
+import { get, isObject, parseStrictBytes, toJsonString, type Json, type JsonObject } from "@gray/json";
 import {
   loginStartValue,
   readLoginStartAnswer,
@@ -34,6 +34,7 @@ import {
   type RelayLoginPrompt,
   type RelayLoginView,
 } from "@gray/relay-connector";
+import { failedChecksJson } from "../daemon/failed-checks.ts";
 import { DaemonTransportError, type DaemonFetch, type DaemonHttpResponse, type StackIssueRecord } from "../daemon/types.ts";
 import { RelayKitError } from "../errors.ts";
 import type { LoadedRelayConfig } from "./config-file.ts";
@@ -140,7 +141,7 @@ export function endedMessage(code: RelayLoginCode | null): string {
     case "restarted":
       return "The VM restarted; run the command again.";
     case "prompt_refused":
-      return "The relay's software sent a sign-in address unlike the one this image used first (prompt_refused). Its adapter sees the rule in the 422 answer; check your image's sign-in adapter (standard §9).";
+      return "Your software sent a sign-in address unlike the one this image used first (prompt_refused). Its adapter sees the rule in the 422 answer; check your image's sign-in adapter (standard §9).";
     case "replaced":
       return "Another gray-assistant login started for this account; this one stopped.";
     case "idle":
@@ -167,19 +168,19 @@ function routeRefusal(status: number, code: string | null, accountId: string): s
         "If the push listed it, Gray has not adopted it: its vendor has no model in relay-stack.json's `models` yet. Add a model of that vendor, apply relay-stack.json, and run this again."
       );
     case "login_not_subscription":
-      return `${accountId} is not a subscription account: it has nothing to sign in.`;
+      return `${accountId} is not an account that signs in: it has nothing to sign in.`;
     case "login_held":
       return "The VM is being replaced by a new release; run the command again in a few minutes.";
     case "login_unsupported":
       return "The VM's Gray release has no sign-in inside the VM yet; run it again once the VM runs a newer release.";
     case "login_session_busy":
-      return "Another sign-in of this relay is running in the VM; wait for it to finish (at most 15 min) or cancel it, then run this again.";
+      return "Another sign-in of this deployment is running in the VM; wait for it to finish (at most 15 min) or cancel it, then run this again.";
     case "request_stale":
       return "The VM refused the request as stale (request_stale): this host's clock is more than 5 minutes off; set it right (NTP) and try again.";
     case "bad_signature":
-      return "The VM did not accept the request's signature (bad_signature): the config's relay key is not the one the VM booted with.";
+      return "The VM did not accept the request's signature (bad_signature): the config's deployment key is not the one the VM booted with.";
     case "unknown_relay":
-      return "The VM serves another relay (unknown_relay): the config's relay_id is not the one the VM booted with.";
+      return "The VM serves another deployment (unknown_relay): the config's relay_id is not the one the VM booted with.";
     case "login_session_unknown":
       return "The VM no longer knows this sign-in (it restarted, or it closed the session); run the command again.";
     default:
@@ -253,7 +254,7 @@ export async function loginVm(options: LoginVmOptions): Promise<number> {
   const { config, io, accountId } = options;
   const relayId = config.daemon.relayId;
   checkLoginAccountId(accountId);
-  const vm = debugStackVm(config, "`gray-assistant login <account>` signs an account in inside the relay's stack VM");
+  const vm = debugStackVm(config, "`gray-assistant login <account>` signs an account in inside your deployment's VM");
   const pollMs = options.pollMs ?? LOGIN_POLL_MS;
   const listen = options.listen ?? nodeListen;
   const emit = (event: LoginVmEvent): void => options.onEvent?.(event);
@@ -275,11 +276,11 @@ export async function loginVm(options: LoginVmOptions): Promise<number> {
     io.stdout("\nCancelled.\n");
     return 130;
   };
-  const fail = (code: string, message: string): number => {
+  const fail = (code: string, message: string, extra: JsonObject = {}): number => {
     stopCancel();
     emit({ kind: "failed", code, message });
     io.stderr(`${message}\n`);
-    io.stderr(`${toJsonString({ command: "login", ok: false, relay_id: relayId, account_id: accountId, code })}\n`);
+    io.stderr(`${toJsonString({ command: "login", ok: false, relay_id: relayId, account_id: accountId, code, ...extra })}\n`);
     return 1;
   };
 
@@ -304,10 +305,10 @@ export async function loginVm(options: LoginVmOptions): Promise<number> {
   }
   if ("code" in attested) {
     io.stdout("failed\n");
-    return fail(attested.code, attested.message);
+    return fail(attested.code, attested.message, failedChecksJson(attested.failedChecks));
   }
   const image = attested.bootImage.includes("@") ? attested.bootImage.slice(attested.bootImage.indexOf("@") + 1) : attested.bootImage;
-  io.stdout(`ok (attested: relay ${relayId}, image ${image.slice(0, 19)}…)\n`);
+  io.stdout(`ok (attested: deployment ${relayId}, image ${image.slice(0, 19)}…)\n`);
   if (cancelled) return cancelledBeforeSession();
 
   const tunnel = tunnelOriginOf(vm.origin) !== null;

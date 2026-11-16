@@ -14,6 +14,7 @@ import type { OsImageEntry, ReleaseEntry, ReleaseFreshnessState, ReleaseList, Re
 import type { Credential, Vendor } from "@gray/relay-connector";
 import type { CheckedVerifiedReport } from "../verified-report.ts";
 import type { AccountAliasStore } from "./account-aliases.ts";
+import type { FailedChecks } from "./failed-checks.ts";
 import type { SchedulerHandler } from "../scheduler/handler.ts";
 import type { SourceAdapter } from "../source/types.ts";
 
@@ -93,10 +94,18 @@ export interface StackIssueRecord {
   readonly relayImage: string;
 }
 
-/** Why an attestation did not produce a verified replica; never a secret. */
+/**
+ * Why an attestation did not produce a verified replica; never a secret. A report that did not verify comes with the
+ * checks it failed (`./failed-checks.ts`), for the command's refusal to name.
+ */
 export type DaemonAttestResult =
   | ({ readonly ok: true } & DaemonAttestation)
-  | { readonly ok: false; readonly stage: "report" | "verification" | "pinning" | "transport" | "clock"; readonly code: string };
+  | {
+      readonly ok: false;
+      readonly stage: "report" | "verification" | "pinning" | "transport" | "clock";
+      readonly code: string;
+      readonly failedChecks?: FailedChecks;
+    };
 
 /** The injected attestation: `attestLane` wrapped by the host, which owns the nonce and the quote verifier. */
 export type DaemonAttest = (input: DaemonAttestInput) => Promise<DaemonAttestResult>;
@@ -419,6 +428,11 @@ export interface DaemonSourceAccount {
    * proxy is not one the connector would seal (the account is parked `invalid_egress_format`), so Gray changes nothing.
    */
   readonly proxy?: DaemonSourceProxy | null;
+  /**
+   * The `max_concurrency` the source states for the account (1 to 10000), absent when it states none: Gray adopts the
+   * account with it as its concurrency, else with the panel's default (10). Later changes are made on Gray.
+   */
+  readonly maxConcurrency?: number;
 }
 
 /** A source account's proxy as the agent status names it: never its user name or password. */

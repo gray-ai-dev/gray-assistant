@@ -232,7 +232,7 @@ export const isClockVersion = (version: number) => version >= 1_000_000_000_000;
 export function sealedVersionText(version: number, clock: (ms: number) => string) {
   return isClockVersion(version) ? `sealed ${clock(version)}` : `version ${n(version)}`;
 }
-export const CREDENTIAL_TYPE_WORDS: Readonly<Record<CredentialType, string>> = { api_key: 'API key', oauth_access_token: 'Subscription login' };
+export const CREDENTIAL_TYPE_WORDS: Readonly<Record<CredentialType, string>> = { api_key: 'API key', oauth_access_token: 'Account sign-in' };
 
 // ---------------------------------------------------------------------------
 // One account's state from the server (S46)
@@ -267,7 +267,7 @@ export function credentialFix(kind: CredentialKind, accountId = '', command: 'in
   if (kind === 'source') return CREDENTIAL_SOURCE_FIX;
   if (kind === 'sign_in') return command === 'below' ? 'Sign it in again with the command below, or replace it in your account source, then run accounts push.' : credentialSignInFix(accountId);
   // Which of the two it is is not known: both, each for its kind of account.
-  return `An API key: ${lowerFirst(CREDENTIAL_SOURCE_FIX)} A subscription account: ${lowerFirst(credentialSignInFix(accountId))}`;
+  return `An API key: ${lowerFirst(CREDENTIAL_SOURCE_FIX)} An account that signs in: ${lowerFirst(credentialSignInFix(accountId))}`;
 }
 /** What to do about a refusal of one of `BANNED_CLASSES`: the credential for a 401, the account for the others. */
 export const refusalFix = (reason: string, kind: CredentialKind, accountId = '', command: 'inline' | 'below' = 'inline'): string =>
@@ -313,7 +313,7 @@ export function serverStateText(h: Pick<AccountHealth, 'state' | 'reason' | 'unt
     case 'held': {
       const why = HELD_WORDS[h.reason] ?? `It is held after ${lowerFirst(CLASS_WORDS[h.reason as AttemptClass] ?? h.reason.replaceAll('_', ' '))}`;
       const fix = BANNED_CLASSES.has(h.reason) ? (h.reason === 'auth' ? ` ${credentialFix(credentialKind(h.report), h.account_id)} A passing test releases it.` : ' Replace the account, or test it once the vendor lets it work again.') : ' Clear it, or a passing test releases it.';
-      return { label: BANNED_CLASSES.has(h.reason) ? 'Banned · replace' : 'Held', reason: `${why}${on}${code ? `: ${code}` : ''}.${fix}` };
+      return { label: BANNED_CLASSES.has(h.reason) ? 'Refused · replace' : 'Held', reason: `${why}${on}${code ? `: ${code}` : ''}.${fix}` };
     }
     case 'at_limit': {
       const window = h.report ? vendorWindows(h.report).find(w => w.status === 'rejected' || (w.used_percent ?? 0) >= 100) : undefined;
@@ -445,7 +445,7 @@ export function loginShort(login: LoginReport | null, clock: (ms: number) => str
   }
 }
 const NOT_SERVED_SHORT: Readonly<Record<string, string>> = {
-  vendor_mismatch: 'Sealed credential is another vendor’s', invalid_credential: 'Sealed credential can’t be used', proxy_unknown: 'Its proxy isn’t one of this relay’s',
+  vendor_mismatch: 'Sealed credential is another vendor’s', invalid_credential: 'Sealed credential can’t be used', proxy_unknown: 'Its proxy isn’t one of this deployment’s',
   proxy_mismatch: 'Sealed for another proxy', duplicate_credential: 'Same credential as another account', not_reported: 'Not in the VM’s last report', config_refused: 'Gray holds the configuration back',
 };
 /** The fix of a refused credential in a row's few words, by where it is renewed (`credentialKind`). */
@@ -458,7 +458,7 @@ const COOLING_SHORT: Readonly<Record<string, string>> = {
 const NOT_SERVED: Readonly<Record<string, string>> = {
   vendor_mismatch: 'The credential gray-assistant sealed for it is another vendor’s. Check the account’s vendor or its source.',
   invalid_credential: 'Its sealed credential is of another type than the account declares, or the VM couldn’t open it. Seal it again.',
-  proxy_unknown: 'Its proxy isn’t one of this relay’s proxies. Choose another in the account’s settings.',
+  proxy_unknown: 'Its proxy isn’t one of this deployment’s proxies. Choose another in the account’s settings.',
   proxy_mismatch: 'Its sealed credential names another proxy than the one it uses now. gray-assistant seals it again for the new proxy.',
   duplicate_credential: 'Another account sent the same credential. Give each account its own.',
   not_reported: 'The VM’s last report doesn’t list it yet. It does once the VM has taken the configuration that adds it.',
@@ -501,7 +501,7 @@ export function attemptsByClass(rows: readonly AttemptsRow[], accountId?: string
 const VENDOR_NAMES: Readonly<Record<StackVendor, string>> = VENDOR_LABEL;
 /** The names of Gray's default rules and sub2api's presets in words; a relay's own rule reads as the name it gave it. */
 const RULE_TITLES: Readonly<Record<string, string>> = {
-  window_exhausted: 'Limit used up', model_window_exhausted: 'A model’s limit used up', billing: 'Billing problem', restricted: 'Account restricted', oauth_auth: 'Subscription credential rejected (401)',
+  window_exhausted: 'Limit used up', model_window_exhausted: 'A model’s limit used up', billing: 'Billing problem', restricted: 'Account restricted', oauth_auth: 'Sign-in credential rejected (401)',
   key_auth: 'API key rejected (401)', challenge: 'Challenge page', forbidden: 'Forbidden', rate_limit: 'Rate limited', overloaded: 'Overloaded',
   '529_60m': 'Overloaded: an hour per model', '429_10m': 'Rate limited: 10 minutes per model', '503_30m': 'Unavailable: 30 minutes per model',
 };
@@ -511,7 +511,7 @@ export function ruleMatchText(rule: CoolingRule) {
   const parts = [rule.status.join(', ')];
   if (rule.codes.length) parts.push(rule.codes.map(code => vendorCodeText(code) ?? code).join(' or '));
   if (rule.vendors.length) parts.push(rule.vendors.map(v => VENDOR_NAMES[v]).join(', '));
-  if (rule.credential !== 'any') parts.push(rule.credential === 'api_key' ? 'API keys' : 'subscription logins');
+  if (rule.credential !== 'any') parts.push(rule.credential === 'api_key' ? 'API keys' : 'account sign-ins');
   return parts.join(' · ');
 }
 /** What a rule does, in words: "Holds the account until cleared", "Cools the model 10 min", "Cools the account until the vendor's reset (5 min if none, at most 1 h)". */
@@ -722,8 +722,8 @@ export function tunnelWords(agent: StackAgentStatus | null | undefined, now: num
   if (!agent || word === undefined || phase === 2) return null;
   const origin = agent.tunnel_origin ?? null;
   if (!agentState(agent, now).connected) return { label: 'Unknown', tone: 'neutral', origin, detail: 'gray-assistant stopped reporting, so its tunnel’s state is not known.' };
-  if (word === 'connected') return { label: 'Connected', tone: 'success', origin, detail: 'Your relay’s name answers through Gray’s rendezvous; your machine needs no public address.' };
-  return { label: 'Down', tone: 'danger', origin, detail: 'Your relay’s name does not answer, so a VM that starts now cannot reach your token service. gray-assistant tunnel status on your machine says why.' };
+  if (word === 'connected') return { label: 'Connected', tone: 'success', origin, detail: 'Your deployment’s name answers through Gray’s rendezvous; your machine needs no public address.' };
+  return { label: 'Down', tone: 'danger', origin, detail: 'Your deployment’s name does not answer, so a VM that starts now cannot reach your token service. gray-assistant tunnel status on your machine says why.' };
 }
 
 /**
@@ -812,8 +812,8 @@ type Step = { key: string; title: string; owner: StepOwner; done: boolean | null
  * What to do about the VM's lease past its renewal: Overview's and Credentials' item and the Messages tab say the same as
  * the alert's e-mail (console alerts.ts LEASE_OVERDUE_FIX, LEASE_EXPIRED_FIX; relay-stack-health.test.mjs holds them).
  */
-export const LEASE_OVERDUE_FIX = `gray-assistant normally renews it well before then. Past it the VM serves no account. On your relay’s host, in gray-assistant’s kit directory, run ${kitRun('doctor')}.`;
-export const LEASE_EXPIRED_FIX = `The VM serves no account until gray-assistant renews it. On your relay’s host, in gray-assistant’s kit directory, run ${kitRun('doctor')}.`;
+export const LEASE_OVERDUE_FIX = `gray-assistant normally renews it well before then. Past it the VM serves no account. On your machine, in gray-assistant’s kit directory, run ${kitRun('doctor')}.`;
+export const LEASE_EXPIRED_FIX = `The VM serves no account until gray-assistant renews it. On your machine, in gray-assistant’s kit directory, run ${kitRun('doctor')}.`;
 
 /** gray-assistant's version as it reported it; null for none, or 0.0.0 (what a kit built without a version stamp says). */
 export const reportedVersion = (version: string | null | undefined): string | null => (version && version !== '0.0.0' ? version : null);
@@ -836,7 +836,7 @@ export function contactNotice(contact: StackRelay['contact'], canManage: boolean
   if (contact.pending) {
     return { title: 'Confirm your address', body: `We sent a code to ${contact.pending}. ${canManage ? 'Enter it on the Messages tab to confirm the address.' : 'A member who manages this workspace’s services enters it on the Messages tab.'} Until then Gray’s notices are only your messages here, and nothing is sent to you.`, action: canManage ? 'Enter the code' : 'Open messages' };
   }
-  const why = 'Gray needs an e-mail address for this relay: its people write to it when a release, your traffic window, your VM or an account needs you.';
+  const why = 'Gray needs an e-mail address for this deployment: its people write to it when a release, your traffic window, your VM or an account needs you.';
   return { title: 'Leave an address for Gray', body: `${why} ${canManage ? 'Add one on the Messages tab.' : 'A member who manages this workspace’s services can add one on the Messages tab.'}`, action: canManage ? 'Add an address' : 'Open messages' };
 }
 /** Overview's notice while Gray has messages this member has not read (the Messages tab lists them); null when there are none. */
@@ -848,7 +848,7 @@ export function messagesNotice(unread: number | undefined): { title: string; bod
 /** The deploy step once Gray approved the relay's VM: Deploy can start (RelaySetup.tsx AgentProgress gives it its action). */
 export const DEPLOY_APPROVED = 'Gray approved your VM. Your agent deploys it, or you press Deploy on the VM tab.';
 /** The deploy step while Gray has yet to propose a release the relay can start on (`release_retired_unproposed`). */
-export const DEPLOY_WAITS_FOR_GRAY = 'The release this relay paired on can’t start new VMs any more, and Gray has to propose a newer one before you can Deploy. Gray’s operators have been told; there is nothing to do on your side.';
+export const DEPLOY_WAITS_FOR_GRAY = 'The release this deployment paired on can’t start new VMs any more, and Gray has to propose a newer one before you can Deploy. Gray’s operators have been told; there is nothing to do on your side.';
 /** How the deploy step's words end once a release in effect on the contract makes Deploy possible (RelaySetup.tsx AgentProgress). */
 export const DEPLOY_NOW = 'Deploy now, on the VM tab.';
 /**
@@ -888,7 +888,7 @@ export function deployPartLine(steps: readonly Pick<ChecklistItem, 'key' | 'stat
   return owed ? addressPart(owed) : null;
 }
 /** How the pair step's words begin when the pairing is made again for a release that can no longer be deployed (RelaySetup.tsx stepAction). */
-export const PAIR_FOR_RELEASE = 'The Gray release this relay paired on can no longer be deployed';
+export const PAIR_FOR_RELEASE = 'The Gray release this deployment paired on can no longer be deployed';
 /** The deploy step while a release Gray proposed waits for the guardian (`release_retired_proposed`): what to do, in order. */
 export const DEPLOY_APPROVE_FIRST = 'Approve Gray’s new release, then Deploy. The release you paired on can’t start new VMs any more; the VM tab has the command.';
 export type ChecklistVm = {
@@ -963,7 +963,7 @@ export function onboarding({ relay, accounts, health, agent, served, priced, now
   const releaseAgain = key !== null && !pairAgain && vm?.pairAgain === true;
   const grayRelay: Step = relay.pairing ? {
     key: 'pair', title: 'Pair gray-assistant', owner: 'agent', done: key !== null && !pairAgain && !releaseAgain,
-    failed: releaseAgain ? `${PAIR_FOR_RELEASE}, and no newer one can be approved before a first Deploy: pair gray-assistant again to take Gray’s current release. Nothing is lost: the relay has no VM yet.` : pairAgain ? 'This relay is still on phase 1, and Gray runs it on phase 2 now: its VM cannot connect until your agent pairs gray-assistant again (relay-stack.md §10). Delete the VM first if it has one.' : key ? silent : null,
+    failed: releaseAgain ? `${PAIR_FOR_RELEASE}, and no newer one can be approved before a first Deploy: pair gray-assistant again to take Gray’s current release. Nothing is lost: the deployment has no VM yet.` : pairAgain ? 'This deployment is still on phase 1, and Gray runs it on phase 2 now: its VM cannot connect until your agent pairs gray-assistant again (relay-stack.md §10). Delete the VM first if it has one.' : key ? silent : null,
     // A key the stack endpoints name came from the registration, unless a pairing gave it (its time says so): the
     // agent's first model copies the paired key to its endpoint, and the step must not change its words then.
     doneText: key?.source === 'endpoints' && !key.paired_ms ? 'With your registration’s key'
@@ -971,7 +971,7 @@ export function onboarding({ relay, accounts, health, agent, served, priced, now
     todoText: 'Your agent installs gray-assistant on your server and links it to Gray.',
   } : {
     key: 'agent', title: 'Connect gray-assistant', owner: 'agent', done: agentNow.connected, failed: silent,
-    doneText: `Connected${version}`, todoText: 'Your agent runs gray-assistant on your relay’s host with this relay’s stack section.',
+    doneText: `Connected${version}`, todoText: 'Your agent runs gray-assistant on your machine with this deployment’s stack section.',
   };
   const starting = vm && (vm.state === 'deploying' || vm.state === 'restarting') ? vm.step : null;
   const steps: Step[] = [
@@ -980,8 +980,8 @@ export function onboarding({ relay, accounts, health, agent, served, priced, now
     // once it is pinned; until then the operator's own word that it is ready moves the steps on.
     { key: 'build', title: 'Build your image', owner: 'agent', done: relay.image !== null || ready,
       doneText: relay.image !== null ? 'Built and pinned' : 'You marked it ready. Gray sees it once the image is pinned.',
-      todoText: 'Your agent adapts your relay software to Gray’s standard, builds an image and uploads it to your registry.' },
-    { key: 'register', title: 'Name your relay', owner: 'agent', done: true, doneText: [relay.relay_id, relay.created_ms ? clock(relay.created_ms) : 'Registered'].filter(Boolean).join(' · '), todoText: 'Your agent registers the relay with Gray under the name you choose.' },
+      todoText: 'Your agent adapts your software to Gray’s standard, builds an image and uploads it to your registry.' },
+    { key: 'register', title: 'Name your deployment', owner: 'agent', done: true, doneText: [relay.relay_id, relay.created_ms ? clock(relay.created_ms) : 'Registered'].filter(Boolean).join(' · '), todoText: 'Your agent registers the deployment with Gray under the name you choose.' },
     // Where Gray's notices go (owner decision of 2026-11-14): done by a confirmed address or a webhook, as the setup
     // API's contact step (provider-setup/relay-stack.ts); unknown on a console that does not say. It comes right
     // after the relay's name, where the agent's apply asks for it (it queues no first Deploy without one), and it is
@@ -1006,7 +1006,7 @@ export function onboarding({ relay, accounts, health, agent, served, priced, now
         // Whose turn it is by Gray's decision on the VM: nobody asked yet, Gray is deciding (since when), or Deploy can start.
         : vm?.quota?.state === 'requested' ? `${vm.quota.requested_ms ? `Asked ${agoText(vm.quota.requested_ms, now)}.` : 'Asked.'} ${VM_DECISION_WAIT}`
         : vm?.quota?.state === 'approved' ? DEPLOY_APPROVED
-        : vm?.quota?.state === 'refused' ? 'Gray did not approve a VM for this relay. The VM tab says why; ask Gray before asking again.'
+        : vm?.quota?.state === 'refused' ? 'Gray did not approve a VM for this deployment. The VM tab says why; ask Gray before asking again.'
         : 'Your agent asks Gray for a VM, or you ask on the VM tab. Once Gray approves, the agent deploys it.' },
     { key: 'boot', title: relay.phase === 1 ? 'The VM starts your image' : 'Gray starts your VM', owner: 'gray', done: booted && !refused && !boot,
       failed: refused ? 'The VM refused its configuration.' : boot ? boot.title : vm?.state === 'failed' && hasVm ? vm.failure ?? 'The VM didn’t start.' : null,
@@ -1019,10 +1019,10 @@ export function onboarding({ relay, accounts, health, agent, served, priced, now
       doneText: vm?.state === 'restarting' ? 'Delivered. The VM is restarting with your image.' : 'Your image runs in the VM', command: vm?.awaitingDelivery ? kitRun('deliver') : undefined, commandLead: 'Your agent runs this in the kit directory:',
       todoText: vm?.awaitingDelivery ? 'The VM waits for its delivery.' : 'Your agent sends your image to the waiting VM, which restarts with it. The delivery also reports your accounts to Gray.' },
     // Gray makes a vendor's stack endpoint with the relay's first model of it (Models), so an enabled one means a model.
-    { key: 'models', title: 'Add your models', owner: 'agent', done: models.length > 0, doneText: models.join(', '), todoText: 'Your agent lists the models your relay serves on Gray.' },
+    { key: 'models', title: 'Add your models', owner: 'agent', done: models.length > 0, doneText: models.join(', '), todoText: 'Your agent lists the models your deployment serves on Gray.' },
     // The agent points gray-assistant's account source at the relay's own software (GUIDE §4) and adopts what it finds; the
     // keys go from there to gray-assistant and are sealed to the VM, never typed.
-    { key: 'accounts', title: 'Add your accounts', owner: 'agent', done: listed.length > 0, doneText: plural(listed.length, 'account'), todoText: 'Gray lists the accounts gray-assistant reports from your relay software, at the delivery or at a later report.' },
+    { key: 'accounts', title: 'Add your accounts', owner: 'agent', done: listed.length > 0, doneText: plural(listed.length, 'account'), todoText: 'Gray lists the accounts gray-assistant reports from your software, at the delivery or at a later report.' },
     { key: 'credentials', title: 'Keys reach the VM', owner: 'agent', done: holding > 0, doneText: `${n(holding)} of ${n(listed.length || holding)} sealed`,
       command: kitRun('accounts push'), commandLead: 'The command your agent runs:',
       todoText: 'gray-assistant reads each account’s key from your software and sends it to the VM encrypted. Only the VM can read it.' },
@@ -1051,7 +1051,7 @@ export function setupPreview(): ChecklistItem[] {
   const pairing = { state: 'unpaired', code: null, key: null, refusal: null, blocked: null } as const;
   return onboarding({ relay: { image: null, registry: null, token_url: null, app_id: null, lane_origin: null, kms_ca_pubkey: null, endpoints: [], last_pull_token_issue: null, pairing },
     accounts: [], health: null, agent: null, served: false, priced: false, now: 0 })
-    .map(step => ({ ...step, state: 'upcoming' as const, detail: step.key === 'register' ? 'Your agent registers the relay with Gray under the name you choose.' : step.detail }));
+    .map(step => ({ ...step, state: 'upcoming' as const, detail: step.key === 'register' ? 'Your agent registers the deployment with Gray under the name you choose.' : step.detail }));
 }
 
 // ---------------------------------------------------------------------------
@@ -1084,6 +1084,13 @@ export type ServedIdentity = { kind: 'account' | 'profile' | 'none'; text: strin
 export function servedIdentity(account: { vendor: StackVendor; credential_type?: CredentialType | null; identity?: IdentityValue | null; identity_profile?: string | null }): ServedIdentity {
   if (account.identity && !isNoIdentity(account.identity)) return { kind: 'account', text: 'Its own (set through the API)', note: null };
   if (account.identity_profile && !account.identity) return { kind: 'profile', text: `${account.identity_profile} profile`, note: null };
-  const subscription = account.vendor === 'chatgpt_codex' || (account.vendor === 'anthropic' && account.credential_type !== 'api_key');
-  return { kind: 'none', text: 'None', note: subscription ? 'Gray adds no client headers: your software sends them, or give the account a profile.' : null };
+  return { kind: 'none', text: 'None', note: signsIn(account) ? 'Gray adds no client headers: your software sends them, or give the account a profile.' : null };
 }
+
+/**
+ * An account that signs in: every ChatGPT Codex account, and an Anthropic one without an API key. The vendor states
+ * its usage windows on each answer, a call or a test (egress README "Windows (S36)": Anthropic's `unified` headers,
+ * Codex's `x-codex-*`), so the panel has none to show before the first.
+ */
+export const signsIn = (account: { vendor: StackVendor; credential_type?: CredentialType | null }) =>
+  account.vendor === 'chatgpt_codex' || (account.vendor === 'anthropic' && account.credential_type !== 'api_key');

@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
-# Checks that a gray-assistant image or a relay kit tarball is the one Gray published: Gray signs both with one cosign key
-# (Sigstore cosign, key-based), whose public half is keys/gray-assistant-cosign.pub beside this script. Gray's release
-# scripts sign with the same file (deploy/relay/image/release.sh, deploy/relay/kit/publish.sh).
+# Checks that a gray-assistant image, a relay kit tarball, the conformance image or a gray-lane image is the one Gray
+# published: Gray signs all of them with one cosign key (Sigstore cosign, key-based), whose public half is
+# keys/gray-assistant-cosign.pub beside this script. Gray's release scripts sign with the same file
+# (deploy/relay/image/release.sh, deploy/relay/kit/publish.sh, deploy/relay/conformance/release.sh,
+# scripts/ops/lane-image.sh push).
 #
 #   cosign.sh verify <gray-assistant-kit-<version>.tar.gz>
 #       the tarball against <tarball>.sigstore.json beside it, then the gray-assistant image its VERSIONS names (signed by
-#       the same key, and built from the commit VERSIONS names). Prints what it checked.
+#       the same key, and built from the commit VERSIONS names) and the conformance image it names (signed by the same
+#       key). Prints what it checked.
 #   cosign.sh verify-image <registry>/<path>[:<tag>][@sha256:<hex>]
-#       one image, e.g. the `image:` line of your compose.yaml. Prints its digest, commit and version as signed.
+#       one image, e.g. the `image:` line of your compose.yaml, the conformance image, or the gray-lane image a release
+#       of Gray's signed list names (its `stack.gray_image`). Prints its digest, commit and version as signed.
 #   cosign.sh path          installs the pinned cosign (below) if needed and prints its path
 #   cosign.sh run <args>    runs the pinned cosign with <args>
 #
@@ -124,11 +128,11 @@ cmd_verify_image() {
   echo "commit   $commit"
   echo "version  $version"
   echo "signer   $(signer)"
-  echo "cosign.sh: OK: the image is signed by Gray's relay release key"
+  echo "cosign.sh: OK: the image is signed by Gray's release key"
 }
 
 cmd_verify() {
-  local tarball=${1:?verify needs the kit tarball} bundle versions image commit digest signed_commit version
+  local tarball=${1:?verify needs the kit tarball} bundle versions image commit digest signed_commit version conformance
   [ -f "$tarball" ] || die "no file $tarball"
   bundle="$tarball.sigstore.json"
   [ -f "$bundle" ] || die "no signature $bundle: download it from beside the tarball"
@@ -150,7 +154,16 @@ cmd_verify() {
   echo "image    $image"
   echo "commit   $signed_commit"
   echo "version  $version"
-  echo "cosign.sh: OK: the kit and its gray-assistant image are signed by Gray's relay release key"
+  # The conformance image VERSIONS names, which deploy/relay/conformance/release.sh signs with the same key.
+  conformance=$(sed -n 's/^conformance_image=//p' <<<"$versions")
+  if [ -n "$conformance" ]; then
+    [[ $conformance =~ @sha256:[0-9a-f]{64}$ ]] || die "the kit's VERSIONS names no released conformance image ($conformance)"
+    read -r digest signed_commit version < <(verify_image "$conformance")
+    [ "$digest" = "${conformance##*@}" ] || die "$conformance: the signature covers $digest"
+    echo "conformance $conformance"
+    echo "commit   $signed_commit"
+  fi
+  echo "cosign.sh: OK: the kit and its images are signed by Gray's release key"
 }
 
 cmd_sign_image() {

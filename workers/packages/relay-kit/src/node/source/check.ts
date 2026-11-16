@@ -166,7 +166,7 @@ export async function checkHttpSource(config: SourceHttpConfig, deps: HttpAdapte
       problems.push(`expires_at_ms is only in the ${listed === undefined ? "credential" : "list"}; give it in both or neither`);
     }
     if (expiry !== undefined && expiry <= now) problems.push(`expired ${new Date(expiry).toISOString()}: the software must refresh it before it expires`);
-    if (expiry === undefined && account.credentialType === "oauth_access_token") warnings.push("no expires_at_ms: the agent cannot tell an expired subscription token before the vendor refuses it");
+    if (expiry === undefined && account.credentialType === "oauth_access_token") warnings.push("no expires_at_ms: the agent cannot tell an expired sign-in token before the vendor refuses it");
     if (answer.egressPassword !== undefined && account.egress?.username === undefined) problems.push("egress_password without a listed egress username");
     // The sealed proxy takes printable ASCII without spaces, at most 255 characters; an account with another password is
     // left out at the push (`invalid_egress_format`), so it is said here, where the routes are checked.

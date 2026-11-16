@@ -120,7 +120,7 @@ export function AccountSignIn({ account }: { account: Account }) {
   if (session === null || lost) return <Stack gap={4}>
     {failure && <Notice tone="danger" role="alert">{failure}</Notice>}
     {unavailable && <Notice tone="warning" role="alert" title="This page can’t sign accounts in">
-      Run <InlineCode>gray-assistant login {id}</InlineCode> on the relay’s machine.
+      Run <InlineCode>gray-assistant login {id}</InlineCode> on your machine.
     </Notice>}
     {lost && <Notice tone="warning">That sign-in ended. Start it again.</Notice>}
     <Text size="support" tone="muted">You sign in on {VENDOR_LABEL[account.vendor]}’s own page and bring back what it shows. The tokens stay in the VM.</Text>

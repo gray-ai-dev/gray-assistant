@@ -75,7 +75,7 @@ function readSource(source: string, readStdin: () => Uint8Array): string {
  */
 export function importAccountsFile(config: LoadedRelayConfig, source: string, deps: { readonly readStdin?: () => Uint8Array } = {}): ImportedAccounts {
   if (config.source.kind !== "file") {
-    throw new RelayKitError("usage", `accounts import is for the file source, and this config's source is ${config.source.kind}: its accounts live in your relay software; gray-assistant accounts push reads them from there`);
+    throw new RelayKitError("usage", `accounts import is for the file source, and this config's source is ${config.source.kind}: its accounts live in your software; gray-assistant accounts push reads them from there`);
   }
   const text = readSource(source, deps.readStdin ?? (() => readFileSync(0)));
   let parsed: ReturnType<typeof parseAccountsSourceText>;
@@ -83,10 +83,10 @@ export function importAccountsFile(config: LoadedRelayConfig, source: string, de
     parsed = parseAccountsSourceText(text, { maxAccounts: config.source.maxAccounts });
   } catch (error) {
     const detail = error instanceof RelayKitError ? `${error.code}${error.detail === null ? "" : `: ${error.detail}`}` : "invalid";
-    throw new RelayKitError("invalid_accounts", `the file is not an accounts.json the file source reads (${detail}); nothing was written. Its form: {"relay_id": "<this relay>", "accounts": [{"account_id", "vendor", "credential": {"type", "value"}}]}`);
+    throw new RelayKitError("invalid_accounts", `the file is not an accounts.json the file source reads (${detail}); nothing was written. Its form: {"relay_id": "<your relay_id>", "accounts": [{"account_id", "vendor", "credential": {"type", "value"}}]}`);
   }
   if (parsed.relayId !== config.daemon.relayId) {
-    throw new RelayKitError("invalid_accounts", `the file's relay_id is not this kit's relay (${config.daemon.relayId}); nothing was written`);
+    throw new RelayKitError("invalid_accounts", `the file's relay_id is not this kit's relay_id (${config.daemon.relayId}); nothing was written`);
   }
   const path = config.source.path;
   let replaced = false;

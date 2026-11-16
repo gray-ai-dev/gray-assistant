@@ -24,6 +24,7 @@
  *                    [--app-id <40 hex>] [--kms-ca-pubkey <182 hex>] [--force]
  *     gray-assistant init --pair <code> --gray <api origin> --dir <dir> [--key <relay-key.json>] [--force]
  *                    [--registry-user <user> [--registry-expires-at <YYYY-MM-DDTHH:MM:SSZ>]]
+ *                    [--rpc <url> --rpc <url>] [--release-public-key <64 hex> [--release-freshness-public-key <64 hex>]] (a test Gray on loopback)
  *     gray-assistant accounts [--config <gray-assistant.jsonc>]
  *     gray-assistant deliver [--config <gray-assistant.jsonc>] [--no-wait] [--timeout <s>]
  *     gray-assistant accounts push [--config <gray-assistant.jsonc>]
@@ -92,6 +93,7 @@ import {
   RELAY_KEY_FILE_NAME,
   RELAY_KIT_VERSION,
 } from "../endpoints.ts";
+import { failedChecksJson, failedChecksOf } from "../daemon/failed-checks.ts";
 import { exitCodeFor, isRelayKitError, RelayKitError } from "../errors.ts";
 import { initPlaceholderNote } from "../init.ts";
 import { generateRelayKey, relayKeyValue, type RelayKeyFile } from "../keys.ts";
@@ -168,10 +170,11 @@ interface ParsedArgs {
 }
 
 /** Options that may be given more than once. */
-const REPEATABLE_FLAGS: ReadonlySet<string> = new Set(["report", "accept-os-image"]);
+const REPEATABLE_FLAGS: ReadonlySet<string> = new Set(["report", "accept-os-image", "rpc"]);
 
 /** Options that take no value. */
 const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
+  "unlisted",
   "json",
   "force",
   "no-wait",
@@ -264,13 +267,15 @@ function usage(): string {
     "       gray-assistant upload <lane origin> <file> [--report <verified-report.json>] [--reports <list.json>]",
     "                                  [--accept-unpinned] [--ca <pem>] [--max-report-age <seconds>]",
     "       gray-assistant scheduler --config <scheduler.json>",
-    "       gray-assistant init --pair <code> --gray <api origin> --dir <dir> [--key <relay-key.json>] [--force]   (the code from the relay's Integration page)",
+    "       gray-assistant init --pair <code> --gray <api origin> --dir <dir> [--key <relay-key.json>] [--force]   (the code from the Integration page)",
     "                        [--release-delay <hours>]   (how long a Gray release waits for your veto, 0 to 168, default 24)",
     "                        [--registry-user <user> [--registry-expires-at <YYYY-MM-DDTHH:MM:SSZ>]] [--image <image@sha256:...>]   (the pull token's user, and its expiry when it has one; the image compose.yaml runs)",
+    "                        [--rpc <url> --rpc <url>]   (two RPC endpoints of your own; default on Base: the public ones built in, never Gray's)",
+    "                        [--release-public-key <64 hex> [--release-freshness-public-key <64 hex>]]   (a test Gray on loopback only; Gray's own release keys are built in)",
     "       gray-assistant accounts [--config <config>]   (each account's panel id beside its source id)",
     "       gray-assistant deliver [--config <config>] [--no-wait] [--timeout <seconds>]   (attest the VM, check the contract, seal the boot box and the accounts, restart when needed)",
     "       gray-assistant accounts push [--config <config>] [--no-wait] [--timeout <seconds>]   (read the source once and seal the accounts to the VM;",
-    "                                    waits and tries again while Gray is still moving the relay to its serving VM, 409 vault_not_serving)",
+    "                                    waits and tries again while Gray is still moving your deployment to its serving VM, 409 vault_not_serving)",
     "       gray-assistant accounts import <accounts.json> [--config <config>]   (the file source: check the file and put it where the source reads it, 0600;",
     "                                    piped from anywhere: docker compose run --rm --no-deps -T agent accounts import - < accounts.json;",
     "                                    or a copy in the kit directory, which the container has at /run/secrets:",
@@ -285,17 +290,18 @@ function usage(): string {
     "       gray-assistant proxies add [<url>] [--id <id>] [--config <config>]   (scheme://[user:password@]host:port; one as the argument, or several on",
     "                                    standard input, one a line; a proxy given no id gets proxy-<n>)",
     "       gray-assistant proxies remove <id> [--config <config>]   (one no account names)",
-    "       gray-assistant messages [--seen] [--config <config>]   (Gray's unread messages for the relay: a release to approve, the traffic window,",
+    "       gray-assistant messages [--seen] [--config <config>]   (Gray's unread messages: a release to approve, the traffic window,",
     "                                    a VM or account problem; --seen marks them seen once the operator is told)",
     "       gray-assistant registry set [--config <config>] [--no-wait] [--timeout <seconds>]   (seal stack.registry's login anew, same designation)",
     "       gray-assistant source check [--config <config>]   (the http source's two routes against the standard, or the file source's",
     "                                    accounts.json: it reads, and each account's proxy is in its list; prints no key)",
     "       gray-assistant doctor [--config <config>] [--ca <pem>] [--verifier-module <module.mjs>] [--now <unix>]",
-    "       gray-assistant releases list [--from-block <n>] [--config <config>]   (each release proposed on the relay's contract)",
+    "       gray-assistant releases list [--from-block <n>] [--config <config>]   (each release proposed on your contract)",
     "       gray-assistant releases check <hash> [--kind compose|os_image] [--config <config>]   (its state on the contract, read from both RPCs, and its compose or OS image texts from Gray's signed list, checked here)",
     "       gray-assistant releases approve|reject <hash> [--kind compose|os_image] [--deadline <unix>] [--nonce <n>]",
     "                                          [--submit --rpc <url> | --print] [--config <config>]   (the guardian's signed approval or veto;",
-    "                                          Gray's relayer sends it by default, --submit from the guardian key, --print only signs)",
+    "                                          Gray's relayer sends it by default, --submit from the guardian key, --print only signs;",
+    "                                          approve only a hash Gray's signed list or this kit's upgrades name, unless --unlisted)",
     "       gray-assistant releases delay <hours> [--force] [--deadline <unix>] [--nonce <n>] [--submit --rpc <url> | --print] [--config <config>]",
     "                                          (your release delay, 0 to 168 h, signed by the guardian and sent as approve is; --force when",
     "                                          lengthening it would stop a release that is effective by time alone)",
@@ -310,7 +316,7 @@ function usage(): string {
     "       gray-assistant stack status [--config <config>]",
     "       gray-assistant debug get <request id> [--out <file>] [--config <config>]   (a request's record the customer authorized; the VM holds it 24 h)",
     "       gray-assistant login <account> [--vendor <anthropic|chatgpt_codex> [--proxy <url|id>]] [--config <config>]",
-    "                                        (signs a subscription account in inside the VM, by your software there; with --vendor it first",
+    "                                        (account sign-in: signs an account in inside the VM, by your software there; with --vendor it first",
     "                                        adds the account to accounts.json, with --proxy leaving through that proxy, a URL or the id of",
     "                                        one in accounts.json's list, and seals it)",
     "       gray-assistant ui [--service] [--config <config>] [--port <n>] [--host <address>] [--ca <pem>] [--verifier-module <module.mjs>]",
@@ -453,7 +459,7 @@ async function upgradeCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   const { upgradeWorkspace } = await import("./upgrade.ts");
   const image = (args.flags.get("image") ?? io.env["GRAY_ASSISTANT_IMAGE"] ?? "").trim();
   const result = upgradeWorkspace({ directory: requiredFlag(args, "dir"), image: image === "" ? null : image, version: RELAY_KIT_VERSION.split("+")[0] as string });
-  io.stdout(`gray-assistant upgrade: relay ${result.relayId}, ${result.found} in ${result.directory}, to kit ${RELAY_KIT_VERSION}\n`);
+  io.stdout(`gray-assistant upgrade: deployment ${result.relayId}, ${result.found} in ${result.directory}, to kit ${RELAY_KIT_VERSION}\n`);
   for (const file of result.written) io.stdout(`wrote ${file}\n`);
   for (const file of result.backups) io.stdout(`kept the previous file as ${file}\n`);
   for (const member of result.members) io.stdout(`renamed the old path in ${member}\n`);
@@ -639,7 +645,8 @@ async function attest(args: ParsedArgs, io: CliIo): Promise<number> {
   for (const check of result.verification.checks) io.stdout(`${check.status.toUpperCase().padEnd(4)} ${check.id}: ${check.detail}\n`);
   if (result.stage === "verification") {
     io.stdout(`VERDICT: FAIL\n`);
-    printJson(io, { command: "attest", ok: false, origin, nonce });
+    // The JSON line names the failed checks as the other commands' refusals do (with `--pccs`, the quote's by its id).
+    printJson(io, { command: "attest", ok: false, origin, nonce, ...failedChecksJson(failedChecksOf(result.verification.checks, { quoteDetail: !args.flags.has("pccs") })) });
     return 1;
   }
   if (result.stage === "pinning") {
@@ -733,7 +740,7 @@ async function sealCredentials(args: ParsedArgs, io: CliIo): Promise<number> {
   const accountsText = readPrivateFile(accountsPath, "accounts file", MAX_ACCOUNTS_BYTES);
   const accounts = parseJsonOr(accountsText, "invalid_accounts", () => parseAccountsValue(parseStrict(accountsText)));
   const relayId = args.flags.get("relay-id") ?? accounts.relayId;
-  if (relayId !== accounts.relayId) throw new RelayKitError("invalid_accounts", "the accounts file names another relay");
+  if (relayId !== accounts.relayId) throw new RelayKitError("invalid_accounts", "the accounts file names another relay_id");
   const { version, chosen } = credentialVersionFrom(args, io, "a credential bundle's version starts at 1");
   const issuedAt = args.flags.has("issued-at") ? parseU64(args.flags.get("issued-at") as string, "--issued-at") : (accounts.issuedAt ?? nowSecs);
   const lifetime = args.flags.has("lifetime") ? parsePositiveInt(args.flags.get("lifetime") as string, "--lifetime") : 3600n;
@@ -819,7 +826,7 @@ async function revokeCredentials(args: ParsedArgs, io: CliIo): Promise<number> {
   // The same wire rules the TEE applies, checked before the message is signed.
   parseCredentialPayload(payloadValue(revocation));
   const sealed = await sealCredentialRevokeForReplicas({ reports, signingKey: key.seed, revoke: revocation, nowSecs });
-  io.stdout(`gray-assistant credentials revoke: ${relayId} ${versionText(version, chosen)}, ${revocation.revoke === "relay" ? "whole relay" : revocation.account_id}, ${sealed.length} replica(s)\n`);
+  io.stdout(`gray-assistant credentials revoke: ${relayId} ${versionText(version, chosen)}, ${revocation.revoke === "relay" ? "every account" : revocation.account_id}, ${sealed.length} replica(s)\n`);
   writeSealed(args, io, {
     command: "credentials.revoke",
     relayId,
@@ -845,7 +852,7 @@ async function upload(args: ParsedArgs, io: CliIo): Promise<number> {
   const document = parseJsonOr(toText(bytes), "unsupported_document", () => classifyUpload(parseStrict(toText(bytes))));
   const hasReport = args.flags.has("report") || args.flags.has("reports");
   if (document.kind === "policy_bundle" && !hasReport) {
-    throw new RelayKitError("usage", "a policy bundle upload needs --report: it is the relay's closed module");
+    throw new RelayKitError("usage", "a policy bundle upload needs --report: it is your closed module");
   }
   let reports: readonly CheckedVerifiedReport[] = [];
   if (hasReport) {
@@ -915,7 +922,7 @@ async function scheduler(args: ParsedArgs, io: CliIo): Promise<number> {
 // ---------------------------------------------------------------------------------------------
 
 async function initCommand(args: ParsedArgs, io: CliIo): Promise<number> {
-  if (!args.flags.has("pair")) throw new RelayKitError("usage", "init needs --pair <code> --gray <api origin> --dir <dir> (the code from the relay's Integration page)");
+  if (!args.flags.has("pair")) throw new RelayKitError("usage", "init needs --pair <code> --gray <api origin> --dir <dir> (the code from the Integration page)");
   return initPairCommand(args, io);
 }
 
@@ -928,10 +935,19 @@ function hostKitDir(value: string | undefined): string | null {
 
 /** `init --pair` (S57): pair a key with the relay's code on Gray's page and write the kit from Gray's answer. */
 async function initPairCommand(args: ParsedArgs, io: CliIo): Promise<number> {
-  assertFlags(args, ["pair", "gray", "dir", "key", "force", "registry-user", "registry-expires-at", "image", "release-delay"]);
+  assertFlags(args, ["pair", "gray", "dir", "key", "force", "registry-user", "registry-expires-at", "image", "release-delay", "release-public-key", "release-freshness-public-key", "rpc"]);
   assertPositionals(args, 1);
+  if (args.flags.has("release-freshness-public-key") && !args.flags.has("release-public-key")) {
+    throw new RelayKitError("usage", "--release-freshness-public-key goes with --release-public-key (a test Gray's release keys)");
+  }
   const { pairSummary, pairWorkspace } = await import("./init.ts");
   const result = await pairWorkspace({
+    // The operator's two RPC endpoints (--rpc twice); without them the kit's own on Base, never the ones Gray names.
+    ...(args.multiFlags.has("rpc") ? { rpc: args.multiFlags.get("rpc") as readonly string[] } : {}),
+    // A test Gray's release keys (loopback only; pairWorkspace refuses them for any other Gray, whose keys are built in).
+    ...(args.flags.has("release-public-key")
+      ? { releaseKeys: { publicKey: args.flags.get("release-public-key") as string, freshnessPublicKey: args.flags.get("release-freshness-public-key") ?? null } }
+      : {}),
     code: requiredFlag(args, "pair"),
     gray: requiredFlag(args, "gray"),
     directory: requiredFlag(args, "dir"),
@@ -951,16 +967,19 @@ async function initPairCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   // command sets, is the same directory on the host, so every path printed here is one the operator can use.
   const hostDir = hostKitDir(io.env["GRAY_ASSISTANT_HOST_DIR"]);
   const shown = (path: string): string => (hostDir === null ? path : path === result.directory ? hostDir : path.startsWith(`${result.directory}/`) ? join(hostDir, path.slice(result.directory.length + 1)) : path);
-  io.stdout(`gray-assistant init: paired relay ${result.relayId} with Gray; wrote the kit in ${shown(result.directory)}\n`);
+  io.stdout(`gray-assistant init: paired deployment ${result.relayId} with Gray; wrote the kit in ${shown(result.directory)}\n`);
   io.stdout(`relay_id ${result.relayId}\n`);
-  io.stdout(`fingerprint ${result.fingerprint} (compare it with the one on the relay's Integration page)\n`);
+  io.stdout(`fingerprint ${result.fingerprint} (compare it with the one on the Integration page)\n`);
   for (const file of result.files) io.stdout(`wrote ${shown(file)} (mode ${file === result.composePath ? "0644" : "0600"})\n`);
   io.stdout(
-    `guardian ${result.guardian.address} (${result.guardian.generated ? "new key" : "the kit's key"} in ${shown(result.guardian.keyPath)}: back it up with relay-key.json; it approves, vetoes and pauses the relay's contract)\n`,
+    `guardian ${result.guardian.address} (${result.guardian.generated ? "new key" : "the kit's key"} in ${shown(result.guardian.keyPath)}: back it up with relay-key.json; it approves, vetoes and pauses your contract)\n`,
   );
   const phase2 = result.guardian.phase2;
   if (phase2 !== null) {
-    io.stdout(`contract ${phase2.contract} on chain ${phase2.chainId} (your relay's app id; Gray deploys it at Deploy)\n`);
+    io.stdout(`contract ${phase2.contract} on chain ${phase2.chainId} (your app id; Gray deploys it at Deploy)\n`);
+    io.stdout(
+      `checked before approving: the release is in Gray's signed list ${result.releaseList.url} (verified with ${result.releaseList.keySource}) and its compose passes your checks (the image, the key provider, the KMS lease)\n`,
+    );
     io.stdout(`approved for it: compose hash ${phase2.composeHash}, OS image hash ${phase2.osImageHash} (signed by the guardian, submitted by Gray after Deploy)\n`);
     const delayHours = Number(phase2.releaseDelaySeconds) / 3600;
     io.stdout(
@@ -970,7 +989,7 @@ async function initPairCommand(args: ParsedArgs, io: CliIo): Promise<number> {
     // release is proposed, so a longer delay leaves a time without traffic at each one.
     if (delayHours > RELEASE_TRAFFIC_WINDOW_HOURS) {
       io.stdout(
-        `note: the delay is longer than Gray's ${RELEASE_TRAFFIC_WINDOW_HOURS} h traffic window: each normal release stops your relay's traffic ${RELEASE_TRAFFIC_WINDOW_HOURS} h after it is proposed until it takes effect, ${delayHours - RELEASE_TRAFFIC_WINDOW_HOURS} h later, unless you approve it sooner (gray-assistant releases approve)\n`,
+        `note: the delay is longer than Gray's ${RELEASE_TRAFFIC_WINDOW_HOURS} h traffic window: each normal release stops your deployment's traffic ${RELEASE_TRAFFIC_WINDOW_HOURS} h after it is proposed until it takes effect, ${delayHours - RELEASE_TRAFFIC_WINDOW_HOURS} h later, unless you approve it sooner (gray-assistant releases approve)\n`,
       );
     }
   }
@@ -989,30 +1008,15 @@ async function initPairCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   if (result.placeholders.includes("stack.registry.username")) left.push("set stack.registry.username to its user and stack.registry.expires_at to its expiry (YYYY-MM-DDTHH:MM:SSZ), if it has one");
   if (!result.image) left.push("set stack.relay_images to your image, pinned by digest (<registry>/<repository>@sha256:<64 hex>)");
   left.forEach((line, index) => io.stdout(`${index === 0 ? "next: " : "      "}${line}\n`));
-  // Gray's release list as the pairing read it. With a contract (the lines above) the contract decides what the VM may
-  // run: what it approves and its release delay were just said, and the list is only what `releases list` shows. The
-  // list's own acceptance (a delay counted on this host, `releases accept`) was the agent process's, which no kit runs
-  // any more: saying it here told every new relay of a rule and a command that do not exist (2026-11-15).
-  const pairing = result.releases;
-  if (pairing !== null) {
-    // What the config records of the list (`releases.accepted_at_pairing`), by name.
-    for (const entry of pairing.accepted) {
-      io.stdout(`accepted at pairing: ${entry.kind === "release" ? "release" : "OS image"} ${entry.name}, ${entry.kind === "release" ? "compose hash" : "hash"} ${entry.hash}\n`);
-    }
-    if (pairing.listError !== null) {
-      io.stdout(`note: Gray's release list did not read (${pairing.listError}); gray-assistant releases list reads it again${phase2 === null ? "" : ". The contract above decides what your VM may run either way"}\n`);
-    }
-    for (const hash of pairing.unverifiedOsImages) {
-      io.stdout(`note: Gray's list names an OS image whose texts do not prove a production image (${hash})${phase2 === null ? "" : `; the one your contract approves is ${phase2.osImageHash}`}\n`);
-    }
-  }
+  // What the kit took from Gray with no value of its own to hold it to (a test chain, RPC endpoints it does not know).
+  for (const warning of result.warnings) io.stdout(`warning: ${warning}\n`);
   const release = result.placeholders.filter((member) => member.startsWith("lane."));
   const placeholderNote = initPlaceholderNote(release);
   if (placeholderNote !== null) io.stdout(`${placeholderNote}\n`);
   // The config names the paths the host install mounts the kit at, so the install's own check reads it there.
   const then = left.length > 0 || placeholderNote !== null ? "then" : "next:";
   // Nothing runs on the host: an apply queues Deploy (relay-stack.md §6), then one delivery from the kit directory.
-  io.stdout(`${then} apply the relay-stack document again: it adds the models and, once Gray approved the VM, queues Deploy (relay-stack.md §6)\n`);
+  io.stdout(`${then} apply relay-stack.json again: it adds the models and, once Gray approved the VM, queues Deploy (relay-stack.md §6)\n`);
   io.stdout(`      once the VM waits for its delivery (the setup checklist's deliver step), from ${shown(result.directory)}: docker compose run --rm --no-deps agent deliver\n`);
   printJson(io, { ...pairSummary(result), ...(hostDir === null ? {} : { host_directory: hostDir }) } as JsonObject);
   return 0;
@@ -1067,7 +1071,7 @@ async function accountsImportCommand(args: ParsedArgs, io: CliIo): Promise<numbe
   const { importAccountsFile } = await import("./accounts-import.ts");
   const config = loadRelayConfigFile(configPathOf(args));
   const result = importAccountsFile(config, args.positionals[2] as string);
-  io.stdout(`gray-assistant accounts import: ${result.accounts} account(s) of relay ${result.relayId} written to ${result.path} (0600), where the file source reads them${result.replaced ? "; the file there before is replaced" : ""}\n`);
+  io.stdout(`gray-assistant accounts import: ${result.accounts} account(s) of deployment ${result.relayId} written to ${result.path} (0600), where the file source reads them${result.replaced ? "; the file there before is replaced" : ""}\n`);
   if (result.removed.length > 0) {
     io.stdout(`gray-assistant accounts import: the file there before also listed ${result.removed.join(", ")}: no longer in the source. An account added with \`login --vendor\` is in that file only: add it to yours and import again to keep it.\n`);
   }
@@ -1090,7 +1094,7 @@ function nthOf(detail: string | null, what: string): string {
 
 /** Why an edit of accounts.json was refused, in words; a refusal names a field, a closed code and a place, never a value. */
 function accountsFileRefusal(code: string, field: string | null, detail: string | null): string {
-  if (code === "source_not_file") return "this relay's accounts come from its own software (source.kind \"http\"): the proxy list and these commands are for accounts.json (source.kind \"file\"); there, each account's proxy is the one your software lists for it";
+  if (code === "source_not_file") return "your accounts come from your own software (source.kind \"http\"): the proxy list and these commands are for accounts.json (source.kind \"file\"); there, each account's proxy is the one your software lists for it";
   if (code === "source_read_only") return "accounts.json cannot be written where the source reads it (its folder is not writable by gray-assistant)";
   if (code === "source_unreadable") return "accounts.json does not read as the source reads it; put it right first (`gray-assistant doctor` names the member)";
   if (code === "proxy_not_found") return "accounts.json's list has no proxy of that id (`gray-assistant proxies` lists them)";
@@ -1105,7 +1109,7 @@ function accountsFileRefusal(code: string, field: string | null, detail: string 
   if (field === "keys" && code === "format") return `${nthOf(detail, "key")} does not have the form of that vendor's API key (the integration standard, section 8)`;
   if (field === "keys" && code === "duplicate") return `${nthOf(detail, "key")} is given twice`;
   if (field === "keys" && code === "taken") return `${nthOf(detail, "key")} is already the key of an account in accounts.json`;
-  if (field === "vendor" && code === "no_api_key") return "that vendor's accounts are subscriptions, signed in inside the VM: gray-assistant login <account> --vendor <vendor>";
+  if (field === "vendor" && code === "no_api_key") return "that vendor's accounts sign in inside the VM: gray-assistant login <account> --vendor <vendor>";
   if (field === "vendor") return `--vendor is one of ${VENDORS.join(", ")}`;
   if (field === "id_prefix") return "--id-prefix is 1 to 100 letters, digits, `.`, `_`, `:` or `-`";
   if (code === "refused_by_source") return `accounts.json would not read as the source reads it after the change${detail === null ? "" : ` (${detail})`}, so it was not changed`;
@@ -1218,7 +1222,7 @@ async function accountsProxyCommand(args: ParsedArgs, io: CliIo): Promise<number
 function groupRefusal(code: string): string {
   switch (code) {
     case "no_stack":
-      return "this config has no stack section: groups are for a relay with a stack VM";
+      return "this config has no stack section: groups are for a deployment with a stack VM";
     case "request_invalid":
       return "an account id is not one Gray's panel knows, or the group's name is over 256 characters or has a line break";
     case "invalid_request":
@@ -1227,7 +1231,7 @@ function groupRefusal(code: string): string {
       return "Gray did not answer; run the command again";
     case "lane_stack_relay_unknown":
     case "lane_stack_signature_invalid":
-      return "Gray does not know this relay by this relay key (pair it first: init --pair)";
+      return "Gray does not know this deployment by this key (pair it first: init --pair)";
     case "lane_stack_panel_view_future":
     case "lane_stack_panel_view_stale":
       return "this machine's clock is more than 5 minutes from Gray's; turn NTP on";
@@ -1250,7 +1254,7 @@ async function accountsGroupCommand(args: ParsedArgs, io: CliIo): Promise<number
   }
   const { loadRelayConfigFile } = await import("./config-file.ts");
   const config = loadRelayConfigFile(configPathOf(args));
-  const key = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "relay key", MAX_KEY_BYTES));
+  const key = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "deployment key", MAX_KEY_BYTES));
   const { writeAccountGroup } = await import("./account-group.ts");
   const result = await writeAccountGroup({ config, seed: key.seed, nowMs: io.now(), random: io.random, accountIds: accounts, group: group ?? null, ...(io.grayPost === undefined ? {} : { post: io.grayPost }) });
   if (!result.ok) {
@@ -1293,8 +1297,8 @@ async function messagesCliCommand(args: ParsedArgs, io: CliIo): Promise<number> 
   const { loadRelayConfigFile } = await import("./config-file.ts");
   const { messagesCommand } = await import("./messages.ts");
   const config = loadRelayConfigFile(configPathOf(args));
-  if (config.daemon.stack === null) throw new RelayKitError("usage", "the config has no `stack` section: `gray-assistant messages` reads Gray's messages for a relay-stack relay (stack.report_origin)");
-  const key = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "relay key", MAX_KEY_BYTES));
+  if (config.daemon.stack === null) throw new RelayKitError("usage", "the config has no `stack` section: `gray-assistant messages` reads Gray's messages for a deployment (stack.report_origin)");
+  const key = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "deployment key", MAX_KEY_BYTES));
   return messagesCommand({ config, seed: key.seed, nowMs: io.now(), io, seen: args.flags.has("seen"), ...(io.messagesPost === undefined ? {} : { post: io.messagesPost }) });
 }
 
@@ -1310,7 +1314,7 @@ async function withMessagesNote(args: ParsedArgs, io: CliIo, run: () => Promise<
     const { unreadMessagesNote } = await import("./messages.ts");
     const config = loadRelayConfigFile(configPathOf(args));
     if (config.daemon.stack !== null) {
-      const key = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "relay key", MAX_KEY_BYTES));
+      const key = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "deployment key", MAX_KEY_BYTES));
       const note = await unreadMessagesNote({ config, seed: key.seed, nowMs: io.now(), ...(io.messagesPost === undefined ? {} : { post: io.messagesPost }) });
       if (note !== null) io.stderr(`gray-assistant: ${note}\n`);
     }
@@ -1402,10 +1406,10 @@ async function loginCommand(args: ParsedArgs, io: CliIo): Promise<number> {
 
 /** Why `login --vendor` did not write the account, in words; a refusal names a field and a closed code, never a value. */
 function signInAccountRefusal(code: string, field: string | null, detail: string | null, accountId: string): string {
-  if (field === "vendor") return "--vendor is anthropic (a Claude subscription) or chatgpt_codex (a ChatGPT/Codex subscription): the vendors an account is signed in for";
+  if (field === "vendor") return "--vendor is anthropic or chatgpt_codex: the vendors an account signs in for";
   if (field === "proxy" && code === "unknown") return "--proxy is a URL: socks5://<user>:<password>@<host>:<port>, or the id of a proxy in accounts.json's list; the text given is not a URL, and the list has no proxy of that id (`gray-assistant proxies` lists them)";
   if (field === "proxy") return "--proxy is a URL: socks5://<user>:<password>@<host>:<port> (socks5, socks5h, http or https; a SOCKS URL names its port, and a password comes with a user name), or the id of a proxy in accounts.json's list";
-  if (field === "account_id" && code === "taken") return `accounts.json already lists ${accountId} as another account (another vendor, or one with a key or a token): pick another id for the subscription`;
+  if (field === "account_id" && code === "taken") return `accounts.json already lists ${accountId} as another account (another vendor, or one with a key or a token): pick another id for this account`;
   if (field === "account_id") return "the account id is 1 to 128 letters, digits, `.`, `_`, `:` or `-`";
   if (code === "source_read_only") return "accounts.json cannot be written where the source reads it (its folder is not writable by gray-assistant)";
   if (code === "source_unreadable") return "accounts.json does not read as the source reads it; put it right first (`gray-assistant doctor` names the member)";
@@ -1422,7 +1426,7 @@ async function loginAddAccount(args: ParsedArgs, io: CliIo, vendor: string): Pro
   if (config.source.kind !== "file") {
     throw new RelayKitError(
       "usage",
-      `--vendor adds the account to accounts.json, and this relay's accounts come from its own software (source.kind "${config.source.kind}"): list ${accountId} there with "credential_type": "sign_in", run gray-assistant accounts push, then gray-assistant login ${accountId}`,
+      `--vendor adds the account to accounts.json, and your accounts come from your own software (source.kind "${config.source.kind}"): list ${accountId} there with "credential_type": "sign_in", run gray-assistant accounts push, then gray-assistant login ${accountId}`,
     );
   }
   const { ensureSignInAccount } = await import("./ui/accounts-file.ts");
@@ -1463,7 +1467,7 @@ async function loginVmCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   checkLoginAccountId(accountId);
   const { loadRelayConfigFile } = await import("./config-file.ts");
   const config = loadRelayConfigFile(configPathOf(args));
-  const key = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "relay key", MAX_KEY_BYTES));
+  const key = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "deployment key", MAX_KEY_BYTES));
   const { createInterface } = await import("node:readline");
   return loginVm({
     config,
@@ -1525,7 +1529,7 @@ async function uiCommand(args: ParsedArgs, io: CliIo): Promise<number> {
     const { mintUiLink, uiLinksDirectory } = await import("./ui/session.ts");
     const config = loadRelayConfigFile(configPathOf(args));
     if ((config.daemon.ui?.origin ?? null) !== null) {
-      throw new RelayKitError("usage", "this relay's page is the operators' page on ui.origin, signed in to with a passkey: `gray-assistant ui enroll` makes the link that adds one");
+      throw new RelayKitError("usage", "this deployment's page is the operators' page on ui.origin, signed in to with a passkey: `gray-assistant ui enroll` makes the link that adds one");
     }
     const port = uiPortFlag(args) ?? config.daemon.ui?.port ?? DEFAULT_UI_PORT;
     const link = mintUiLink(uiLinksDirectory(config.daemon.stateFile), io.now(), io.random);
@@ -1614,7 +1618,7 @@ function uiOperations(args: ParsedArgs, io: CliIo): Pick<import("./ui/server.ts"
   const loaded = async () => {
     const { loadRelayConfigFile } = await import("./config-file.ts");
     const config = loadRelayConfigFile(configPathOf(args));
-    const key = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "relay key", MAX_KEY_BYTES));
+    const key = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "deployment key", MAX_KEY_BYTES));
     return { config, seed: key.seed };
   };
   return {
@@ -1746,7 +1750,7 @@ async function deliverCli(args: ParsedArgs, io: CliIo, action: "deliver" | "acco
   if (timeout !== undefined && !/^[1-9][0-9]{0,5}$/.test(timeout)) throw new RelayKitError("usage", "--timeout is whole seconds");
   const { loadRelayConfigFile } = await import("./config-file.ts");
   const config = loadRelayConfigFile(configPathOf(args));
-  const key = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "relay key", MAX_KEY_BYTES));
+  const key = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "deployment key", MAX_KEY_BYTES));
   const { deliverCommand } = await import("./deliver.ts");
   return deliverCommand({
     config,
@@ -1775,7 +1779,7 @@ async function debugCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   checkDebugRequestId(requestId);
   const { loadRelayConfigFile } = await import("./config-file.ts");
   const config = loadRelayConfigFile(configPathOf(args));
-  const key = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "relay key", MAX_KEY_BYTES));
+  const key = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "deployment key", MAX_KEY_BYTES));
   return debugGet({
     config,
     seed: key.seed,
@@ -1853,7 +1857,7 @@ async function policyTestCommand(args: ParsedArgs, io: CliIo): Promise<number> {
 // ---------------------------------------------------------------------------------------------
 
 async function loadKey(path: string): Promise<RelayKeyFile> {
-  const text = readPrivateFile(path, "relay key", MAX_KEY_BYTES);
+  const text = readPrivateFile(path, "deployment key", MAX_KEY_BYTES);
   return buildKeyFromText(text);
 }
 
@@ -2066,7 +2070,7 @@ async function chainContextOf(args: ParsedArgs, io: CliIo) {
   const { readChainContext } = await import("./chain.ts");
   const path = configPathOf(args);
   if (!existsSync(path)) {
-    throw new RelayKitError("io", `no relay config at ${path}: pass --config <file> or set GRAY_ASSISTANT_CONFIG`);
+    throw new RelayKitError("io", `no config at ${path}: pass --config <file> or set GRAY_ASSISTANT_CONFIG`);
   }
   return readChainContext(path, io.kitMount);
 }
@@ -2074,7 +2078,7 @@ async function chainContextOf(args: ParsedArgs, io: CliIo) {
 async function requireChainContext(args: ParsedArgs, command: string, io: CliIo) {
   const context = await chainContextOf(args, io);
   if (context === null) {
-    throw new RelayKitError("usage", `${command} acts on the relay's contract, and this config has no chain member (chain_id, rpc, proposer, guardian, contract): pair the relay again with init --pair`);
+    throw new RelayKitError("usage", `${command} acts on your contract, and this config has no chain member (chain_id, rpc, proposer, guardian, contract): pair again with init --pair`);
   }
   return context;
 }
@@ -2088,6 +2092,7 @@ function submitOf(args: ParsedArgs): { readonly rpc: string } | null {
   }
   const rpc = args.flags.get("rpc");
   if (rpc === undefined) throw new RelayKitError("usage", "--submit needs --rpc <url>: the endpoint the guardian's transaction is sent through");
+  if ((args.multiFlags.get("rpc") ?? []).length > 1) throw new RelayKitError("usage", "--rpc is given twice: --submit sends through one endpoint");
   return { rpc };
 }
 
@@ -2114,6 +2119,17 @@ async function chainReleasesCommand(args: ParsedArgs, io: CliIo, verb: "list" | 
     printPlainJson(io, { command: "releases list", contract: context.chain.contract, chain_id: context.chain.chainId, from_block: listed.fromBlock.toString(), block: listed.block.toString(), releases: listed.releases.map((state) => chain.releaseStateJson(state)) });
     return 0;
   }
+  // What an older kit copied from Gray's answer, against what this kit knows: an error stops a check or an approval (a
+  // list read with a key Gray chose, or a contract on another DstackKms, would make either meaningless); a veto never.
+  if (verb === "check" || verb === "approve") {
+    const { contextTrust } = await import("./release-content.ts");
+    const trust = contextTrust(context);
+    for (const warning of trust.warnings) io.stdout(`warning: ${warning}\n`);
+    if (trust.errors.length > 0) {
+      for (const error of trust.errors) io.stderr(`gray-assistant releases ${verb}: ${error}\n`);
+      return 1;
+    }
+  }
   if (verb === "check") {
     assertFlags(args, ["config", "kind"]);
     assertPositionals(args, 3);
@@ -2131,8 +2147,11 @@ async function chainReleasesCommand(args: ParsedArgs, io: CliIo, verb: "list" | 
     const { NO_STACK_VM, releaseContentForCheck, releaseContentJson } = await import("./release-content.ts");
     const content = await releaseContentForCheck(context, checked.state.kind, checked.state.hash, io.now());
     if (content === NO_STACK_VM) {
-      // Not a failure: before the first Deploy and deliver there is no VM whose KMS the compose's rules could name.
-      io.stdout("gray-assistant releases check: there is no stack VM yet, so only the release's state on the contract (above) can be compared; its content is checked once `gray-assistant deliver` has adopted the VM Gray deploys\n");
+      // Not a failure: on a chain whose DstackKms publishes no KMS key (a test chain), before the first Deploy and deliver
+      // there is no KMS the compose's rules could name. On Base the kit knows it, so this is not said there.
+      io.stdout(
+        "gray-assistant releases check: there is no stack VM yet and your chain's DstackKms names no KMS key, so only the release's state on the contract (above) can be compared; its content is checked once `gray-assistant deliver` has adopted the VM Gray deploys\n",
+      );
       printPlainJson(io, { command: "releases check", contract: context.chain.contract, block: checked.block.toString(), release: chain.releaseStateJson(checked.state), verdict: checked.verdict, content: null, content_unchecked: NO_STACK_VM });
       return 0;
     }
@@ -2140,7 +2159,7 @@ async function chainReleasesCommand(args: ParsedArgs, io: CliIo, verb: "list" | 
       io.stdout("the release's content is not checked: the config has no lane section (lane.release_list and lane.release_public_key, the signed list to read it from)\n");
     } else {
       for (const line of content.checks) io.stdout(`  ${line.ok ? "ok  " : "FAIL"} ${line.name}: ${line.detail}\n`);
-      if (content.ok) io.stdout(`gray-assistant releases check: the ${checked.state.kind === "compose" ? "compose" : "OS image"} passes the relay's checks (Gray's signed list, hashed and checked on this machine)\n`);
+      if (content.ok) io.stdout(`gray-assistant releases check: the ${checked.state.kind === "compose" ? "compose" : "OS image"} passes your checks (Gray's signed list, hashed and checked on this machine)\n`);
       else io.stderr(`gray-assistant releases check: the ${checked.state.kind === "compose" ? "compose" : "OS image"} does not pass (${content.code}); veto it with \`gray-assistant releases reject ${checked.state.hash}\` before it becomes effective\n`);
     }
     printPlainJson(io, {
@@ -2153,8 +2172,20 @@ async function chainReleasesCommand(args: ParsedArgs, io: CliIo, verb: "list" | 
     });
     return content === null || content.ok ? 0 : 1;
   }
-  assertFlags(args, ["config", "kind", "deadline", "nonce", "submit", "rpc", "print"]);
+  assertFlags(args, ["config", "kind", "deadline", "nonce", "submit", "rpc", "print", "unlisted"]);
   assertPositionals(args, 3);
+  if (verb === "reject" && args.flags.has("unlisted")) throw new RelayKitError("usage", "--unlisted goes with approve: a veto needs no list");
+  // An approval lets a release in before its delay: only one Gray published, unless the operator says they know.
+  if (verb === "approve" && !args.flags.has("unlisted")) {
+    // The guardian key first, as every guardian command: a key that is not there is said before any network.
+    chain.readContextGuardianKey(context);
+    const { approvalRefusal } = await import("./release-content.ts");
+    const refusal = await approvalRefusal(context, args.positionals[2] as string, args.flags.get("kind"), io.now());
+    if (refusal !== null) {
+      io.stderr(`gray-assistant releases approve: ${refusal}; nothing was signed. Check it (gray-assistant releases check <hash>), and pass --unlisted only to approve it all the same\n`);
+      return 1;
+    }
+  }
   return guardianActionOutput(io, verb === "approve" ? "approve" : "veto", context, await chain.chainGuardianAction(context, {
     action: verb === "approve" ? "approve" : "veto",
     hash: args.positionals[2] as string,

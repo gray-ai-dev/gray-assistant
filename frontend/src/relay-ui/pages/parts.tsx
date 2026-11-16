@@ -62,8 +62,8 @@ export function editable(source: AccountsView['source'] | undefined): boolean {
  */
 export function SourceNotice({ source, signIn = true }: { source: AccountsView['source'] | undefined; signIn?: boolean }) {
   if (!source) return null;
-  if (source.kind !== 'file') return <Notice title="Accounts are managed in your relay software">
-    Change them there{source.url ? ` (${source.url})` : ''}.{signIn ? ' This page still signs subscriptions in.' : ''}
+  if (source.kind !== 'file') return <Notice title="Accounts are managed in your software">
+    Change them there{source.url ? ` (${source.url})` : ''}.{signIn ? ' This page still signs accounts in.' : ''}
   </Notice>;
   if (source.problem) return <Notice tone="danger" role="alert" title="accounts.json can’t be read">
     {source.problem.detail}. Fix it in {source.path}: until then nothing in it reaches the VM.

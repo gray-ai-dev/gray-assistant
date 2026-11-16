@@ -2,8 +2,9 @@
  * What the relay checks of a phase-2 release before it lets it run (docs/design/relay-no-always-on-host.md 3.2 "What
  * the relay checks", 13.11 P6): the compose's own text, which Gray's signed release list publishes beside its hash
  * (`app_compose`), hashed and run through `@gray/lane-compose`'s closed policy with the list's own expectation, plus the
- * rules a VM of the relay's contract needs on top: its key provider is the KMS the relay's app runs on (Base's, the
- * `kms_ca_pubkey` of the stack VM in `lane.instances`), lane keeps the KMS lease (`LANE_KMS_URL`) and binds the vault.
+ * rules a VM of the relay's contract needs on top: its key provider is the KMS the relay's app runs on (Base's, built
+ * into the kit in `./trust.ts`, which pairing and `releases check` hold it to), lane keeps the KMS
+ * lease (`LANE_KMS_URL`) and binds the vault.
  * For an OS image, the list's entry and its texts (S11b): dstack's own chain from the hash to `metadata.json`, and a
  * production image.
  *
@@ -19,7 +20,10 @@ import { bytesToHex, utf8ToBytes } from "@noble/hashes/utils";
 
 /** What the relay's config says a release of its contract must be. */
 export interface ReleaseComposeExpectation {
-  /** The KMS root CA public key of the relay's app (the stack VM's `lane.instances` entry): Base's KMS in phase 2. */
+  /**
+   * The KMS root CA public key of the relay's app: Base's KMS in phase 2, built into the kit (`./trust.ts`), or the
+   * stack VM's `lane.instances` entry where the kit knows no KMS of the contract.
+   */
   readonly kmsCaPubkey: string;
   /** The environment's release keys the relay pins (`lane.release_public_key`, `lane.release_freshness_public_key`). */
   readonly releasePublicKey?: string;
@@ -81,7 +85,7 @@ export function checkReleaseCompose(list: ReleaseList, composeHash: string, expe
   checks.push({ name: "published", ok: true, detail: `the published app-compose (${utf8ToBytes(text).length} bytes) hashes to the release` });
   const stack = entry.stack;
   if (stack === null) {
-    checks.push({ name: "stack", ok: false, detail: "the release is not a relay-stack release (no stack member)" });
+    checks.push({ name: "stack", ok: false, detail: "the release is not a stack release (no stack member)" });
     return refused("release_not_stack", checks);
   }
   if (expect.preLaunchSha256 !== undefined && expect.preLaunchSha256 !== null) {
@@ -98,7 +102,7 @@ export function checkReleaseCompose(list: ReleaseList, composeHash: string, expe
   const problems = checkSupplyAppCompose(text, expectation);
   checks.push(
     problems.length === 0
-      ? { name: "policy", ok: true, detail: "@gray/lane-compose's closed policy passes with the list's expectation (Gray's image, the pre-launch script, the release keys)" }
+      ? { name: "policy", ok: true, detail: `@gray/lane-compose's closed policy passes with the list's expectation (Gray's image ${stack.gray_image}, the pre-launch script, the release keys)` }
       : { name: "policy", ok: false, detail: problems.map((problem) => `${problem.code}@${problem.path || "(root)"}`).join(", ") },
   );
 
@@ -114,9 +118,9 @@ export function checkReleaseCompose(list: ReleaseList, composeHash: string, expe
     name: "key_provider",
     ok: providerOk,
     detail: providerOk
-      ? "key_provider_id is the KMS of the relay's app (lane.instances' kms_ca_pubkey)"
+      ? `key_provider_id is the KMS of your app (…${expect.kmsCaPubkey.slice(-16)})`
       : typeof keyProviderId === "string"
-        ? "key_provider_id is another KMS than the relay's app runs on (lane.instances' kms_ca_pubkey)"
+        ? `key_provider_id is another KMS than your app runs on (…${keyProviderId.slice(-16)}, not …${expect.kmsCaPubkey.slice(-16)})`
         : "the app-compose names no key_provider_id (Phala's normalized form names the KMS)",
   });
   const facts = supplyComposeFacts(text);
@@ -127,8 +131,8 @@ export function checkReleaseCompose(list: ReleaseList, composeHash: string, expe
   );
   checks.push(
     facts.laneVaultBind
-      ? { name: "vault_bind", ok: true, detail: "lane binds the relay's vault directory read-write" }
-      : { name: "vault_bind", ok: false, detail: "lane does not bind the relay's vault directory" },
+      ? { name: "vault_bind", ok: true, detail: "lane binds your vault directory read-write" }
+      : { name: "vault_bind", ok: false, detail: "lane does not bind your vault directory" },
   );
   return checks.every((check) => check.ok) ? { ok: true, checks } : refused("compose_refused", checks);
 }

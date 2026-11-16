@@ -34,8 +34,9 @@ import { TUNNEL_STATES } from "./tunnel.ts";
  * the panel's account id rule. The console keeps the newest status per relay (0032 `lane_stack_agent_status`).
  *
  * `sources` (2026-10-29, optional: an agent before it stays valid) lists the accounts the agent's credential source
- * holds, by panel id, so the panel can offer to adopt those it does not have: vendor and credential type only, never a
- * credential. Null when the agent cannot read its source (unknown, unlike `[]`, a source listing none).
+ * holds, by panel id, so the panel can offer to adopt those it does not have: vendor, credential type, proxy address
+ * and stated concurrency only, never a credential. Null when the agent cannot read its source (unknown, unlike `[]`, a
+ * source listing none).
  *
  * `boot` (2026-10-29, optional: an agent before it sends none) is what the relay's token service last answered a booting
  * VM: the refusal code (`TOKEN_SERVICE_CODES`), whether it held the boot (a 5xx or 429, which pre-launch waits out, so
@@ -90,6 +91,8 @@ export const STACK_AGENT_WORD = /^[a-z0-9_]{1,64}$/;
 /** A source account's vendor and credential type (@gray/relay-connector `VENDORS`, `CREDENTIAL_TYPES`): every stack vendor. */
 export const STACK_AGENT_SOURCE_VENDORS = STACK_VENDORS;
 export const STACK_AGENT_CREDENTIAL_TYPES = ["api_key", "oauth_access_token"] as const;
+/** The largest `max_concurrency` a source account may state: the relay standard's account bound (1 to 10000). */
+export const STACK_AGENT_SOURCE_MAX_CONCURRENCY = 10_000;
 
 const u64 = z.number().int().min(0).max(Number.MAX_SAFE_INTEGER);
 const accountId = z.string().regex(STACK_ID_PATTERN);
@@ -149,6 +152,10 @@ const sourceSchema = z
     // relay's machine and in the VM), null for none. Absent from an older gray-assistant, and for an account whose
     // proxy it would not seal: the console then leaves the account's proxy as it is (`syncSourceProxies`).
     proxy: sourceProxySchema.nullable().optional(),
+    // The `max_concurrency` the source states for the account (2026-11-17, optional: absent from an older gray-assistant
+    // and for an account whose source states none). The console adopts a new account with it as its concurrency, else
+    // with its default (store.ts `syncFromSource`); an account the panel has already keeps the panel's value.
+    max_concurrency: z.number().int().min(1).max(STACK_AGENT_SOURCE_MAX_CONCURRENCY).optional(),
     // Retired (gray-assistant before 1.4 names the relay login of an `oauth_login` account): taken, never read, and
     // dropped before the status is kept (`withoutRetiredAgentFields`).
     login: z.string().max(64).nullable().optional(),

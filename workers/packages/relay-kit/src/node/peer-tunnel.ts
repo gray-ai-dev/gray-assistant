@@ -253,7 +253,7 @@ export function refusalMessage(entryHost: string, relayId: string, status: numbe
     code === "peer_link_unavailable"
       ? `the entry's link service is not answering (the entry is restarting or overloaded); gray-assistant retries`
       : code === "peer_relay_unknown" || (code === null && status === 404)
-      ? `the entry knows no relay-stack relay ${relayId}; check relay_id and that Gray provisioned your VM`
+      ? `the entry knows no deployment ${relayId}; check relay_id and that Gray provisioned your VM`
       : code === "peer_session_missing" || (code === null && status === 503)
         ? `your VM has no session to the entry right now (it is booting, rebooting or cannot reach Gray); gray-assistant retries`
         : code === "peer_tunnel_busy" || status === 429

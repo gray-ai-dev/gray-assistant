@@ -158,7 +158,9 @@ export function parseProposerItem(value: unknown, where = "item"): { readonly it
   const action = field(record, "action");
   if (action !== "propose" && action !== "remove") throw new AppAuthError("usage", `${where}.action is propose or remove`);
   const kind = field(record, "kind");
-  if (kind !== "compose" && kind !== "os_image") throw new AppAuthError("usage", `${where}.kind is compose or os_image`);
+  if (kind !== "compose" && kind !== "os_image" && kind !== "implementation") {
+    throw new AppAuthError("usage", `${where}.kind is compose, os_image or implementation`);
+  }
   const item: ProposerItem = {
     relayId,
     chainId,

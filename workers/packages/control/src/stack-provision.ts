@@ -516,8 +516,8 @@ export const BOOT_FAILURE_WORDS: Readonly<Record<BootFailureClass, FailureWords>
     side: "relay",
   },
   relay_image: {
-    title: "Your VM refused the image your relay named.",
-    fix: "Check gray-assistant stack status: the current image must be one of stack.relay_images, signed by your relay key, and declare no VOLUME (the integration standard, section 5). Roll out a fixed image, then retry the boot.",
+    title: "Your VM refused the image you named.",
+    fix: "Check gray-assistant stack status: the current image must be one of stack.relay_images, signed by your deployment key, and declare no VOLUME (the integration standard, section 5). Roll out a fixed image, then retry the boot.",
     side: "relay",
   },
   gray_registry: {
@@ -610,10 +610,10 @@ export const TOKEN_SERVICE_CODE_WORDS: Readonly<Record<TokenServiceCode, TokenSe
   event_log_invalid: gray("Your token service could not read the VM's measurements."),
   rtmr3_mismatch: gray("The VM's measurements do not match its attestation."),
   event_log_after_system_ready: gray("The VM asked for its token after its start-up was sealed."),
-  stack_identity_missing: gray("The VM did not measure which relay it serves."),
-  stack_identity_invalid: gray("The VM measured an unreadable relay identity."),
+  stack_identity_missing: gray("The VM did not measure which deployment it serves."),
+  stack_identity_invalid: gray("The VM measured an unreadable deployment identity."),
   stack_identity_mismatch: {
-    title: "The VM was deployed for another relay key or token address than gray-assistant has.",
+    title: "The VM was deployed for another deployment key or token address than gray-assistant has.",
     fix: "If you paired gray-assistant again after Deploy, Deploy again; otherwise check stack.token_url (gray-assistant doctor).",
     side: "relay",
     command: kitRun("doctor"),
@@ -677,7 +677,7 @@ export const TOKEN_SERVICE_CODE_WORDS: Readonly<Record<TokenServiceCode, TokenSe
     command: kitRun("doctor"),
     waits: false,
   },
-  release_not_stack: gray("The VM runs a Gray release that is not for relay VMs."),
+  release_not_stack: gray("The VM runs a Gray release that is not for confidential VMs."),
   pre_launch_not_pinned: {
     title: "stack.pre_launch_sha256 in your config pins another start-up script.",
     fix: "Remove stack.pre_launch_sha256 or set it to this release's, restart gray-assistant, then retry the boot.",
@@ -739,7 +739,7 @@ export interface PublishedKitRef {
 export function kitOutdatedWords(needed: string | null, published: PublishedKitRef | null): FailureWords {
   const title = "Your gray-assistant is too old for this Gray release.";
   if (needed === null) {
-    return { title, fix: "This release's VM has no public address; only a newer gray-assistant reaches it, through Gray's entry. Upgrade gray-assistant to the kit Gray publishes (your relay's VM page names its image), then Deploy.", side: "relay" };
+    return { title, fix: "This release's VM has no public address; only a newer gray-assistant reaches it, through Gray's entry. Upgrade gray-assistant to the kit Gray publishes (your VM page names its image), then Deploy.", side: "relay" };
   }
   if (published === null || !kitAtLeast(published.version, needed)) {
     return {
@@ -753,7 +753,7 @@ export function kitOutdatedWords(needed: string | null, published: PublishedKitR
     fix:
       `This release's VM has no public address; only gray-assistant ${needed} or later reaches it, through Gray's entry. Upgrade to the kit Gray publishes, ${published.version}: ` +
       `on your gray-assistant host, in its kit directory, run ${kitUpgradeCommand(published.image)}, then pair again with a new pairing code from the Integration page ` +
-      `(the signed kit: ${published.url}; the relay guide, section 10 "Limits and updates"). The pairing records the new kit; then Deploy.`,
+      `(the signed kit: ${published.url}; the operator guide, section 10 "Limits and updates"). The pairing records the new kit; then Deploy.`,
     side: "relay",
   };
 }
@@ -775,7 +775,7 @@ export const kitGuardianRun = (command: string): string => `${kitRun(command)} -
  */
 export const QUOTA_REQUESTED_WORDS: FailureWords = {
   title: "Gray's operators are deciding your VM request.",
-  fix: "Nothing to do until they decide: Gray leaves a message on the relay's Messages page then, and Deploy works once they approve.",
+  fix: "Nothing to do until they decide: Gray leaves a message on your Messages page then, and Deploy works once they approve.",
   side: "gray",
 };
 /**
@@ -807,43 +807,45 @@ export const NO_VM_TO_DELETE_WORDS: FailureWords = { title: "There is no VM to d
 /** A step's own failures the provisioner names (closed codes), each with its words for the panel. */
 export const STEP_FAILURE_WORDS: Readonly<Record<string, FailureWords>> = {
   not_admitted: { title: "Your workspace is not an approved supplier yet.", fix: "Gray reviews supplier applications; Deploy works once yours is approved.", side: "gray" },
-  no_quota: { title: "Your relay has no VM quota.", fix: "Ask Gray for a VM on the relay's VM page; Gray's operators decide it.", side: "gray" },
+  no_quota: { title: "Your deployment has no VM quota.", fix: "Ask Gray for a VM on the VM page; Gray's operators decide it.", side: "gray" },
   // A relay has one VM: Deploy makes it, Restart and Delete act on it.
-  vm_exists: { title: "Your relay's VM is already running.", fix: "Restart it, or Delete it first to deploy anew.", side: "relay" },
-  no_profile: { title: "Gray has no release published for relay VMs yet.", fix: "Gray's operators publish one; nothing to do on your side.", side: "gray" },
-  // Relay standard v1.7 item 9: a wait, not a failure. The VM is not made until gray-assistant reports the release accepted.
+  vm_exists: { title: "Your VM is already running.", fix: "Restart it, or Delete it first to deploy anew.", side: "relay" },
+  no_profile: { title: "Gray has no release published for confidential VMs yet.", fix: "Gray's operators publish one; nothing to do on your side.", side: "gray" },
+  // Relay standard v1.7 item 9, for a relay with no contract (phase 1): the VM is not made for a release the relay's agent
+  // status does not list as accepted. A relay accepts releases on its contract now (phase 2: the pairing approves the
+  // release it pairs on, `releases approve` a later one), and no kit sends an accepted list (the agent process that did,
+  // relay-kit run.ts, has not run since kit 1.4.6, and `releases accept` left the CLI in 1.6.10). So the fix is the pairing.
   release_not_accepted: {
-    title: "Your relay has not accepted the Gray release the VM would run.",
-    fix: `Accept it on the gray-assistant page (gray-assistant ui) under Releases, or in the kit directory on the relay's host (${kitRun("releases accept <compose hash>")}). gray-assistant reports it within a minute; then Deploy.`,
+    title: "You have not accepted the Gray release the VM would run.",
+    fix: "Your deployment accepts Gray's releases on its release contract, and it has none: it was paired before contracts (phase 1). Pair gray-assistant again with the current kit and a new code from the Integration page; the pairing makes the contract and approves the release it pairs on. Then Deploy.",
     side: "relay",
   },
-  // A wait too: Gray has no list of the relay's accepted releases since it paired. gray-assistant sends one with its first
-  // report after it starts (relay-kit run.ts, at most AGENT_STATUS_FIRST_WAIT_MS); not a refusal of the release.
+  // The same relay before any agent status listed its acceptances: no kit sends that list now, so it never comes.
   release_unreported: {
-    title: "gray-assistant has not yet told Gray which Gray releases it accepts.",
-    fix: "gray-assistant sends that in its first report, within a minute of starting (docker compose up -d in its kit directory); gray-assistant doctor's agent_status line says whether Gray took it. Then Deploy.",
+    title: "Gray has no list of the Gray releases your deployment accepts.",
+    fix: "It was paired before release contracts (phase 1), and the current gray-assistant sends no such list: a deployment accepts Gray's releases on its contract now. Pair gray-assistant again with the current kit and a new code from the Integration page; the pairing makes the contract and approves the release it pairs on. Then Deploy.",
     side: "relay",
   },
-  relay_incomplete: { title: "Your relay record is missing what the VM needs.", fix: "Pair gray-assistant with this relay and fill in its image and registry under Settings.", side: "relay" },
+  relay_incomplete: { title: "Your deployment record is missing what the VM needs.", fix: "Pair gray-assistant with this deployment and fill in its image and registry under Settings.", side: "relay" },
   // docs/design/relay-outbound-only.md decision R10: a VM of this release has no public address, and only a gray-assistant
   // with the tunnel transport reaches it; an older one could not renew the VM's lease and its accounts would stop.
   kit_outdated: kitOutdatedWords(null, null),
   // LANE_STACK_PHASE2_MIN_KIT: the kit the relay paired with (or reports) cannot finish a phase-2 delivery.
   phase2_kit_outdated: {
     title: "Your gray-assistant is too old for phase 2.",
-    fix: "It cannot finish delivering your accounts to a phase-2 VM. Update gray-assistant to the kit Gray publishes, pair it again with a new code from the relay's Integration page, then Deploy.",
+    fix: "It cannot finish delivering your accounts to a phase-2 VM. Update gray-assistant to the kit Gray publishes, pair it again with a new code from the Integration page, then Deploy.",
     side: "relay",
   },
   // Phase 2 (docs/design/relay-no-always-on-host.md 13.11 P5a-2): Deploy's `contract` step on Base.
-  chain_unconfigured: { title: "Gray cannot deploy relay contracts in this environment yet.", fix: "Gray's operators have been told; nothing was deployed. Retry later.", side: "gray" },
+  chain_unconfigured: { title: "Gray cannot deploy your contract in this environment yet.", fix: "Gray's operators have been told; nothing was deployed. Retry later.", side: "gray" },
   chain_unavailable: { title: "Base did not answer Gray's requests.", fix: "Retry in a few minutes; a step done before is not repeated.", side: "gray" },
   // Review 2026-11-09b chain #1: the relayer's gas ceiling or a day's spend cap (the timeline names which part and limit).
   relayer_limit: {
-    title: "Gray does not pay for this transaction of your relay's contract.",
+    title: "Gray does not pay for this transaction of your contract.",
     fix: "It is past what Gray's relayer pays for one transaction or for a day. Submit it yourself from a key with Base ETH, or retry tomorrow; Deploy finds what is done on Base and does not send it again.",
     side: "relay",
   },
-  contract_mismatch: { title: "The address of your relay's contract holds other code.", fix: "Gray's operators have been told; nothing was started. Pair again with a new code, then Deploy.", side: "gray" },
+  contract_mismatch: { title: "The address of your contract holds other code.", fix: "Gray's operators have been told; nothing was started. Pair again with a new code, then Deploy.", side: "gray" },
   approval_refused: {
     title: "Your guardian's approvals from pairing can no longer be submitted.",
     fix: "They expire 30 days after pairing, and a later decision on the release supersedes them. Pair again with a new code (it signs fresh approvals), then Deploy.",
@@ -870,41 +872,48 @@ export const STEP_FAILURE_WORDS: Readonly<Record<string, FailureWords>> = {
       `again, run ${kitRun("doctor")} and send Gray what it prints.`,
     side: "relay",
   },
-  release_vetoed: { title: "Your relay's contract vetoed (or removed) the Gray release this move needed.", fix: "Your VM keeps its release and serves. Gray proposes the next release.", side: "relay" },
-  release_not_proposed: { title: "The Gray release this move needs is not proposed on your relay's contract yet.", fix: "Your VM keeps its release and serves. Gray proposes it, and tries again.", side: "gray" },
+  // A Gray release moved a VM that held no accounts yet (roteo, 2026-11-16), and the relay's first delivery reached the
+  // old instance while the new one was starting: the one with the accounts stays.
+  accounts_delivered: {
+    title: "Your accounts reached your VM while Gray was moving it to a new release, so Gray kept the VM that has them.",
+    fix: "Nothing to do: your VM serves with your accounts. Gray moves it to the release at its next try, without downtime.",
+    side: "gray",
+  },
+  release_vetoed: { title: "Your contract vetoed (or removed) the Gray release this move needed.", fix: "Your VM keeps its release and serves. Gray proposes the next release.", side: "relay" },
+  release_not_proposed: { title: "The Gray release this move needs is not proposed on your contract yet.", fix: "Your VM keeps its release and serves. Gray proposes it, and tries again.", side: "gray" },
   internal: { title: "Something failed on Gray's side.", fix: "Gray's operators have been told. Retry later.", side: "gray" },
   // A phase-2 relay's first Deploy boots the release it paired on, even superseded, unless Phala closed its KMS node to
   // new VMs (2026-11-12; RELAY_CHAIN_KMS_CLOSED_IDS): then a newer release effective on the relay's contract.
   // `<compose hash>` is the release Gray proposed there, which the panel names.
   release_retired_proposed: {
-    title: "The Gray release this relay paired on can no longer be deployed.",
-    fix: "It can't start new VMs any more. Gray proposed a newer release on your relay's contract: approve it with your guardian, then Deploy.",
+    title: "The Gray release this deployment paired on can no longer be deployed.",
+    fix: "It can't start new VMs any more. Gray proposed a newer release on your contract: approve it with your guardian, then Deploy.",
     agent:
-      "Phala retired the key service node it runs on for new VMs. Gray proposed release <compose hash> on your relay's contract: approve it with your guardian, in gray-assistant's kit directory " +
+      "Phala retired the key service node it runs on for new VMs. Gray proposed release <compose hash> on your contract: approve it with your guardian, in gray-assistant's kit directory " +
       `(${kitGuardianRun("releases approve <compose hash>")}), or wait for your release delay to pass. Then Deploy: Gray reads your contract when you do.`,
     side: "relay",
   },
   // The pairing's release is on a key service node closed to new VMs and the relay's contract is not on chain (no
   // Deploy made it), so Gray can propose nothing there: a new pairing takes the current release.
   release_retired_pair_again: {
-    title: "The Gray release this relay paired on can no longer be deployed.",
-    fix: "It can't start new VMs any more. Pair gray-assistant again: the new pairing takes Gray's current release. Nothing is lost: the relay has no VM yet, and its settings stay.",
+    title: "The Gray release this deployment paired on can no longer be deployed.",
+    fix: "It can't start new VMs any more. Pair gray-assistant again: the new pairing takes Gray's current release. Nothing is lost: the deployment has no VM yet, and its settings stay.",
     agent:
-      "Phala retired the key service node it runs on for new VMs, and your relay's contract is not on chain yet (no Deploy has made it), so no newer release can be approved there. " +
-      "Pair gray-assistant again: the new pairing takes Gray's current release, and nothing is lost (the relay has no VM and nothing on chain; its settings stay). " +
+      "Phala retired the key service node it runs on for new VMs, and your contract is not on chain yet (no Deploy has made it), so no newer release can be approved there. " +
+      "Pair gray-assistant again: the new pairing takes Gray's current release, and nothing is lost (the deployment has no VM and nothing on chain; its settings stay). " +
       "Apply with relay_stack.registry_user: the answer's pairing.command pairs the kit directory you have (relay-workspace, with its relay-key.json) again. Then apply again: it queues Deploy.",
     side: "relay",
   },
   release_retired_unproposed: {
-    title: "The Gray release this relay paired on can no longer be deployed.",
-    fix: "It can't start new VMs any more, and Gray has not proposed a newer release on your relay's contract yet. Gray's operators have been told. There is nothing to do on your side until Gray proposes one.",
-    agent: "Phala retired the key service node it runs on for new VMs, and Gray has not proposed a newer release on your relay's contract yet. Gray's operators have been told: Gray proposes one, you approve it with your guardian (or wait for your release delay to pass), then Deploy.",
+    title: "The Gray release this deployment paired on can no longer be deployed.",
+    fix: "It can't start new VMs any more, and Gray has not proposed a newer release on your contract yet. Gray's operators have been told. There is nothing to do on your side until Gray proposes one.",
+    agent: "Phala retired the key service node it runs on for new VMs, and Gray has not proposed a newer release on your contract yet. Gray's operators have been told: Gray proposes one, you approve it with your guardian (or wait for your release delay to pass), then Deploy.",
     side: "gray",
   },
   // The provisioner's own look at the contract before it boots a release other than the pairing's.
   release_not_effective: {
-    title: "The Gray release this Deploy boots is not in effect on your relay's contract.",
-    fix: "Nothing was started. Approve it with your guardian (releases approve with its hash, in gray-assistant's kit directory; your relay's Releases page names it) or wait for your release delay to pass, then Deploy.",
+    title: "The Gray release this Deploy boots is not in effect on your contract.",
+    fix: "Nothing was started. Approve it with your guardian (releases approve with its hash, in gray-assistant's kit directory; your Releases page names it) or wait for your release delay to pass, then Deploy.",
     side: "relay",
   },
 };
@@ -925,7 +934,7 @@ export function phalaErrorDetailOf(text: string): PhalaErrorDetail | null {
 export const PHALA_ERROR_WORDS: Readonly<Record<string, FailureWords>> = {
   phala_err_02_030: {
     title: "The cloud provider no longer takes new VMs on the key service node this release uses.",
-    fix: "Phala retired that node for new deployments (Phala error ERR-02-030). Gray's operators have been told: Gray moves the release to another node, and Deploy boots it once it is in effect on your relay's contract.",
+    fix: "Phala retired that node for new deployments (Phala error ERR-02-030). Gray's operators have been told: Gray moves the release to another node, and Deploy boots it once it is in effect on your contract.",
     side: "gray",
   },
 };
@@ -994,26 +1003,26 @@ export function crashLooping(service: string, history: readonly ContainerObserva
 // ------------------------------------------------------------------------------------------------- relay alerts (P10)
 
 export const RELAY_ALERT_WORDS: Readonly<Record<RelayAlertKind, { readonly title: string; readonly resolved: string }>> = {
-  boot_failed: { title: "Your relay VM failed to start", resolved: "Your relay VM started" },
+  boot_failed: { title: "Your VM failed to start", resolved: "Your VM started" },
   registry_token_expiring: { title: "Your registry token expires within 14 days", resolved: "Your registry token was renewed" },
   release_list_stale: { title: "Gray's release list is out of date", resolved: "Gray's release list is current again" },
   release_pending: { title: "A Gray release is waiting for your decision", resolved: "No Gray release is waiting for you" },
-  container_crash_loop: { title: "A container in your relay VM keeps restarting", resolved: "The containers in your relay VM are running" },
-  account_health: { title: "Accounts in your relay need attention", resolved: "Your relay's accounts are healthy again" },
+  container_crash_loop: { title: "A container in your VM keeps restarting", resolved: "The containers in your VM are running" },
+  account_health: { title: "Accounts in your deployment need attention", resolved: "Your accounts are healthy again" },
   lease_expiring: { title: "Your VM's credential lease hasn't been renewed", resolved: "gray-assistant renewed your VM's credential lease" },
-  relay_failing: { title: "Most requests to your relay are failing", resolved: "Requests to your relay are completing again" },
-  relay_ejected: { title: "Gray took your relay out of routing", resolved: "Gray put your relay back into routing" },
-  relay_violation: { title: "Gray found your relay changing a request or an answer", resolved: "Gray closed its report of a change by your relay" },
+  relay_failing: { title: "Most requests to your deployment are failing", resolved: "Requests to your deployment are completing again" },
+  relay_ejected: { title: "Gray took your deployment out of routing", resolved: "Gray put your deployment back into routing" },
+  relay_violation: { title: "Gray found your software changing a request or an answer", resolved: "Gray closed its report of a change by your software" },
   // Told once, when the operators' delete of the VM ends; never resolved, `resolved` is not sent.
-  vm_reclaimed: { title: "Gray reclaimed your relay's VM", resolved: "" },
+  vm_reclaimed: { title: "Gray reclaimed your VM", resolved: "" },
   // Told once per decision of Gray's operators on the VM the relay asked for (the message's own title says which:
   // VM_APPROVED_TITLE, VM_REFUSED_TITLE); never resolved, `resolved` is not sent.
-  vm_decided: { title: "Gray approved or refused your relay's VM", resolved: "" },
+  vm_decided: { title: "Gray approved or refused your VM", resolved: "" },
   // Phase 2's release notices (P5b-2): told once each, never resolved; `resolved` is not sent.
-  relay_release_proposed: { title: "Gray proposed a release for your relay", resolved: "" },
+  relay_release_proposed: { title: "Gray proposed a release for your deployment", resolved: "" },
   relay_release_reminder: { title: "A proposed Gray release takes effect in 2 days", resolved: "" },
-  relay_release_effective: { title: "A Gray release took effect for your relay", resolved: "" },
-  relay_release_traffic: { title: "Your relay stops receiving traffic in a day", resolved: "" },
+  relay_release_effective: { title: "A Gray release took effect for your deployment", resolved: "" },
+  relay_release_traffic: { title: "Your deployment stops receiving traffic in a day", resolved: "" },
 };
 
 // ------------------------------------------------------------------------------------------------- the store's RPC (P3)
@@ -1110,6 +1119,13 @@ export interface EntryBoot {
    * deliveries). False for a boot that runs an image, and for an entry that does not say (one from before phase 2).
    */
   readonly emptySlot?: boolean;
+  /** Sessions the entry attested and pinned to this boot; 0 for a boot not attested yet, and for an entry that does not say. */
+  readonly pinned?: number;
+  /**
+   * Whether the boot holds the relay's sealed credentials, as the entry last found: false for one that holds none (a VM
+   * still waiting for its relay's first delivery), null while the entry has not looked, or does not say.
+   */
+  readonly sealed?: boolean | null;
 }
 
 /** The boots of a boots-route answer (`{relay_id, boots: [...]}`), or null for an answer that is not one. */
@@ -1120,14 +1136,17 @@ export function entryBootsOf(value: unknown, relayId: string): EntryBoot[] | nul
   const out: EntryBoot[] = [];
   for (const row of v.boots) {
     if (row === null || typeof row !== "object") return null;
-    const b = row as { keyset?: unknown; app_id?: unknown; instance_id?: unknown; streams?: unknown; ready?: unknown; relay_image?: unknown; sealed?: unknown };
+    const b = row as { keyset?: unknown; app_id?: unknown; instance_id?: unknown; streams?: unknown; ready?: unknown; relay_image?: unknown; sealed?: unknown; sessions?: unknown };
     const streams = typeof b.streams === "bigint" ? Number(b.streams) : b.streams;
+    const pinnedRaw = b.sessions !== null && typeof b.sessions === "object" ? (b.sessions as { pinned?: unknown }).pinned : undefined;
+    const pinnedCount = typeof pinnedRaw === "bigint" ? Number(pinnedRaw) : pinnedRaw;
+    const pinned = typeof pinnedCount === "number" && Number.isSafeInteger(pinnedCount) && pinnedCount > 0 ? pinnedCount : 0;
     if (typeof b.keyset !== "string" || !/^[0-9a-f]{64}$/.test(b.keyset)) return null;
     if (b.app_id !== null && (typeof b.app_id !== "string" || !/^[0-9a-f]{40}$/.test(b.app_id))) return null;
     // An entry from before instance ids answers none: the boot's instance is unknown, not refused.
     const instanceId = typeof b.instance_id === "string" && /^[0-9a-f]{40}$/.test(b.instance_id) ? b.instance_id : null;
     if (typeof streams !== "number" || !Number.isSafeInteger(streams) || streams < 0 || typeof b.ready !== "boolean") return null;
-    out.push({ keyset: b.keyset, appId: b.app_id, instanceId, streams, ready: b.ready, emptySlot: b.relay_image === null && b.sealed === false });
+    out.push({ keyset: b.keyset, appId: b.app_id, instanceId, streams, ready: b.ready, emptySlot: b.relay_image === null && b.sealed === false, pinned, sealed: typeof b.sealed === "boolean" ? b.sealed : null });
   }
   return out;
 }
@@ -1385,7 +1404,7 @@ export const RELAYER_REFUSALS = {
   busy: { status: 503, text: "Gray's relayer has a transaction waiting to be mined. Retry in a minute, or send it yourself with --submit." },
   // Review 2026-11-09b chain #1: past the relayer's gas ceiling or a day's spend cap nothing is sent.
   over_limit: { status: 503, text: "Gray does not pay for this; submit it yourself: gray-assistant ... --submit --rpc <url> (a few cents of Base ETH from the guardian key)." },
-  chain: { status: 422, text: "The decision is signed for another chain than your relay's contract is on." },
+  chain: { status: 422, text: "The decision is signed for another chain than your contract is on." },
   no_contract: { status: 422, text: "There is no contract at that address on Base yet: Deploy deploys it." },
   not_guardian: { status: 422, text: "The signer is neither your contract's guardian nor its recovery address." },
   superseded: { status: 422, text: "A later decision on the same release (or on pause) superseded this signature. Sign it again." },

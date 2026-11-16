@@ -62,7 +62,7 @@ export function httpsRequestOnce(input: HttpsRequestInput): Promise<HttpsRespons
   try {
     tunnel = tunnelRequestOf(url);
   } catch {
-    return Promise.reject(new RelayKitError("io", "the tunnel URL names no relay id"));
+    return Promise.reject(new RelayKitError("io", "the tunnel URL names no relay_id"));
   }
   if (tunnel !== null) {
     return tunnelRequestOnce({

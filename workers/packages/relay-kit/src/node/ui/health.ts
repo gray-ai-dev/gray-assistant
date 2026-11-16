@@ -26,23 +26,23 @@ export interface UiHealthView {
 
 /** The next step for one line id, keyed the way the guide's table is (a prefix before `:` names a family). */
 const NEXT_STEPS: Readonly<Record<string, string>> = {
-  config: "Fix gray-assistant.jsonc: fill every value the line names with the one Gray published for your relay.",
-  key_permissions: "Make the relay key a regular file owned by the agent's user (uid 10001) with mode 0600.",
-  key_content: "Restore relay-key.json from your backup. If it is lost, register the relay again with a new key.",
+  config: "Fix gray-assistant.jsonc: fill every value the line names with the one Gray published for your deployment.",
+  key_permissions: "Make relay-key.json a regular file owned by the agent's user (uid 10001) with mode 0600.",
+  key_content: "Restore relay-key.json from your backup. If it is lost, register again with a new key.",
   accounts_permissions: "Make accounts.json a regular file owned by the agent's user (uid 10001) with mode 0600.",
   token_permissions: "Make the source token file a regular file owned by the agent's user (uid 10001) with mode 0600.",
   admin_token_permissions: "Make the scheduler's admin token file mode 0600, or remove scheduler.admin_token_file.",
   policy_bundle: "Restore the policy bundle gray-assistant init wrote, or your backup of it.",
   state_permissions: "Make the state volume writable by the agent's user (uid 10001).",
-  release_key: "Fill the member the line names with the value Gray published for your relay.",
-  source_detected: "Add the standard's two account routes to the relay's software (read-only, behind a token) and use the http source.",
-  source_contract: "Run gray-assistant source check and fix each FAIL line in the relay's two account routes.",
+  release_key: "Fill the member the line names with the value Gray published for your deployment.",
+  source_detected: "Add the standard's two account routes to your software (read-only, behind a token) and use the http source.",
+  source_contract: "Run gray-assistant source check and fix each FAIL line in your two account routes.",
   source_credential: "Check the source's admin token, the account selection and each account's key format.",
   source_accounts: "The source selected no account: check source.select's vendors, tags and ids.",
   parked: "Fix this account's credential on the Accounts page; the line names why it is left out.",
   release_list: "Check the release list URL, this machine's clock and lane.release_public_key; ask Gray whether the list was republished.",
   release_freshness: "Tell Gray: the freshness document beside the release list has stopped updating.",
-  origin: "Read the line: a network or TLS problem, a release missing from the signed list, or one still waiting to be accepted on the Releases page.",
+  origin: "Read the line: a network or TLS problem, a release missing from the signed list, or one your contract does not allow yet (gray-assistant releases list shows each release's state on it).",
   clock: "Turn on time synchronisation (NTP or chrony) on this machine; signed requests fail when the clocks differ.",
   scheduler_tls: "Check the scheduler's DNS name, its certificate chain and expiry, and that port 443 reaches your proxy.",
   scheduler_echo: "Make your proxy forward the request unchanged: no buffering or rewriting of x-gray-* headers or the body, and no path prefix.",
@@ -52,8 +52,8 @@ const NEXT_STEPS: Readonly<Record<string, string>> = {
   stack_release_status: "Check the pull-token service's release status: the line names the release it refuses.",
   stack_accounts: "Rename each refused account in your source to its account ID in Gray's panel.",
   stack_account: "Give this account its account ID from Gray's panel in your source.",
-  lane_registration: "Ask Gray to check this relay's registration; gray-assistant tries again every 5 minutes.",
-  agent_status: "Do what the line names: register the relay key, create the relay stack, or sync the clock.",
+  lane_registration: "Ask Gray to check this deployment's registration; gray-assistant tries again every 5 minutes.",
+  agent_status: "Do what the line names: register the key, create the deployment, or sync the clock.",
 };
 
 export function nextStepFor(line: Pick<DoctorLine, "id" | "status">): string | null {

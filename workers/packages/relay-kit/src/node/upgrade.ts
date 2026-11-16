@@ -155,7 +155,7 @@ export function upgradeWorkspace(options: UpgradeOptions): UpgradeResult {
   const written: string[] = [];
   const backups: string[] = [];
   const source = current === null ? oldPath : configPath;
-  const text = readFileText(source, "relay config", MAX_CONFIG_BYTES);
+  const text = readFileText(source, "config", MAX_CONFIG_BYTES);
   const members = oldPathMembers(parseTree(text));
   let next = text;
   for (const member of members) {

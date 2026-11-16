@@ -35,9 +35,10 @@ export interface SkippedAccount {
 
 /**
  * What the source says of an account that Gray does not take from the source: its status when it is not `active`
- * (the account is sealed and adopted all the same), and the `models`, `weight` and `max_concurrency` it names (the
- * panel account's own). Said by the command, so a relay that paused an account in its software, or weighted it there,
- * does not learn from the vendor that Gray served it otherwise.
+ * (the account is sealed and adopted all the same), and the `models` and `weight` it names (the panel account's own).
+ * Said by the command, so a relay that paused an account in its software, or weighted it there, does not learn from
+ * the vendor that Gray served it otherwise. A stated `max_concurrency` is not here: Gray adopts the account with it
+ * (`sources[].max_concurrency`), and `concurrencyStated` counts them.
  */
 export interface NotFollowed {
   readonly vendor: Vendor;
@@ -45,7 +46,7 @@ export interface NotFollowed {
   /** `paused`, `banned`, …, when the source's status is not `active` (a `limited` one is the VM's own to find). */
   readonly status: string | null;
   /** The members the source names with a value other than the standard's default. */
-  readonly members: readonly ("models" | "weight" | "max_concurrency")[];
+  readonly members: readonly ("models" | "weight")[];
 }
 
 export interface ReadAccounts {
@@ -54,6 +55,8 @@ export interface ReadAccounts {
   readonly skipped: readonly SkippedAccount[];
   /** What the source says that Gray does not follow, per account; empty when there is nothing to say. */
   readonly notFollowed?: readonly NotFollowed[];
+  /** How many listed accounts state a `max_concurrency` (Gray adopts a new one with it; an adopted one keeps Gray's). */
+  readonly concurrencyStated?: number;
   /** How many accounts the source listed. */
   readonly listed: number;
   /**
@@ -132,14 +135,17 @@ export async function readAccountsOnce(config: LoadedRelayConfig, deps: ReadAcco
     if (id === null) return [];
     // An account left out for its proxy says nothing of one: Gray keeps the proxy the panel account has.
     const proxy = p.account.leftOut === undefined ? sourceProxyOf(p.account.egress) : undefined;
-    return [{ sourceId: id, vendor: p.vendor, credentialType: p.credentialType, ...(proxy === undefined ? {} : { proxy }) }];
+    // The concurrency the source states, which Gray adopts a new account with (its default, 10, when there is none).
+    const stated = p.account.statedMaxConcurrency;
+    return [{ sourceId: id, vendor: p.vendor, credentialType: p.credentialType, ...(proxy === undefined ? {} : { proxy }), ...(stated === undefined ? {} : { maxConcurrency: Number(stated) }) }];
   });
   const notFollowed = planned.flatMap((p): NotFollowed[] => {
     const a = p.account;
-    const members = [...(a.models === "*" ? [] : ["models" as const]), ...(a.weight === 1n ? [] : ["weight" as const]), ...(a.maxConcurrency === 1n ? [] : ["max_concurrency" as const])];
+    const members = [...(a.models === "*" ? [] : ["models" as const]), ...(a.weight === 1n ? [] : ["weight" as const])];
     // The source's `disabled` is the standard's `paused` (the file source writes one, the http source the other).
     const status = a.status === "active" || a.status === "limited" ? null : a.status === "disabled" ? "paused" : a.status;
     return status === null && members.length === 0 ? [] : [{ vendor: p.vendor, panelId: panelId(p.vendor, a.sourceId), status, members }];
   });
-  return { accounts, skipped, listed: snapshot.accounts.length, sources, notFollowed };
+  const concurrencyStated = planned.filter((p) => p.account.statedMaxConcurrency !== undefined).length;
+  return { accounts, skipped, listed: snapshot.accounts.length, sources, notFollowed, concurrencyStated };
 }

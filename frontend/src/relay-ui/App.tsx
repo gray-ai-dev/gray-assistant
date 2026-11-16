@@ -109,8 +109,8 @@ export function App() {
       </a>
       <span className="relay-ui-where">
         {mode === 'public'
-          ? <Badge icon={<ShieldCheck size={14} aria-hidden="true" />} title={`gray-assistant serves this page from your relay at ${window.location.host}. Keys you enter here go to gray-assistant and nowhere else: Gray’s website never sees them.`}>gray-assistant page</Badge>
-          : <Badge icon={<ShieldCheck size={14} aria-hidden="true" />} title="Served by gray-assistant on your relay’s machine. What you type here never reaches Gray’s website.">gray-assistant page</Badge>}
+          ? <Badge icon={<ShieldCheck size={14} aria-hidden="true" />} title={`gray-assistant serves this page from your machine at ${window.location.host}. Keys you enter here go to gray-assistant and nowhere else: Gray’s website never sees them.`}>gray-assistant page</Badge>
+          : <Badge icon={<ShieldCheck size={14} aria-hidden="true" />} title="Served by gray-assistant on your machine. What you type here never reaches Gray’s website.">gray-assistant page</Badge>}
       </span>
       {links.length > 0 && <OverflowNav className="desktop-nav" label="Pages" links={links} />}
       <div className="account-nav">
@@ -163,14 +163,14 @@ function PushStatus() {
     } catch (error) {
       const refusal = error instanceof ApiError ? error : null;
       // A page started without the push (501): say what does it instead.
-      toast.error('Couldn’t send the accounts.', { description: refusal?.code === 'not_available' ? 'This page can’t send them. Run gray-assistant accounts push on the relay’s machine.' : refusalText(refusal?.code ?? 'internal', refusal?.detail) });
+      toast.error('Couldn’t send the accounts.', { description: refusal?.code === 'not_available' ? 'This page can’t send them. Run gray-assistant accounts push on your machine.' : refusalText(refusal?.code ?? 'internal', refusal?.detail) });
     } finally {
       setSending(false);
     }
   }
   if (words.again) return <Page className="relay-ui-banner">
     <Notice tone="danger" role="alert" title={words.text} actions={<Button size="sm" loading={sending} onClick={() => void again()}>Send again</Button>}>
-      {words.detail ?? 'gray-assistant gave no reason. gray-assistant accounts push on the relay’s machine prints it.'}
+      {words.detail ?? 'gray-assistant gave no reason. gray-assistant accounts push on your machine prints it.'}
     </Notice>
   </Page>;
   return <Page className="relay-ui-banner relay-ui-banner--quiet">
@@ -188,7 +188,7 @@ function Unreachable({ error, onRetry }: { error: ApiError | null; onRetry: () =
       <Notice tone="danger" role="alert" actions={<Button size="sm" onClick={onRetry}>Try again</Button>}>
         {refusalText(error?.code ?? 'unreachable')}
       </Notice>
-      <CodeBlock language="bash" copyLabel="Copy command" description="Start it again on the relay’s machine:"
+      <CodeBlock language="bash" copyLabel="Copy command" description="Start it again on your machine:"
         code="gray-assistant ui" />
     </Stack>
   </Page>;

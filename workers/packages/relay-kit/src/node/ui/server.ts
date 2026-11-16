@@ -1004,7 +1004,7 @@ export async function createRelayUiHandler(options: UiHandlerOptions): Promise<U
     }
     const hostOk = origin !== null ? hostUrl(request.headers.host)?.host === new URL(origin).host : isLoopbackHostHeader(request.headers.host);
     if (!hostOk) {
-      send(response, 421, { "content-type": "text/plain; charset=utf-8" }, mode === "public" ? "gray-assistant's page answers on the relay's own origin only.\n" : "gray-assistant's page answers on 127.0.0.1 only.\n");
+      send(response, 421, { "content-type": "text/plain; charset=utf-8" }, mode === "public" ? "gray-assistant's page answers on your own origin only.\n" : "gray-assistant's page answers on 127.0.0.1 only.\n");
       return true;
     }
     const method = request.method ?? "GET";

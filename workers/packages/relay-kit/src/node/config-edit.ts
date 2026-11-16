@@ -62,15 +62,15 @@ export function editRelayConfig(path: string, member: string, value: unknown): C
   try {
     stat = lstatSync(absolute);
   } catch {
-    throw new RelayKitError("io", `no relay config at ${absolute}: pass --config <file>`);
+    throw new RelayKitError("io", `no config at ${absolute}: pass --config <file>`);
   }
   if (stat.isSymbolicLink() || !stat.isFile()) throw new RelayKitError("io", `${absolute} is not a regular file`);
-  const text = readFileText(absolute, "relay config", MAX_CONFIG_BYTES);
-  parseJsoncText(text, "relay config");
+  const text = readFileText(absolute, "config", MAX_CONFIG_BYTES);
+  parseJsoncText(text, "config");
   const edits = modify(text, jsonPath, value, { formattingOptions: { insertSpaces: true, tabSize: 2, eol: "\n" } });
   if (edits.length === 0) return { path: absolute, member, changed: false };
   const next = applyEdits(text, edits);
-  if (next.length > MAX_CONFIG_BYTES) throw new RelayKitError("usage", "the edited relay config is too large");
+  if (next.length > MAX_CONFIG_BYTES) throw new RelayKitError("usage", "the edited config is too large");
   // The whole document as the agent will read it; the refusal names the member, never its value.
   parseRelayConfigText(next, absolute);
 

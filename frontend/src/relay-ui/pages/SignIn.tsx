@@ -19,10 +19,10 @@ function promptFailure(error: unknown): string {
   if (error instanceof WebAuthnError) {
     if (error.code === 'ERROR_CEREMONY_ABORTED') return 'The passkey prompt was closed.';
     if (error.code === 'ERROR_INVALID_DOMAIN') return 'This browser refuses passkeys on this address.';
-    if (error.code === 'ERROR_AUTHENTICATOR_PREVIOUSLY_REGISTERED') return 'This device already holds a passkey for this relay.';
+    if (error.code === 'ERROR_AUTHENTICATOR_PREVIOUSLY_REGISTERED') return 'This device already holds a passkey for this deployment.';
   }
   if (error instanceof Error && error.name === 'NotAllowedError') return 'The passkey prompt was closed or timed out.';
-  if (error instanceof ApiError) return error.code === 'passkey_refused' ? 'gray-assistant didn’t accept that passkey. Is it one enrolled for this relay?' : refusalText(error.code);
+  if (error instanceof ApiError) return error.code === 'passkey_refused' ? 'gray-assistant didn’t accept that passkey. Is it one enrolled for this deployment?' : refusalText(error.code);
   return 'The passkey prompt failed.';
 }
 
@@ -49,7 +49,7 @@ function PasskeySignIn() {
   }
   return <Page size="narrow">
     <Stack gap={6}>
-      <PageHeader title="Sign in to gray-assistant" description="Your relay’s own page. Sign in with a passkey." />
+      <PageHeader title="Sign in to gray-assistant" description="The page gray-assistant serves on your machine. Sign in with a passkey." />
       {!supported && <Notice tone="warning" role="alert">This browser can’t use passkeys. Open the page in a current Chrome, Safari, Edge or Firefox.</Notice>}
       {failure && <Notice tone="danger" role="alert">{failure}</Notice>}
       <Panel>
@@ -59,7 +59,7 @@ function PasskeySignIn() {
         </Stack>
       </Panel>
       <CodeBlock language="bash" title="First time here?" level={2} copyLabel="Copy command"
-        description="Run this on the relay’s machine, then open the link it prints on this device."
+        description="Run this on your machine, then open the link it prints on this device."
         code="gray-assistant ui enroll" />
     </Stack>
   </Page>;
@@ -102,7 +102,7 @@ function CodeSignIn({ expired }: { expired: boolean }) {
         </form>
       </Panel>
       <CodeBlock language="bash" title="Get a new link" level={2} copyLabel="Copy command"
-        description="Run this on the relay’s machine."
+        description="Run this on your machine."
         code="gray-assistant ui link" />
       <Text size="support" tone="muted">From another computer, forward the port first (<InlineCode>ssh -L 7470:127.0.0.1:7470 your-relay-host</InlineCode>), then open the link there.</Text>
     </Stack>
@@ -149,7 +149,7 @@ export function EnrollPage({ code }: { code: string }) {
           </Stack>
         </form>
       </Panel>
-      <Notice tone="warning" title="Only from a link you made yourself">Add a passkey only if you ran gray-assistant ui enroll on the relay’s machine just now. A passkey added here can change your relay’s accounts.</Notice>
+      <Notice tone="warning" title="Only from a link you made yourself">Add a passkey only if you ran gray-assistant ui enroll on your machine just now. A passkey added here can change your accounts.</Notice>
     </Stack>
   </Page>;
 }

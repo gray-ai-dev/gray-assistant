@@ -42,7 +42,7 @@ FROM ${NODE_BASE}
 ARG GRAY_ASSISTANT_IMAGE=""
 
 LABEL org.opencontainers.image.title="gray-assistant" \
-      org.opencontainers.image.description="Relay agent: attestation, sealed credentials, the signed scheduler, the relay tunnel and the operator CLI"
+      org.opencontainers.image.description="gray-assistant: attestation, sealed credentials, the signed scheduler, the tunnel and the operator CLI"
 
 RUN groupadd --system --gid 10001 relay \
  && useradd --system --uid 10001 --gid 10001 --home-dir /var/lib/gray-assistant --shell /usr/sbin/nologin relay \

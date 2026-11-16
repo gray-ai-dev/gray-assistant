@@ -56,6 +56,7 @@ import { configArgumentFor, loadRelayConfigFile, type LoadedRelayConfig } from "
 import { isGroupOrOtherReadable, readPrivateFile } from "./files.ts";
 import { httpsRequestOnce } from "./https.ts";
 import { probePeerTunnel } from "./peer-tunnel.ts";
+import { failedChecksOf, failedChecksText } from "../daemon/failed-checks.ts";
 import { tunnelOriginOf, type TunnelOrigin } from "../lane-origin.ts";
 import { createPlainDaemonFetch } from "./release-list-source.ts";
 import { readControlView, type ControlView } from "./control.ts";
@@ -202,10 +203,10 @@ async function releasePendingText(
     return { accepted: true, text: atPairing.includes(composeHash) ? "accepted at pairing" : "accepted manually" };
   }
   if (config.daemon.releases.accept === "manual") {
-    return { accepted: false, text: "manual acceptance required (releases.accept is \"manual\"); this relay has no release contract and must pair again" };
+    return { accepted: false, text: "manual acceptance required (releases.accept is \"manual\"); this deployment has no release contract and must pair again" };
   }
   if (first === undefined) {
-    return { accepted: false, text: `pending: first seen now, acceptable in ${config.daemon.releases.delayDays}d from first sight (the relay's own clock)` };
+    return { accepted: false, text: `pending: first seen now, acceptable in ${config.daemon.releases.delayDays}d from first sight (this host's clock)` };
   }
   const at = first + config.daemon.releases.delayDays * DAY_MS;
   if (nowMs >= at) return { accepted: true, text: "accepted after the first-sight delay" };
@@ -223,7 +224,7 @@ export function tunnelRelayProblem(origin: string, stackBoot: StackBootResult | 
   if (tunnelOriginOf(origin) === null) return null;
   const attested = stackBoot !== null && stackBoot.ok && stackBoot.facts !== null ? stackBoot.facts.identity.relayId : null;
   if (attested === relayId) return null;
-  return `${origin}: the VM behind the tunnel names ${attested === null ? "no relay" : `relay ${attested}`}, not this relay (${relayId}); gray-assistant sends it nothing (attest_relay_mismatch)`;
+  return `${origin}: the VM behind the tunnel names ${attested === null ? "no deployment" : `deployment ${attested}`}, not this deployment (${relayId}); gray-assistant sends it nothing (attest_relay_mismatch)`;
 }
 
 async function checkOrigin(
@@ -236,6 +237,8 @@ async function checkOrigin(
   nowMs: number,
   ca: string | undefined,
   chainCheck: ((composeHash: Hex, osImageHash: Hex | null) => Promise<ChainCheckResult>) | null = null,
+  /** False with a collateral service of the caller's own (`pccs`): the `quote` check's words can carry its URL. */
+  quoteDetail = true,
 ): Promise<OriginCheck> {
   const nowSecs = BigInt(Math.floor(nowMs / 1000));
   if (release === null) {
@@ -273,7 +276,12 @@ async function checkOrigin(
     return { origin, ok: false, spkiSha256: null, composeHash: null, tlsSpki: null };
   }
   if (!result.ok) {
-    const stage = result.stage === "report" ? "the lane served no ACI report" : result.stage === "verification" ? "the report did not verify" : `verdict ${result.verdict}`;
+    // Which checks failed, by their ids and their own words (measurements and public values only): "did not verify"
+    // alone left a relay, and Gray, with nothing to act on (staging, 2026-11-16). The commands that refuse a VM that
+    // does not attest say the same pairs (`../daemon/failed-checks.ts`).
+    const failed = result.stage === "verification" ? failedChecksText(failedChecksOf(result.verification.checks, { quoteDetail })) : "";
+    const stage =
+      result.stage === "report" ? "the lane served no ACI report" : result.stage === "verification" ? `the report did not verify${failed === "" ? "" : ` (${failed})`}` : `verdict ${result.verdict}`;
     doctor.add(`origin:${origin}`, "fail", `${origin}: ${stage}`);
     return { origin, ok: false, spkiSha256: result.stage === "report" ? null : result.spkiSha256, composeHash: null, tlsSpki: null };
   }
@@ -302,16 +310,16 @@ async function checkOrigin(
       chain = null;
     }
     const verdict = chain === null
-      ? { status: "fail" as const, text: "the relay's contract could not be read" }
+      ? { status: "fail" as const, text: "your contract could not be read" }
       : chain.ok
-        ? { status: "ok" as const, text: `allowed by the relay's contract (block ${chain.block})` }
-        : { status: "fail" as const, text: `the relay's contract does not allow it (${chain.reason}: ${chain.detail})` };
+        ? { status: "ok" as const, text: `allowed by your contract (block ${chain.block})` }
+        : { status: "fail" as const, text: `your contract does not allow it (${chain.reason}: ${chain.detail})` };
     const boot = result.verification.stackBoot;
     const waits = boot !== null && boot.ok && boot.facts !== null && boot.facts.phase === "empty_slot";
     doctor.add(
       `origin:${origin}`,
       verdict.status,
-      `${origin}: attested, compose ${composeHash.slice(0, 16)}…, release ${verdict.text}${waits ? "; the VM waits for its first delivery (gray-assistant deliver, or gray-assistant login <account> --vendor <vendor> when the relay's only accounts are subscriptions)" : ""}`,
+      `${origin}: attested, compose ${composeHash.slice(0, 16)}…, release ${verdict.text}${waits ? "; the VM waits for its first delivery (gray-assistant deliver, or gray-assistant login <account> --vendor <vendor> when your only accounts sign in inside the VM)" : ""}`,
     );
     return { origin, ok: true, spkiSha256: result.spkiSha256, composeHash, tlsSpki: result.verification.tlsSpkiSha256 };
   }
@@ -342,14 +350,14 @@ function checkPairingReleases(doctor: Doctor, config: LoadedRelayConfig, release
   // The pairing's local list and its delay were the agent process's, which no kit runs any more; this line said
   // "later releases wait 7d" on every run and named a command that does not exist.
   if ((config.daemon.chain ?? null) !== null) {
-    doctor.add("release_pairing", "skip", "the relay's contract decides which Gray releases its VM runs (gray-assistant releases list shows them and your release delay); the pairing's own list is not used");
+    doctor.add("release_pairing", "skip", "your contract decides which Gray releases your VM runs (gray-assistant releases list shows them and your release delay); the pairing's own list is not used");
     return;
   }
   const hashes = config.daemon.releases.acceptedAtPairing;
   const pairing = config.daemon.pairing;
   if (hashes.length === 0) {
     if (pairing === null) return;
-    doctor.add("release_pairing", "warn", `the pairing at ${pairing.pairedAt} recorded no release of Gray's list (it could not be read then); this relay has no release contract and must pair again (the pairing line says how)`);
+    doctor.add("release_pairing", "warn", `the pairing at ${pairing.pairedAt} recorded no release of Gray's list (it could not be read then); this deployment has no release contract and must pair again (the pairing line says how)`);
     return;
   }
   const taken = new Set(controlView.control.acceptedAtPairing ?? []);
@@ -396,7 +404,7 @@ export async function checkPeerTunnel(doctor: { add(id: string, status: DoctorSt
     return false;
   }
   doctor.add(`entry:${origin}`, "ok", `Gray's entry ${entryHost} answers`);
-  doctor.add(`tunnel:${origin}`, "ok", `the entry opened a tunnel to relay ${tunnel.relayId}'s VM`);
+  doctor.add(`tunnel:${origin}`, "ok", `the entry opened a tunnel to deployment ${tunnel.relayId}'s VM`);
   return true;
 }
 
@@ -424,12 +432,12 @@ const HOST_CLOCK_LIMIT_MS = 5_000;
 export function clockVerdict(origin: string, skewMs: number, gray: GrayClock | null, refusedBeyondS: number): { readonly status: DoctorStatus; readonly message: string } {
   const seconds = (ms: number): string => (Math.abs(ms) / 1000).toFixed(1);
   const within = `nothing is refused for it: a delivery, a sign-in or a signed call is refused only when the two clocks are more than ${refusedBeyondS} s apart, and customers' requests do not depend on it`;
-  if (Math.abs(skewMs) <= CLOCK_SKEW_LIMIT_MS) return { status: "ok", message: `${origin}: relay clock − TEE clock = ${Math.round(skewMs)} ms (limit ±${CLOCK_SKEW_LIMIT_MS} ms)` };
+  if (Math.abs(skewMs) <= CLOCK_SKEW_LIMIT_MS) return { status: "ok", message: `${origin}: host clock − TEE clock = ${Math.round(skewMs)} ms (limit ±${CLOCK_SKEW_LIMIT_MS} ms)` };
   const past = Math.abs(skewMs) > refusedBeyondS * 1000;
   if (gray === null) {
     return {
       status: "fail",
-      message: `${origin}: relay clock − TEE clock = ${Math.round(skewMs)} ms (limit ±${CLOCK_SKEW_LIMIT_MS} ms), and Gray's clock could not be read to tell which side is off. Check this host's clock first (timedatectl status, or date -u against a clock you trust; turn NTP on: timedatectl set-ntp true). If this host is right, it is the VM's clock, not yours: nothing for you to do, and do not restart the VM for it. ${past ? `The two are more than ${refusedBeyondS} s apart, so the VM refuses this host's deliveries and sign-ins as stale until the clock that is off is set right` : `Until then ${within}`}`,
+      message: `${origin}: host clock − TEE clock = ${Math.round(skewMs)} ms (limit ±${CLOCK_SKEW_LIMIT_MS} ms), and Gray's clock could not be read to tell which side is off. Check this host's clock first (timedatectl status, or date -u against a clock you trust; turn NTP on: timedatectl set-ntp true). If this host is right, it is the VM's clock, not yours: nothing for you to do, and do not restart the VM for it. ${past ? `The two are more than ${refusedBeyondS} s apart, so the VM refuses this host's deliveries and sign-ins as stale until the clock that is off is set right` : `Until then ${within}`}`,
     };
   }
   // The VM's clock against Gray's, from the two samples this host took.
@@ -444,7 +452,7 @@ export function clockVerdict(origin: string, skewMs: number, gray: GrayClock | n
   const vmToo = Math.abs(vmAheadMs) > CLOCK_SKEW_LIMIT_MS ? ` The VM's clock is ${seconds(vmAheadMs)} s ${vmAheadMs > 0 ? "ahead of" : "behind"} Gray's as well; that one is not yours to set.` : "";
   return {
     status: "fail",
-    message: `${origin}: this host's clock is ${seconds(gray.hostAheadMs)} s ${gray.hostAheadMs > 0 ? "ahead of" : "behind"} Gray's (relay clock − TEE clock = ${Math.round(skewMs)} ms, limit ±${CLOCK_SKEW_LIMIT_MS} ms): set this host's clock right, then run doctor again. Turn NTP on (timedatectl set-ntp true; with chrony: chronyc makestep); in a VM, WSL or Docker Desktop, sync the machine under it. ${past ? `The two clocks are more than ${refusedBeyondS} s apart: the VM refuses this host's deliveries and sign-ins as stale until it is set` : `Until then ${within}`}.${vmToo}`,
+    message: `${origin}: this host's clock is ${seconds(gray.hostAheadMs)} s ${gray.hostAheadMs > 0 ? "ahead of" : "behind"} Gray's (host clock − TEE clock = ${Math.round(skewMs)} ms, limit ±${CLOCK_SKEW_LIMIT_MS} ms): set this host's clock right, then run doctor again. Turn NTP on (timedatectl set-ntp true; with chrony: chronyc makestep); in a VM, WSL or Docker Desktop, sync the machine under it. ${past ? `The two clocks are more than ${refusedBeyondS} s apart: the VM refuses this host's deliveries and sign-ins as stale until it is set` : `Until then ${within}`}.${vmToo}`,
   };
 }
 
@@ -636,15 +644,15 @@ function checkSchedulerApi(doctor: Doctor, config: LoadedRelayConfig, origins: r
     const replica = byOrigin.get(origin);
     const version = replica === undefined ? undefined : get(replica, "scheduler_api_version");
     if (typeof version === "number" || typeof version === "bigint") {
-      doctor.add(`scheduler_api:${origin}`, "ok", `${origin}: the TEE uses scheduler API version ${String(version)}; this relay-kit accepts ${accepted}`);
+      doctor.add(`scheduler_api:${origin}`, "ok", `${origin}: the TEE uses scheduler API version ${String(version)}; this gray-assistant accepts ${accepted}`);
     } else if (origin === stackOrigin) {
       doctor.add(
         `scheduler_api:${origin}`,
         "skip",
-        `${origin}: not applicable: on the relay-stack origin your software in the VM picks the account and the lane never calls this scheduler, so no version is recorded (stack_accounts and served requests show the stack's health)`,
+        `${origin}: not applicable: on the stack origin your software in the VM picks the account and the lane never calls this scheduler, so no version is recorded (stack_accounts and served requests show the stack's health)`,
       );
     } else {
-      doctor.add(`scheduler_api:${origin}`, "skip", `${origin}: no verified scheduler call recorded yet (gray-assistant run records the version the TEE uses); this relay-kit accepts ${accepted}`);
+      doctor.add(`scheduler_api:${origin}`, "skip", `${origin}: no verified scheduler call recorded: ${NO_AGENT_PROCESS}; this gray-assistant accepts ${accepted}`);
     }
   }
 }
@@ -701,7 +709,7 @@ function checkLaneRegistration(doctor: Doctor, config: LoadedRelayConfig, origin
   for (const origin of origins) {
     const replica = byOrigin.get(origin);
     if (replica === undefined) {
-      doctor.add(`lane_registration:${origin}`, "skip", `${origin}: no status recorded yet (gray-assistant run records whether the lane lists this relay)`);
+      doctor.add(`lane_registration:${origin}`, "skip", `${origin}: no status recorded: ${NO_AGENT_PROCESS}`);
       continue;
     }
     const reasons = get(replica, "reasons");
@@ -714,14 +722,21 @@ function checkLaneRegistration(doctor: Doctor, config: LoadedRelayConfig, origin
     doctor.add(
       `lane_registration:${origin}`,
       "fail",
-      `${origin}: the lane refuses this relay as unknown_relay (403): it does not list relay ${config.daemon.relayId}; check the registration with Gray (the agent retries every ${RELAY_UNKNOWN_RETRY_MS / 60_000} minutes${retry})`,
+      `${origin}: the lane refuses this deployment as unknown_relay (403): it does not list deployment ${config.daemon.relayId}; check the registration with Gray (the agent retries every ${RELAY_UNKNOWN_RETRY_MS / 60_000} minutes${retry})`,
     );
   }
 }
 
+/**
+ * Why a line that reads the agent process's status file finds nothing there: no command of this kit writes it. The
+ * agent process (`src/node/run.ts`) left the CLI in kit 1.6.10 and no kit starts it since 1.4.6, so no line names it.
+ * Reached only for a config without a `chain` member (a phase-2 config skips these lines with `phase2Idle`'s reason).
+ */
+const NO_AGENT_PROCESS = "this kit runs no agent process that records it, and a config without a chain member is from before phase 2: pair with gray-assistant init --pair (GUIDE section 3)";
+
 /** A pairing without a contract (no `chain` member): what `doctor` and `upgrade` say about it. */
 export const PHASE1_TEXT =
-  "this relay is still on phase 1 (its pairing made no release contract: the config has no chain member) and must pair again to phase 2; its VM cannot connect to Gray until then. Delete the relay's VM if it has one (the console's VM tab, Delete VM; the relay's settings stay), apply the relay-stack document with relay_stack.registry_user for a pairing code, and run the answer's pairing.command from the directory that holds this kit directory (relay-workspace): it pairs again with this relay-key.json (relay-stack.md section 10)";
+  "this deployment is still on phase 1 (its pairing made no release contract: the config has no chain member) and must pair again to phase 2; its VM cannot connect to Gray until then. Delete your VM if it has one (the console's VM tab, Delete VM; your settings stay), apply relay-stack.json with relay_stack.registry_user for a pairing code, and run the answer's pairing.command from the directory that holds this kit directory (relay-workspace): it pairs again with this relay-key.json (relay-stack.md section 10)";
 
 /**
  * Phase 2 with no agent on this host: a config with a `chain` and no fresh status snapshot (`agentRunning`). Returns the
@@ -787,11 +802,11 @@ async function checkPendingReleases(doctor: Doctor, options: DoctorOptions, rele
     }
   } catch (error) {
     const reason = error instanceof RelayKitError ? `${error.code}${error.detail === null ? "" : `: ${error.detail}`}` : "an RPC endpoint could not be read";
-    doctor.add("releases_pending", "warn", `the relay's contract could not be read (${reason}), so whether a release waits for your approval is not known; gray-assistant releases check <hash> reads one`);
+    doctor.add("releases_pending", "warn", `your contract could not be read (${reason}), so whether a release waits for your approval is not known; gray-assistant releases check <hash> reads one`);
     return;
   }
   if (answer.pending.length === 0) {
-    doctor.add("releases_pending", "ok", `no release of Gray's signed list waits for your approval on the relay's contract (block ${answer.block})`);
+    doctor.add("releases_pending", "ok", `no release of Gray's signed list waits for your approval on your contract (block ${answer.block})`);
     return;
   }
   const config = configArgumentFor(options.configPath);
@@ -800,7 +815,7 @@ async function checkPendingReleases(doctor: Doctor, options: DoctorOptions, rele
     const at = new Date(Number(state.effectiveAt) * 1000).toISOString();
     return `${state.kind === "compose" ? "compose" : "OS image"} ${state.hash} takes effect at ${at} unless you veto it: check it with \`gray-assistant releases check ${state.hash}${kind}${config}\`, let it in now with \`gray-assistant releases approve ${state.hash}${kind}${config}\``;
   });
-  doctor.add("releases_pending", "warn", `${answer.pending.length === 1 ? "1 release Gray proposed waits" : `${answer.pending.length} releases Gray proposed wait`} for your approval on the relay's contract (block ${answer.block}): ${each.join("; ")}`);
+  doctor.add("releases_pending", "warn", `${answer.pending.length === 1 ? "1 release Gray proposed waits" : `${answer.pending.length} releases Gray proposed wait`} for your approval on your contract (block ${answer.block}): ${each.join("; ")}`);
 }
 
 /** Run every check. It never throws for a failed check; only a programming error would escape. */
@@ -825,7 +840,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
   if (placeholder) {
     doctor.add("config", "fail", `the config is the init skeleton: replace relay_id and scheduler.public_url with Gray's registration values`);
   } else {
-    doctor.add("config", "ok", `config ${config.path}: relay ${config.daemon.relayId}, source ${config.source.kind}`);
+    doctor.add("config", "ok", `config ${config.path}: relay_id ${config.daemon.relayId}, source ${config.source.kind}`);
   }
 
   // K5-1: the placeholder is a FAIL line. K5-8: doctor still runs every check that does not need
@@ -838,13 +853,13 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
 
   // The key is needed for the scheduler echo and every origin check; a bad key stops those.
   let key: RelayKeyFile | null = null;
-  checkSecretFile(doctor, "key_permissions", config.daemon.keyPath, "relay key");
+  checkSecretFile(doctor, "key_permissions", config.daemon.keyPath, "deployment key");
   try {
-    const text = readPrivateFile(config.daemon.keyPath, "relay key", 64 * 1024);
+    const text = readPrivateFile(config.daemon.keyPath, "deployment key", 64 * 1024);
     key = await buildKeyFromText(text);
   } catch (error) {
     const code = error instanceof RelayKitError ? error.code : "io";
-    doctor.add("key_content", "fail", `relay key ${config.daemon.keyPath}: ${code}`);
+    doctor.add("key_content", "fail", `deployment key ${config.daemon.keyPath}: ${code}`);
   }
   // Gray's messages for the relay, read now: the answer's Date is Gray's clock, which the clock lines below compare
   // this host's with; the `messages` line itself is the run's last.
@@ -858,10 +873,17 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     checkSecretFile(doctor, "admin_token_permissions", config.daemon.scheduler.adminTokenFile, "admin token file");
   }
   if ((config.daemon.chain ?? null) !== null) await checkGuardianKey(doctor, options);
+  // What an older kit copied from Gray's answer, against what this kit knows (chain/trust.ts): release keys, chain, RPCs.
+  const trust = (await import("./release-control.ts")).configTrust(config);
+  doctor.add(
+    "trust",
+    trust.errors.length > 0 ? "fail" : trust.warnings.length > 0 ? "warn" : "ok",
+    trust.errors.length + trust.warnings.length === 0 ? "nothing in this config disagrees with the release keys, the chain and the DstackKms built into gray-assistant" : [...trust.errors, ...trust.warnings].join("; "),
+  );
   // S23: the relay-stack origin runs no policy module; a relay with no other origin needs no bundle.
   const policyPath = policyOrigins(config.daemon).length === 0 ? null : config.daemon.policyBundlePath;
   if (policyPath === null) {
-    doctor.add("policy_bundle", "skip", "no policy bundle needed: the only lane origin is the relay-stack app (stack.lane_origin), which runs no policy module");
+    doctor.add("policy_bundle", "skip", "no policy bundle needed: the only lane origin is the stack app (stack.lane_origin), which runs no policy module");
   } else {
     try {
       const stat = statSync(policyPath);
@@ -930,7 +952,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
           if (alias !== undefined) {
             doctor.add(`stack_account:${planned.accountId}`, "ok", `source account ${JSON.stringify(account.sourceId)} (${account.vendor}) is ${alias.panelId} in the panel`);
           } else if (aliases === null) {
-            doctor.add(`stack_account:${planned.accountId}`, "fail", `source account ${JSON.stringify(account.sourceId)} (${account.vendor}) is not sealed to the relay-stack origin: ${accountAliasesPath(config.daemon.stateFile)} does not read, so the agent gives it no panel id; restore or remove the file (removing it gives the accounts new ids)`);
+            doctor.add(`stack_account:${planned.accountId}`, "fail", `source account ${JSON.stringify(account.sourceId)} (${account.vendor}) is not sealed to the stack origin: ${accountAliasesPath(config.daemon.stateFile)} does not read, so the agent gives it no panel id; restore or remove the file (removing it gives the accounts new ids)`);
           } else {
             doctor.add(`stack_account:${planned.accountId}`, "skip", `source account ${JSON.stringify(account.sourceId)} (${account.vendor}) gets a plain panel id (${ACCOUNT_ALIAS_VENDOR_WORDS[account.vendor]}-<n>) when the agent next reads the source; gray-assistant accounts lists it then`);
           }
@@ -1045,15 +1067,15 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
       continue;
     }
     if (key === null || quoteVerifier === null) {
-      doctor.add(`origin:${origin}`, "skip", `${origin}: the relay key or quote verifier is unavailable; not attested`);
+      doctor.add(`origin:${origin}`, "skip", `${origin}: the deployment key or quote verifier is unavailable; not attested`);
       if (tunnel !== null) doctor.add(`vm_pin:${origin}`, "skip", "not checked: the VM was not attested");
       continue;
     }
-    const checked = await checkOrigin(doctor, config, release, quoteVerifier, controlView, origin, nowMs, options.ca, chainCheckOf(options, config));
+    const checked = await checkOrigin(doctor, config, release, quoteVerifier, controlView, origin, nowMs, options.ca, chainCheckOf(options, config), options.pccs === undefined);
     const pinned = checked.ok ? await checkClock(doctor, origin, checked.spkiSha256, { hostNow, gray: messages.gray, refusedBeyondS: (config.daemon.chain ?? null) !== null ? 300 : 60 }, options.ca) : null;
     if (tunnel === null) continue;
     if (!checked.ok) {
-      doctor.add(`vm_pin:${origin}`, "fail", "the TLS key inside the tunnel is not bound by a valid attestation report of this relay's VM; gray-assistant sends it nothing");
+      doctor.add(`vm_pin:${origin}`, "fail", "the TLS key inside the tunnel is not bound by a valid attestation report of your VM; gray-assistant sends it nothing");
     } else if (pinned !== null) {
       const why = pinned.code === "tls_spki_mismatch" ? "the VM's TLS key changed since its attestation (a reboot?); run doctor again" : pinned.message;
       doctor.add(`vm_pin:${origin}`, "fail", `a request pinned to the attested TLS key failed: ${why}`);
@@ -1088,7 +1110,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
     if (key !== null) {
       await checkSchedulerEcho(doctor, config, key, nowMs, options.ca);
     } else {
-      doctor.add("scheduler_echo", "skip", "the relay key is unavailable; the echo was not signed");
+      doctor.add("scheduler_echo", "skip", "the deployment key is unavailable; the echo was not signed");
     }
     checkSchedulerApi(doctor, config, origins, stackLaneOrigin(config, controlView));
     checkLaneRegistration(doctor, config, origins);
@@ -1109,13 +1131,13 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorReport> {
  */
 async function readMessages(options: DoctorOptions, config: LoadedRelayConfig, key: RelayKeyFile | null, nowMs: number, hostNow: () => number): Promise<{ readonly line: { readonly status: DoctorStatus; readonly message: string } | null; readonly gray: GrayClock | null }> {
   if (config.daemon.stack === null) return { line: null, gray: null };
-  if (key === null) return { line: { status: "skip", message: "the relay key is unavailable, so Gray's messages for the relay were not read" }, gray: null };
+  if (key === null) return { line: { status: "skip", message: "the deployment key is unavailable, so Gray's messages were not read" }, gray: null };
   const { readKitMessages, unreadSummary } = await import("./messages.ts");
   const read = await (options.messages ?? ((clock) => readKitMessages({ config, seed: key.seed, nowMs }, clock)))(hostNow);
   const gray = read.grayDateMs === null || read.receivedMs === null ? null : { hostAheadMs: read.receivedMs - read.grayDateMs };
-  if (!read.ok) return { line: { status: "skip", message: `Gray's messages for the relay could not be read (${read.reason}); \`gray-assistant messages\` reads them, and the relay's Messages page in Gray's console lists them` }, gray };
-  if (read.answer.unread === 0) return { line: { status: "ok", message: "no unread message from Gray for the relay" }, gray };
-  return { line: { status: "warn", message: `${unreadSummary(read.answer)}: run \`gray-assistant messages\`, tell the relay's operator what they say, then \`gray-assistant messages --seen\`` }, gray };
+  if (!read.ok) return { line: { status: "skip", message: `Gray's messages could not be read (${read.reason}); \`gray-assistant messages\` reads them, and the Messages page in Gray's console lists them` }, gray };
+  if (read.answer.unread === 0) return { line: { status: "ok", message: "no unread message from Gray" }, gray };
+  return { line: { status: "warn", message: `${unreadSummary(read.answer)}: run \`gray-assistant messages\`, tell the operator what they say, then \`gray-assistant messages --seen\`` }, gray };
 }
 
 /** The SHA-256 of the SPKI the public name presents from here, through DNS and the rendezvous; rejects when TLS fails. */
@@ -1153,12 +1175,12 @@ async function checkTunnel(doctor: Doctor, config: LoadedRelayConfig, nowMs: num
   const snapshot = readDaemonStatusFile(config.daemon.statusFile);
   const status = snapshot === null ? undefined : get(snapshot, "tunnel");
   if (!isObject(status as never)) {
-    doctor.add("tunnel", "skip", `${tunnel.name}: no status recorded yet (gray-assistant run keeps the tunnel to ${tunnel.server.host}:${tunnel.server.port} and records it in its status file)`);
+    doctor.add("tunnel", "skip", `${tunnel.name}: no status recorded: ${NO_AGENT_PROCESS}`);
   } else {
     const state = get(status as JsonObject, "state");
     const since = get(status as JsonObject, "since_ms");
     const sinceText = typeof since === "number" ? ` since ${new Date(since).toISOString()}` : "";
-    if (state === "connected") doctor.add("tunnel", "ok", `${tunnel.name}: connected to ${tunnel.server.host}:${tunnel.server.port}${sinceText}; the relay needs no public address`);
+    if (state === "connected") doctor.add("tunnel", "ok", `${tunnel.name}: connected to ${tunnel.server.host}:${tunnel.server.port}${sinceText}; this host needs no public address`);
     else doctor.add("tunnel", "fail", `${tunnel.name}: down${sinceText}; the rendezvous ${tunnel.server.host}:${tunnel.server.port} does not hold the name (see the tunnel_* and frpc: lines of the agent's log)`);
   }
   const served = await probeServedCertificate(tunnel).catch(() => null);
@@ -1171,8 +1193,8 @@ async function checkTunnel(doctor: Doctor, config: LoadedRelayConfig, nowMs: num
   if (served !== null) {
     try {
       const presented = await publicSpkiSha256(tunnel, ca);
-      if (presented === served.spkiSha256) doctor.add("tunnel_public", "ok", `https://${tunnel.name}: answers from here with this relay's own key`);
-      else doctor.add("tunnel_public", "fail", `https://${tunnel.name}: answers from here with key ${presented.slice(0, 16)}…, not this relay's (${served.spkiSha256.slice(0, 16)}…): something between the internet and this relay holds another certificate for the name; do not use the page through the tunnel`);
+      if (presented === served.spkiSha256) doctor.add("tunnel_public", "ok", `https://${tunnel.name}: answers from here with this deployment's own key`);
+      else doctor.add("tunnel_public", "fail", `https://${tunnel.name}: answers from here with key ${presented.slice(0, 16)}…, not this deployment's (${served.spkiSha256.slice(0, 16)}…): something between the internet and this host holds another certificate for the name; do not use the page through the tunnel`);
     } catch (error) {
       doctor.add("tunnel_public", "fail", `https://${tunnel.name}: unreachable from here (${error instanceof Error && "code" in error ? String((error as { code: unknown }).code) : "io"})`);
     }
@@ -1185,7 +1207,7 @@ async function checkTunnel(doctor: Doctor, config: LoadedRelayConfig, nowMs: num
   // warning: the first check starts a minute after gray-assistant does, and a slow CT source can take a few minutes more.
   const firstCheck = `${tunnel.name}: the CT monitor has not finished its first check (it starts a minute after gray-assistant starts and can take a few minutes while a CT source is slow; then every ${pollMinutes} min)`;
   if (!isObject(ct as never)) {
-    doctor.add("tunnel_ct", "skip", firstCheck);
+    doctor.add("tunnel_ct", "skip", isObject(status as never) ? firstCheck : `${tunnel.name}: no CT check recorded: ${NO_AGENT_PROCESS}`);
     return;
   }
   const ctState = get(ct as JsonObject, "state");
@@ -1196,9 +1218,9 @@ async function checkTunnel(doctor: Doctor, config: LoadedRelayConfig, nowMs: num
       .filter((f) => isObject(f))
       .map((f) => `${String(get(f as JsonObject, "issuer"))} key ${String(get(f as JsonObject, "pubkey_sha256")).slice(0, 16)}… (${String(get(f as JsonObject, "source"))} ${String(get(f as JsonObject, "id"))})`)
       .join("; ");
-    doctor.add("tunnel_ct", "fail", `${tunnel.name}: CT lists a certificate whose key this relay never served: ${listed}; see docs on the tunnel's trust, then gray-assistant tunnel ack <cert_sha256>`);
+    doctor.add("tunnel_ct", "fail", `${tunnel.name}: CT lists a certificate whose key this deployment never served: ${listed}; see docs/relay-tunnel.md on the tunnel's trust`);
   } else if (ctState === "ok") {
-    doctor.add("tunnel_ct", "ok", `${tunnel.name}: every certificate CT lists for the name has this relay's key (${tunnel.ct.sources.join(", ")})`);
+    doctor.add("tunnel_ct", "ok", `${tunnel.name}: every certificate CT lists for the name has this deployment's key (${tunnel.ct.sources.join(", ")})`);
   } else if (typeof checkedMs !== "number") {
     doctor.add("tunnel_ct", "skip", firstCheck);
   } else {
@@ -1214,13 +1236,13 @@ async function checkTunnel(doctor: Doctor, config: LoadedRelayConfig, nowMs: num
 function checkAgentStatus(doctor: Doctor, config: LoadedRelayConfig, nowMs: number): void {
   const stack = config.daemon.stack;
   if (stack === null) {
-    doctor.add("agent_status", "skip", "not configured: only a relay stack (a stack section) reports the agent's status to Gray");
+    doctor.add("agent_status", "skip", "not configured: only a config with a stack section reports the agent's status to Gray");
     return;
   }
   const snapshot = readDaemonStatusFile(config.daemon.statusFile);
   const value = snapshot === null ? undefined : get(snapshot, "agent_status");
   if (!isObject(value as never)) {
-    doctor.add("agent_status", "skip", `no report recorded yet (gray-assistant run reports the agent's status to ${stack.reportOrigin} and records it in its status file)`);
+    doctor.add("agent_status", "skip", `no report recorded: ${NO_AGENT_PROCESS}`);
     return;
   }
   const verdict = agentStatusVerdict(value as JsonObject, nowMs);
@@ -1260,12 +1282,12 @@ export function stackInstanceLine(
   const tunnel = live === null ? null : tunnelOriginOf(live.lane_origin as string);
   const otherRelay =
     live !== null && tunnel !== null && tunnel.relayId !== relayId
-      ? `Gray names app ${live.app_id} at ${live.lane_origin}, the entry's tunnel to relay ${tunnel.relayId}'s VM, not this relay's (${relayId}): gray-assistant refuses it (lane_instance_tunnel_other_relay); ask Gray to correct the relay's lane instance`
+      ? `Gray names app ${live.app_id} at ${live.lane_origin}, the entry's tunnel to deployment ${tunnel.relayId}'s VM, not this deployment's (${relayId}): gray-assistant refuses it (lane_instance_tunnel_other_relay); ask Gray to correct your lane instance`
       : null;
   if (adopted === null) {
     if (otherRelay !== null) return { status: "fail", message: `stack instance: none adopted; ${otherRelay}` };
     return live === null
-      ? { status: "skip", message: "stack instance: waiting for the VM's quote (Gray names no running VM for this relay yet; Deploy it in the panel)" }
+      ? { status: "skip", message: "stack instance: waiting for the VM's quote (Gray names no running VM for this deployment yet; Deploy it in the panel)" }
       : { status: "warn", message: `stack instance: waiting for the VM's quote (Gray names app ${live.app_id} at ${live.lane_origin}, ${live.deployment}; it is adopted when that VM asks for its pull token)` };
   }
   const text = `stack instance: ${adopted.appId} at ${adopted.laneOrigin} (from Gray, adopted ${new Date(adopted.adoptedMs).toISOString()})`;
@@ -1368,9 +1390,9 @@ async function checkStack(doctor: Doctor, config: LoadedRelayConfig, key: RelayK
     doctor.add("stack_release_status", "skip", idle);
     return;
   } else if (stackOrigin === null) {
-    doctor.add("stack_accounts", "skip", "no stack instance adopted yet, so nothing is sealed to the relay-stack app (the stack_instance line)");
+    doctor.add("stack_accounts", "skip", "no stack instance adopted yet, so nothing is sealed to the stack app (the stack_instance line)");
   } else if (!Array.isArray(sealed)) {
-    doctor.add("stack_accounts", "skip", `${stackOrigin}: no status recorded yet (gray-assistant run lists the account ids it sealed to the relay-stack origin)`);
+    doctor.add("stack_accounts", "skip", `${stackOrigin}: no status recorded: ${NO_AGENT_PROCESS}`);
   } else if (Array.isArray(refused) && refused.length > 0) {
     doctor.add("stack_accounts", "fail", `${stackOrigin}: ${refused.length} account(s) not sealed (lane ids ${refused.join(", ")}; the stack_account lines name them): ${STACK_ACCOUNT_ID_RULE}; sealed: ${sealed.length === 0 ? "none" : sealed.join(", ")}`);
   } else if (sealed.length === 0) {
@@ -1401,10 +1423,10 @@ async function checkStack(doctor: Doctor, config: LoadedRelayConfig, key: RelayK
       doctor.add("stack_challenge", "fail", `${stack.tokenUrl}: the pull-token challenge answered ${response.status}; check the proxy forwards /v1/pull-token/* to the agent`);
     }
   } catch (error) {
-    doctor.add("stack_challenge", "fail", `${stack.tokenUrl}: unreachable (${error instanceof RelayKitError ? error.code : "io"}); a CVM of this relay cannot boot`);
+    doctor.add("stack_challenge", "fail", `${stack.tokenUrl}: unreachable (${error instanceof RelayKitError ? error.code : "io"}); a CVM of this deployment cannot boot`);
   }
   if (key === null) {
-    doctor.add("stack_release_status", "skip", "the relay key is unavailable; the release status's signature was not checked");
+    doctor.add("stack_release_status", "skip", "the deployment key is unavailable; the release status's signature was not checked");
     return;
   }
   try {
@@ -1432,7 +1454,7 @@ async function checkStack(doctor: Doctor, config: LoadedRelayConfig, key: RelayK
       return;
     }
     const count = (member: string) => (Array.isArray(verified.status[member]) ? (verified.status[member] as unknown[]).length : 0);
-    doctor.add("stack_release_status", "ok", `${stack.tokenUrl}: the release status is signed by the relay key (${count("releases")} release(s), ${count("os_images")} OS image(s))`);
+    doctor.add("stack_release_status", "ok", `${stack.tokenUrl}: the release status is signed by the deployment key (${count("releases")} release(s), ${count("os_images")} OS image(s))`);
   } catch (error) {
     doctor.add("stack_release_status", "fail", `${stack.tokenUrl}: unreachable (${error instanceof RelayKitError ? error.code : "io"})`);
   }

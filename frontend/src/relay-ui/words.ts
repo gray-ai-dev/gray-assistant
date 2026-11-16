@@ -20,16 +20,16 @@ export function credentialLabel(vendor: Vendor, type: CredentialType): string {
   if (type === 'sign_in') return 'Signs in inside the VM';
   if (type === 'password') return 'Password sign-in inside the VM';
   if (type === 'api_key') return 'API key';
-  return vendor === 'anthropic' ? 'Subscription token' : 'Access token';
+  return vendor === 'anthropic' ? 'Sign-in token' : 'Access token';
 }
 
 /** What the key field expects, for its hint. */
 export function keyHint(vendor: Vendor, type: CredentialType): string {
   if (vendor === 'anthropic' && type === 'api_key') return 'Starts with sk-ant-api03-.';
-  if (vendor === 'anthropic') return 'A Claude subscription token: starts with sk-ant-oat01-.';
+  if (vendor === 'anthropic') return 'A sign-in token: starts with sk-ant-oat01-.';
   if (vendor === 'openai') return 'Starts with sk- (a project key, sk-proj-, works too). Admin keys are refused.';
-  if (isCompatibleVendor(vendor)) return `A ${VENDOR_LABEL[vendor]} pay-as-you-go API key for this region's host. A coding-plan key is not for resale.`;
-  return 'A ChatGPT access token (a JWT). It can’t refresh itself.';
+  if (isCompatibleVendor(vendor)) return `A ${VENDOR_LABEL[vendor]} pay-as-you-go API key for this region's host, not a coding-plan key.`;
+  return 'An access token (a JWT). It can’t refresh itself.';
 }
 
 export type KeyKind = 'anthropic_api_key' | 'anthropic_subscription' | 'openai_api_key' | 'access_token' | 'admin_key' | 'vendor_api_key' | 'unknown';
@@ -43,7 +43,7 @@ export function recognizeKey(value: string): { readonly kind: KeyKind; readonly 
   if (key === '') return null;
   if (/^sk-ant-admin/.test(key) || /^sk-admin-/.test(key)) return { kind: 'admin_key', label: 'Looks like an admin key, which is refused' };
   if (/^sk-ant-api\d\d-/.test(key)) return { kind: 'anthropic_api_key', label: 'Looks like an Anthropic API key' };
-  if (/^sk-ant-oat\d\d-/.test(key)) return { kind: 'anthropic_subscription', label: 'Looks like a Claude subscription token' };
+  if (/^sk-ant-oat\d\d-/.test(key)) return { kind: 'anthropic_subscription', label: 'Looks like a sign-in token' };
   if (key.startsWith('sk-')) return { kind: 'openai_api_key', label: 'Looks like an OpenAI API key' };
   if (key.split('.').length === 3 && key.length > 40) return { kind: 'access_token', label: 'Looks like an access token' };
   return { kind: 'unknown', label: 'Not a key format gray-assistant knows' };
@@ -102,7 +102,7 @@ export function ctAlertText(tunnel: RelayInfo['tunnel']): { title: string; detai
   const n = tunnel.ct.findings;
   return {
     title: `${n === 1 ? 'A certificate' : `${n} certificates`} for ${tunnel.name} that gray-assistant did not obtain`,
-    detail: 'Certificate Transparency logs show it, so someone else may be able to answer on your relay’s name. gray-assistant tunnel status on the relay’s machine lists each one; once you have explained one, gray-assistant tunnel ack <sha256> clears it.',
+    detail: 'Certificate Transparency logs show it, so someone else may be able to answer on your deployment’s name. gray-assistant tunnel status on your machine lists each one; once you have explained one, gray-assistant tunnel ack <sha256> clears it.',
   };
 }
 
@@ -130,7 +130,7 @@ const REFUSALS: Record<string, string> = {
   csrf: 'This page is out of date. Reload it and try again.',
   cross_site: 'gray-assistant refused a request that didn’t come from this page.',
   source_read_only: 'accounts.json can’t be changed from here: its folder is read-only for gray-assistant.',
-  source_not_file: 'Accounts come from your relay software, not from accounts.json.',
+  source_not_file: 'Accounts come from your software, not from accounts.json.',
   source_unreadable: 'accounts.json can’t be read as it is. Fix it first.',
   refused_by_source: 'gray-assistant would refuse accounts.json with this change.',
   account_not_found: 'That account isn’t in accounts.json any more.',
@@ -142,7 +142,7 @@ const REFUSALS: Record<string, string> = {
   enroll_link_invalid: 'This enrolment link has been used or has expired.',
   ceremony_expired: 'The passkey prompt took too long. Try again.',
   rate_limited: 'Too many tries. Wait a minute and try again.',
-  not_available: 'This gray-assistant page can’t do that. Use the command on the relay’s machine.',
+  not_available: 'This gray-assistant page can’t do that. Use the command on your machine.',
   sign_in_busy: 'Four sign-ins are under way already. Finish or cancel one first.',
   sign_in_no_input: 'This sign-in takes nothing now. If it ended, start it again.',
   sign_in_unknown: 'That sign-in ended. Start it again.',
@@ -197,7 +197,7 @@ export function fieldError(field: string, code: string, detail?: string | null):
     return code === 'taken' ? 'Another proxy has this ID.' : 'That proxy isn’t in the list any more.';
   }
   if (field === 'account_ids') return 'One of these accounts isn’t in accounts.json any more.';
-  if (field === 'vendor') return code === 'no_sign_in' ? 'This vendor has no subscription to sign in. Add its API key instead.' : code === 'no_api_key' ? 'This vendor takes no API key. Add it as a subscription.' : 'gray-assistant doesn’t know this vendor.';
+  if (field === 'vendor') return code === 'no_sign_in' ? 'This vendor has no account sign-in. Add its API key instead.' : code === 'no_api_key' ? 'This vendor takes no API key. Add it with account sign-in.' : 'gray-assistant doesn’t know this vendor.';
   if (field === 'text') return 'Paste the code, or the whole address the browser ended on.';
   if (field === 'code') return 'That code didn’t work: it was used, it expired, or a character is missing.';
   return 'Check this value.';
@@ -215,9 +215,9 @@ export function signsIn(type: CredentialType): boolean {
 export const SUBSCRIPTION_VENDORS: readonly Vendor[] = ['anthropic', 'chatgpt_codex'];
 export const KEY_VENDORS: readonly Vendor[] = VENDORS.filter(vendor => CREDENTIAL_CHOICES[vendor].includes('api_key'));
 
-/** The account's kind in a word or two: "Subscription", "API key", "Subscription token". */
+/** The account's kind in a word or two: "Account sign-in", "API key", "Sign-in token". */
 export function kindPhrase(account: Pick<Account, 'vendor' | 'credential_type'>): string {
-  return signsIn(account.credential_type) ? 'Subscription' : credentialLabel(account.vendor, account.credential_type);
+  return signsIn(account.credential_type) ? 'Account sign-in' : credentialLabel(account.vendor, account.credential_type);
 }
 
 /** A proxy's address without its user name or password: "socks5://203.0.113.9:1080". */

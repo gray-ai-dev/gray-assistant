@@ -736,9 +736,9 @@ export function normalizeHttpsOrigin(text: string): string {
   try {
     tunnel = tunnelOriginFromUrl(url);
   } catch (error) {
-    throw new RelayKitError("usage", `the lane origin's tunnel path is invalid: ${error instanceof Error ? error.message : "not a relay id"}`);
+    throw new RelayKitError("usage", `the lane origin's tunnel path is invalid: ${error instanceof Error ? error.message : "not a relay_id"}`);
   }
   if (tunnel !== null) return tunnel.origin;
-  if (url.pathname !== "/" && url.pathname !== "") throw new RelayKitError("usage", `the lane origin must not carry a path other than ${PEER_TUNNEL_PATH}<relay>`);
+  if (url.pathname !== "/" && url.pathname !== "") throw new RelayKitError("usage", `the lane origin must not carry a path other than ${PEER_TUNNEL_PATH}<relay_id>`);
   return url.origin;
 }

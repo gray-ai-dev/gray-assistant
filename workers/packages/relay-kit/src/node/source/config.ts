@@ -159,8 +159,8 @@ function selectionOf(raw: z.infer<typeof sourceSelectSchema> | undefined, kind: 
  * the same two ways.
  */
 export const RETIRED_CLIPROXYAPI_SOURCE =
-  'source.kind "cliproxyapi" was retired in gray-assistant 1.6.8: hand the accounts over as any other software does, ' +
-  'in an accounts.json (kind "file") or over your two read-only account routes (kind "http"); a Claude or Codex subscription ' +
+  'source.kind "cliproxyapi" was retired in gray-assistant 1.6.8: hand the accounts over ' +
+  'in an accounts.json (kind "file") or over your two read-only account routes (kind "http"); an account that signs in ' +
   'is added and signed in inside the VM with `gray-assistant login <account> --vendor <anthropic|chatgpt_codex>`. relay-stack.md section 7 has both';
 
 /** Parse and resolve the `source` section. Refusals name a member path, never a value. */

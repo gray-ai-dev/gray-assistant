@@ -3,12 +3,44 @@
  * (`./ui/api.ts`): judge an id against the current signed release list, then write `control.json` under its lock
  * (`./control.ts`). Nothing here prints; each caller words the outcome its own way.
  */
+import { bytesToLowerHex } from "@gray/attest";
+import { configTrustProblems } from "../chain/trust.ts";
 import type { RelayDaemonConfig } from "../daemon/config.ts";
 import { RelayKitError } from "../errors.ts";
 import { acceptReleaseState, readFirstSight, rejectReleaseState, unrejectReleaseState, type ControlView } from "./control.ts";
 
-/** The signed list `releases` judges ids against; a list that cannot be read is one usage-free refusal. */
-export async function releaseListForCommand(config: { readonly daemon: Pick<RelayDaemonConfig, "lane"> }, nowMs: number) {
+/** The members `configTrust` reads: the list's keys, and the chain and pairing when the config has them. */
+type TrustedDaemon = Pick<RelayDaemonConfig, "lane"> & { readonly chain?: RelayDaemonConfig["chain"]; readonly pairing?: RelayDaemonConfig["pairing"] };
+
+/**
+ * The config's release keys, chain and `pairing.gray` against what the kit knows without Gray (`../chain/trust.ts`): a
+ * kit upgraded from one that copied Gray's answer keeps those values, so they are checked on every read (review of
+ * 2026-11-17).
+ */
+export function configTrust(config: { readonly daemon: TrustedDaemon }): { readonly errors: readonly string[]; readonly warnings: readonly string[] } {
+  const daemon = config.daemon;
+  const chain = daemon.chain ?? null;
+  return configTrustProblems({
+    gray: daemon.pairing?.gray ?? null,
+    releasePublicKey: bytesToLowerHex(daemon.lane.releasePublicKey),
+    releaseFreshnessPublicKey: daemon.lane.releaseFreshness === null ? null : bytesToLowerHex(daemon.lane.releaseFreshness.publicKey),
+    chain: chain === null ? null : { chainId: chain.chainId, dstackKms: chain.dstackKms, rpc: chain.rpc },
+  });
+}
+
+/** `configTrust`'s errors as one refusal; nothing when there are none. */
+export function assertConfigTrusted(config: { readonly daemon: TrustedDaemon }): void {
+  const { errors } = configTrust(config);
+  if (errors.length > 0) throw new RelayKitError("usage", `this config disagrees with what gray-assistant knows of Gray and Base: ${errors.join("; ")}`);
+}
+
+/**
+ * The signed list `releases` judges ids against; a list that cannot be read is one usage-free refusal. Every command
+ * that trusts the list (`deliver` before it seals anything, `releases check`, `debug`) reads it here, so a config whose
+ * keys or chain disagree with the kit's (`assertConfigTrusted`) is refused before any of them uses it.
+ */
+export async function releaseListForCommand(config: { readonly daemon: TrustedDaemon }, nowMs: number) {
+  assertConfigTrusted(config);
   const { fetchReleaseList, ReleaseListError } = await import("../daemon/releases.ts");
   const { createPlainDaemonFetch } = await import("./release-list-source.ts");
   try {

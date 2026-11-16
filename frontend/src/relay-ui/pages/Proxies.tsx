@@ -42,7 +42,7 @@ export function ProxiesPage() {
       note(proxy.id, `${uses(proxy.used_by.length)} ${proxy.used_by.length === 1 ? 'leaves' : 'leave'} through it. Move ${proxy.used_by.length === 1 ? 'it' : 'them'} to another proxy first.`);
       return;
     }
-    if (!await confirm({ title: `Remove ${proxy.id}?`, description: 'gray-assistant deletes its address and password from the relay’s machine. No account uses it.', confirmLabel: 'Remove proxy', tone: 'danger' })) return;
+    if (!await confirm({ title: `Remove ${proxy.id}?`, description: 'gray-assistant deletes its address and password from your machine. No account uses it.', confirmLabel: 'Remove proxy', tone: 'danger' })) return;
     setBusy(proxy.id);
     note(proxy.id, null);
     try {

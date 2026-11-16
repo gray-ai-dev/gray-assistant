@@ -30,6 +30,7 @@ import { bytesToLowerHex, ed25519PublicKey } from "@gray/attest";
 import { get, isObject, parseStrictBytes, toJsonString, type Json, type JsonObject } from "@gray/json";
 import { debugReplyKey, debugRequestValue, openDebugAnswer, RELAY_DEBUG_MAX_SKEW_SECONDS, RELAY_DEBUG_PATH, RELAY_DEBUG_RECORD_MAX_BYTES, RELAY_DEBUG_REQUEST_ID_PATTERN, type RelayDebugMeta } from "@gray/relay-connector";
 import { bootRowsOf, STACK_BOOTS_PATH } from "../daemon/daemon.ts";
+import { failedChecksClause, failedChecksJson, type FailedChecks } from "../daemon/failed-checks.ts";
 import { attestationMismatch, stackBootDecision } from "../daemon/stack-boot.ts";
 import { DaemonTransportError, type DaemonAttestResult, type DaemonFetch, type DaemonHttpResponse, type StackIssueRecord } from "../daemon/types.ts";
 import { RelayKitError } from "../errors.ts";
@@ -79,7 +80,7 @@ export function checkDebugRequestId(id: string): void {
 }
 
 /** The stack VM's origin and, for an adopted instance, the binding its quote must prove (P12). */
-export function debugStackVm(config: LoadedRelayConfig, command = "`gray-assistant debug get` is for a relay-stack lane, whose VM holds the records"): { readonly origin: string; readonly instance?: LaneBinding } {
+export function debugStackVm(config: LoadedRelayConfig, command = "`gray-assistant debug get` is for a deployment's lane, whose VM holds the records"): { readonly origin: string; readonly instance?: LaneBinding } {
   const stack = config.daemon.stack;
   if (stack === null) throw new RelayKitError("usage", `the config has no \`stack\` section: ${command}`);
   // The config's stack app is attested against its `lane.instances` entry, as the agent does.
@@ -128,13 +129,13 @@ function refusalMessage(status: number, code: string | null, relayId: string): {
     case "debug_record_not_kept":
       return { code, message: "the customer authorized this request, but the VM no longer held it then (debug_record_not_kept): over an hour old, pushed out by newer requests, or the VM restarted" };
     case "debug_unsupported":
-      return { code, message: "this stack VM holds no debug records (debug_unsupported): its boot measured no relay key it could read" };
+      return { code, message: "this stack VM holds no debug records (debug_unsupported): its boot measured no deployment key it could read" };
     case "request_stale":
       return { code, message: `the VM refused the request as stale (request_stale): this host's clock is more than ${RELAY_DEBUG_MAX_SKEW_SECONDS} s from the VM's; set it right (NTP) and try again` };
     case "bad_signature":
-      return { code, message: "the VM did not accept the request's signature (bad_signature): the config's relay key is not the one the VM booted with" };
+      return { code, message: "the VM did not accept the request's signature (bad_signature): the config's deployment key is not the one the VM booted with" };
     case "unknown_relay":
-      return { code, message: `the VM serves no relay ${relayId} (unknown_relay): the config's relay_id is not the one the VM booted with` };
+      return { code, message: `the VM serves no deployment ${relayId} (unknown_relay): the config's relay_id is not the one the VM booted with` };
     case "invalid_request":
       return { code, message: "the VM refused the request as malformed (invalid_request): this gray-assistant and the VM's Gray release do not agree on its shape; update gray-assistant" };
     default:
@@ -200,6 +201,13 @@ async function stackBoots(fetch: DaemonFetch, origin: string, appId: string | nu
   }
 }
 
+/** Why a stack boot is not talked to: the closed code, the sentence and, for a report that did not verify, the checks it failed. */
+export interface StackBootRefusal {
+  readonly code: string;
+  readonly message: string;
+  readonly failedChecks?: FailedChecks;
+}
+
 /**
  * The agent's attestation of one stack boot (`keyset`; undefined: the entry's newest), then the agent's checks of the
  * boot (this relay's identity, an image this agent issued to it): the attested result, or a refusal with a sentence.
@@ -213,7 +221,7 @@ export async function attestStackBoot(input: {
   readonly relayPublicKeyHex: string;
   readonly attest?: DebugAttest;
   readonly stackIssue?: (nonce: string) => Promise<StackIssueRecord | null>;
-}): Promise<(DaemonAttestResult & { readonly ok: true; readonly bootImage: string }) | { readonly code: string; readonly message: string }> {
+}): Promise<(DaemonAttestResult & { readonly ok: true; readonly bootImage: string }) | StackBootRefusal> {
   const { config, vm, keyset } = input;
   const relayId = config.daemon.relayId;
   const nowSecs = BigInt(Math.floor(input.nowMs / 1000));
@@ -226,10 +234,16 @@ export async function attestStackBoot(input: {
   }
   if (!attested.ok) {
     const code = `attest_${attested.stage}_${attested.code}`;
-    return { code, message: `the stack VM did not attest (${code}); \`gray-assistant doctor\` says more` };
+    const clause = failedChecksClause(attested.failedChecks);
+    // With the failed checks named, doctor's line for the VM says the same ones; without, it is where they are.
+    return {
+      code,
+      message: `the stack VM did not attest (${code})${clause}; \`gray-assistant doctor\` ${clause === "" ? "says more" : "shows the same checks"}`,
+      ...(attested.failedChecks === undefined ? {} : { failedChecks: attested.failedChecks }),
+    };
   }
   const mismatch = attestationMismatch(attested, vm.origin, relayId);
-  if (mismatch !== null) return { code: mismatch, message: `the stack VM's attestation is not this relay's VM at ${vm.origin} (${mismatch})` };
+  if (mismatch !== null) return { code: mismatch, message: `the stack VM's attestation is not this deployment's VM at ${vm.origin} (${mismatch})` };
   const boot = await stackBootDecision({ facts: attested.stackBoot ?? null, composeHash: attested.composeHash, relayId, relayPublicKeyHex: input.relayPublicKeyHex, stack: config.daemon.stack, stackIssue: input.stackIssue });
   if (!boot.ok) return { code: `attest_${boot.code}`, message: `the stack VM's boot is not one this agent sealed credentials to (attest_${boot.code}); \`gray-assistant doctor\` says more` };
   return { ...attested, bootImage: boot.image };
@@ -243,9 +257,9 @@ export async function debugGet(options: DebugGetOptions): Promise<number> {
   checkOutput(out, io);
   const vm = debugStackVm(config);
 
-  const refuse = (code: string, message: string): number => {
+  const refuse = (code: string, message: string, extra: JsonObject = {}): number => {
     io.stderr(`gray-assistant debug get: ${message}\n`);
-    io.stderr(`${toJsonString({ command: "debug.get", ok: false, relay_id: relayId, request_id: requestId, code })}\n`);
+    io.stderr(`${toJsonString({ command: "debug.get", ok: false, relay_id: relayId, request_id: requestId, code, ...extra })}\n`);
     return 1;
   };
 
@@ -253,7 +267,7 @@ export async function debugGet(options: DebugGetOptions): Promise<number> {
   const stack = config.daemon.stack;
   const issueReader = options.stackIssue ?? (stack === null ? undefined : (await import("./daemon/pull-token-log.ts")).createPullTokenIssueReader(stack.issueLog));
   const relayPublicKeyHex = bytesToLowerHex(await ed25519PublicKey(options.seed));
-  type Refusal = { readonly code: string; readonly message: string };
+  type Refusal = StackBootRefusal;
 
   /**
    * One boot (`keyset`; undefined: the entry's newest): the agent's attestation, then the agent's checks of the boot, so
@@ -294,7 +308,7 @@ export async function debugGet(options: DebugGetOptions): Promise<number> {
   for (let index = 0; index < boots.length && answered === null; index += 1) {
     const outcome = await ask(boots[index]);
     if ("response" in outcome) answered = outcome;
-    else if (outcome.code !== "debug_record_not_held" || index === boots.length - 1) return refuse(outcome.code, outcome.message);
+    else if (outcome.code !== "debug_record_not_held" || index === boots.length - 1) return refuse(outcome.code, outcome.message, failedChecksJson(outcome.failedChecks));
   }
   if (answered === null) return refuse("debug_record_not_held", refusalMessage(404, "debug_record_not_held", relayId).message);
   let opened: { readonly meta: RelayDebugMeta; readonly record: Uint8Array };

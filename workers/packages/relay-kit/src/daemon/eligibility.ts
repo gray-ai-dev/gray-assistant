@@ -85,7 +85,7 @@ export function credentialParkReason(vendor: Vendor, credential: Credential): Pa
  */
 export function credentialFormatHint(vendor: Vendor, type: string): string {
   if (vendor === "chatgpt_codex" && type === "oauth_access_token") {
-    return "a ChatGPT/Codex oauth_access_token is a JWT whose payload has an integer exp and the https://api.openai.com/auth object with chatgpt_account_id, as a token from the Codex login is (the integration standard, section 8)";
+    return "a chatgpt_codex oauth_access_token is a JWT whose payload has an integer exp and the https://api.openai.com/auth object with chatgpt_account_id (the integration standard, section 8)";
   }
   return `the value does not have the ${vendor} ${type} format (the integration standard, section 8)`;
 }

@@ -260,6 +260,7 @@ export function parseAccountsSourceValue(value: unknown, options: ParseAccountsO
       models: data.models === undefined ? "*" : data.models === "*" ? "*" : [...data.models],
       weight: data.weight === undefined ? 1n : toBigInt(data.weight),
       maxConcurrency: data.max_concurrency === undefined ? 1n : toBigInt(data.max_concurrency),
+      ...(data.max_concurrency === undefined ? {} : { statedMaxConcurrency: toBigInt(data.max_concurrency) }),
       status,
       ...(expires === undefined ? {} : { credentialExpiresAtMs: expires }),
       changeMark,

@@ -312,8 +312,8 @@ export const AGENT_STATUS_CURRENT_MS = AGENT_STATUS_HEARTBEAT_MS + 5 * 60_000;
 
 /** The next step for each answer of the console that sending again cannot fix. */
 const REFUSAL_STEPS: Readonly<Record<string, string>> = {
-  lane_stack_signature_invalid: "Gray holds another key for this relay (the one it paired, or its stack endpoint's lane record); pair this key (gray-assistant init --pair <code> --key <relay-key.json>)",
-  lane_stack_relay_unknown: "Gray holds no key for this relay_id: register the relay in the panel and pair gray-assistant with it (or check relay_id)",
+  lane_stack_signature_invalid: "Gray holds another key for this deployment (the one it paired, or its stack endpoint's lane record); pair this key (gray-assistant init --pair <code> --key <relay-key.json>)",
+  lane_stack_relay_unknown: "Gray holds no key for this relay_id: register it in the panel and pair gray-assistant with it (or check relay_id)",
   lane_stack_agent_status_future: "this machine's clock is more than 5 minutes ahead; sync it (NTP)",
   lane_stack_agent_status_stale: "this machine's clock is more than an hour behind; sync it (NTP)",
   request_body_limit: "the status is over 256 KiB; report it to Gray",
@@ -351,7 +351,7 @@ export function agentStatusVerdict(value: JsonObject | null, nowMs: number): { r
     return { status: current ? "warn" : "fail", message: `the last report failed (${what}), retrying; ${taken}${retry}` };
   }
   if (accepted === null) return { status: "warn", message: `no report taken yet${retry}` };
-  if (nowMs - accepted > AGENT_STATUS_CURRENT_MS) return { status: "fail", message: `${taken}, longer than a heartbeat (15 min); is gray-assistant run running?` };
+  if (nowMs - accepted > AGENT_STATUS_CURRENT_MS) return { status: "fail", message: `${taken}, longer than a heartbeat (15 min): the agent process that sent it no longer runs (this kit starts none)` };
   const recorded = value === null ? null : get(value, "recorded");
   return { status: "ok", message: `reported; ${taken}${recorded === false ? " (it kept a newer one)" : ""}` };
 }

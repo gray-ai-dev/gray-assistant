@@ -75,8 +75,8 @@ export const STACK_ID_RULE = "An id or a label is 1-128 characters of A-Z a-z 0-
 export const STACK_APP_ID_RULE = "A dstack app id is 40 lower-case hex digits.";
 export const STACK_TOKEN_URL_RULE = "The pull-token service's address is an https origin without a path, a query or a fragment: pre-launch appends /v1/pull-token/... to it.";
 export const STACK_REGISTRY_RULE = "A registry is a host name with an optional port, as docker login takes it, in lower case: no scheme, path or user.";
-export const STACK_IMAGE_RULE = "The relay's image is pinned by its digest: <repository>@sha256:<64 lower-case hex digits>.";
-export const STACK_SETTINGS_RULE = `The relay's settings are a JSON object of at most ${STACK_SETTINGS_MAX_BYTES} bytes.`;
+export const STACK_IMAGE_RULE = "The image is pinned by its digest: <repository>@sha256:<64 lower-case hex digits>.";
+export const STACK_SETTINGS_RULE = `The settings are a JSON object of at most ${STACK_SETTINGS_MAX_BYTES} bytes.`;
 export const STACK_MODELS_RULE = "An account's models are distinct model IDs (a letter or digit, then letters, digits and . _ : @ + / -, at most 256).";
 export const STACK_LABELS_RULE = "An account's labels are distinct, each 1-128 characters of A-Z a-z 0-9 . _ : -.";
 export const STACK_WINDOWS_RULE = `An account's limit windows have distinct lengths of 1 to ${LANE_STACK_WINDOW_MAX_SECONDS} seconds (7 days).`;
@@ -350,9 +350,9 @@ export function checkStackAppend(input: StackAppendInput): void {
 export const STACK_KMS_CA_PUBKEY_PATTERN = /^3059301306072a8648ce3d020106082a8648ce3d03010703420004[0-9a-f]{128}$/;
 
 export const STACK_LANE_ORIGIN_RULE =
-  "A relay stack's lane origin is Gray's entry tunnel route for the relay, spelled as itself: https://<entry>/v1/peer/tunnel/<relay_id>. " +
+  "A deployment's lane origin is Gray's entry tunnel route for it, spelled as itself: https://<entry>/v1/peer/tunnel/<relay_id>. " +
   "A stack VM takes no inbound connection, so it has no address of its own.";
-export const STACK_LANE_TUNNEL_RULE = "A tunnel lane origin names the relay it is published for: https://<entry>/v1/peer/tunnel/<this relay's id>, not another relay's.";
+export const STACK_LANE_TUNNEL_RULE = "A tunnel lane origin names the deployment it is published for: https://<entry>/v1/peer/tunnel/<this deployment's id>, not another deployment's.";
 export const STACK_LANE_TUNNEL_NO_ENTRY_RULE =
   "This deployment names no entry (LANE_STACK_ENTRY_ORIGIN is empty), so it publishes no tunnel lane origin: configure the entry an outbound-only VM is reached through first.";
 /** The refusal of a tunnel lane origin through another entry than this deployment's (LANE_STACK_ENTRY_ORIGIN). */
@@ -459,7 +459,7 @@ export function stackRoutesProblem(routes: readonly StackServedRoute[]): string 
       continue;
     }
     return (
-      `A relay stack serves one route per protocol and requested model: ${r.requested_model} (${r.protocol}) is mapped by its enabled ` +
+      `A deployment serves one route per protocol and requested model: ${r.requested_model} (${r.protocol}) is mapped by its enabled ` +
       `endpoints ${first} and ${r.endpoint_id}. Remove the mapping from one of them, or disable one, first.`
     );
   }
@@ -486,8 +486,8 @@ export function stackAppendsProblem(appends: readonly StackServedAppend[]): stri
     const bytes = at.reduce((sum, a) => sum + utf8Length(a.text), 0);
     if (at.length > DEFAULT_MAX_ITEMS || bytes > DEFAULT_MAX_TOTAL_BYTES) {
       return (
-        `One ${protocol} request carries at most ${DEFAULT_MAX_ITEMS} appended texts of ${DEFAULT_MAX_TOTAL_BYTES} bytes together, and a relay ` +
-        `stack's texts at ${positions.join(" and ")} would be ${at.length} of ${bytes} bytes. Remove or shorten one first.`
+        `One ${protocol} request carries at most ${DEFAULT_MAX_ITEMS} appended texts of ${DEFAULT_MAX_TOTAL_BYTES} bytes together, and the deployment's ` +
+        `texts at ${positions.join(" and ")} would be ${at.length} of ${bytes} bytes. Remove or shorten one first.`
       );
     }
   }

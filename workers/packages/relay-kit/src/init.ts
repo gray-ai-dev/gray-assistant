@@ -114,16 +114,16 @@ export function initConfigText(options: InitDocumentOptions): string {
   return `{
   // ---- identity ----------------------------------------------------------------------------
   // Gray assigns this id at registration; it is also the key id every scheduler answer is signed
-  // under (the relay key file's own key_id is local metadata and never reaches the wire).
+  // under (the key file's own key_id is local metadata and never reaches the wire).
   "relay_id": ${JSON.stringify(options.relayId)},
 
   // The Ed25519 key file init wrote: 0600, no symlink, no group/other bits. Back it up: losing it
-  // means registering again with a new relay id (key rotation is a new relay id in v1).
+  // means registering again with a new relay_id (key rotation is a new relay_id in v1).
   "key": "./relay-key.json",
 
   // The signed policy bundle uploaded before any credential on every boot. init writes the
-  // default allow-all module here; replace it with a bundle signed by this relay's key to add rules.
-  // A relay-stack app (stack.lane_origin) runs no policy module and is sent no bundle: a relay whose
+  // default allow-all module here; replace it with a bundle signed by this key to add rules.
+  // A stack app (stack.lane_origin) runs no policy module and is sent no bundle: a config whose
   // only lane origin is its stack app may delete this key and the file.
   "policy_bundle": "./policy.bundle.json",
 
@@ -152,8 +152,8 @@ ${options.releaseFreshnessPublicKey === undefined ? "" : `    // Gray's freshnes
     "release_list_max_age": 86400
   },
 
-  // A release is accepted automatically after this many days counted from the relay's own first
-  // sight (never from a time Gray publishes). Not used by a relay with a release contract (\`chain\` below, every
+  // A release is accepted automatically after this many days counted from this agent's own first
+  // sight (never from a time Gray publishes). Not used with a release contract (\`chain\` below, every
   // pairing now): the contract's release delay decides (gray-assistant releases delay <hours>).
   "releases": { "accept": "auto-after-delay", "delay_days": 7 },
 
@@ -222,15 +222,15 @@ export function registrationDocuments(options: InitDocumentOptions): ReadonlyArr
       native_paths: [...endpoint.nativePaths],
       endpoint: laneEndpointRecord(options),
       key_id_rule:
-        "key_id = relay_id: the scheduler signs every answer under the relay id below, and the TEE pins that id. The relay-key.json file's key_id is local metadata only and is never sent.",
+        "key_id = relay_id: the scheduler signs every answer under the relay_id below, and the TEE pins that id. The relay-key.json file's key_id is local metadata only and is never sent.",
       keys_note:
-        "signing_public_key and scheduler_public_key are the same Ed25519 key in v1; splitting them is not supported. Register the relay id once; changing the key means a new relay id.",
+        "signing_public_key and scheduler_public_key are the same Ed25519 key in v1; splitting them is not supported. Register the relay_id once; changing the key means a new relay_id.",
       egress_note:
-        "An account whose source declares a proxy has every vendor call made through that proxy: egress in the CVM sends each call of the account through it. An account without one leaves from the CVM's own address. Gray and the relay never see customer content.",
+        "An account whose source declares a proxy has every vendor call made through that proxy: egress in the CVM sends each call of the account through it. An account without one leaves from the CVM's own address. Gray and you never see customer content.",
       registration_steps: [
         "Paste this endpoint record into the Gray console's provider registration for this vendor.",
-        "Register the same relay id and lane record for every vendor endpoint at the same time; a partial edit leaves the lane inconsistent.",
-        "Keep relay-key.json 0600 and backed up; the key file is the relay's identity.",
+        "Register the same relay_id and lane record for every vendor endpoint at the same time; a partial edit leaves the lane inconsistent.",
+        "Keep relay-key.json 0600 and backed up; the key file is your identity.",
       ],
     },
   }));
@@ -328,12 +328,12 @@ export function printableReleaseName(name: string): string {
 /** The `releases` member: with the pairing's acceptances, one hash a line with its name. */
 function pairedReleasesText(accepted: readonly PairingAcceptedHash[]): string {
   if (accepted.length === 0) {
-    return `  // A release is accepted this many days after this relay first saw it; "manual" to accept each one yourself.
+    return `  // A release is accepted this many days after this agent first saw it; "manual" to accept each one yourself.
   "releases": { "accept": "auto-after-delay", "delay_days": 7 },`;
   }
   const lines = accepted.map((entry, index) => `      ${JSON.stringify(entry.hash)}${index === accepted.length - 1 ? "" : ","} // ${entry.kind === "release" ? "release" : "OS image"} ${printableReleaseName(entry.name)}`);
-  return `  // A release is accepted this many days after this relay first saw it; "manual" to accept each one yourself.
-  // accepted_at_pairing: what Gray's signed list named when this relay paired, which joining trusts. The agent accepts
+  return `  // A release is accepted this many days after this agent first saw it; "manual" to accept each one yourself.
+  // accepted_at_pairing: what Gray's signed list named when you paired, which joining trusts. The agent accepts
   // each once, when it first sees it in the list, and records it in control.json; later releases wait delay_days.
   "releases": {
     "accept": "auto-after-delay",
@@ -348,14 +348,33 @@ ${lines.join("\n")}
  * The config `init --pair` writes: every value Gray answered in place, the container paths, and what only the relay
  * has as placeholders. No `policy_bundle` (a stack-only relay runs none, S23) and no `lane.origins`: the lane's origin
  * and instance come from Gray after Deploy (`stack.instance`, docs/relay-stack-provisioner.md P12).
+ *
+ * A phase-2 config (with `chain`) has none of the members only the host agent of phase 1 read, which no kit runs any
+ * more (provider review 2026-11-17, item 3): `releases` (the agent's own acceptance after `delay_days`; the contract and
+ * its release delay decide now), `scheduler` (the agent's listener) and `tunnel` (the rendezvous that gave that
+ * listener a public name). Its `stack.token_url` is then written out, since the tunnel's origin was its default. A
+ * config that still has them reads as before: the members stay in the schema, and nothing of phase 2 reads them.
  */
 export function pairedConfigText(options: PairedConfigOptions): string {
   const j = (value: unknown): string => JSON.stringify(value);
   const release = options.release ?? { list: RELEASE_LIST_PLACEHOLDER, publicKey: RELEASE_PUBLIC_KEY_PLACEHOLDER, freshnessPublicKey: null };
+  const phase2 = options.chain !== undefined && options.chain !== null;
+  const phase1Only = phase2
+    ? ""
+    : `
+${pairedReleasesText(options.acceptedAtPairing)}
+
+  // The agent's listener; the tunnel delivers your public name to it.
+  "scheduler": { "listen": { "host": ${j(PAIRED_LISTEN.host)}, "port": ${PAIRED_LISTEN.port} } },
+`;
+  const tunnel = phase2 || options.tunnel === null ? "" : `
+  // Gray's rendezvous: your public name without a public address.
+  "tunnel": { "server": ${j(options.tunnel.server)}, "zone": ${j(options.tunnel.zone)} },
+`;
   return `{
   // Written by gray-assistant init --pair from Gray's answer at ${options.pairing.pairedAt}; doctor names the source.
   "relay_id": ${j(options.relayId)},
-  // The relay key (0600). Gray holds only its public half; back the file up.
+  // Your deployment key (0600). Gray holds only its public half; back the file up.
   "key": ${j(`${KIT_MOUNT}/relay-key.json`)},
 
   // Gray's signed release list and its keys. The lane's origin and instance come from Gray after Deploy.
@@ -364,13 +383,8 @@ export function pairedConfigText(options: PairedConfigOptions): string {
     "release_public_key": ${j(release.publicKey)},
 ${release.freshnessPublicKey === null ? "" : `    "release_freshness_public_key": ${j(release.freshnessPublicKey)},\n`}    "release_list_max_age": 86400
   },
-
-${pairedReleasesText(options.acceptedAtPairing)}
-
-  // The agent's listener; the tunnel delivers the relay's public name to it.
-  "scheduler": { "listen": { "host": ${j(PAIRED_LISTEN.host)}, "port": ${PAIRED_LISTEN.port} } },
-
-  // Your accounts; the relay's own page (gray-assistant ui) adds them here.
+${phase1Only}
+  // Your accounts; gray-assistant's page (gray-assistant ui) adds them here.
   "source": { "kind": "file", "path": ${j(`${STATE_MOUNT}/accounts.json`)} },
 
   "state_file": ${j(`${STATE_MOUNT}/state.json`)},
@@ -397,11 +411,8 @@ ${pairedReleasesText(options.acceptedAtPairing)}
     "issue_log": ${j(`${STATE_MOUNT}/pull-tokens.jsonl`)},
 ${options.tokenUrl === null ? "" : `    "token_url": ${j(options.tokenUrl)},\n`}    "report_origin": ${j(options.reportOrigin)}
   },
-${options.tunnel === null ? "" : `
-  // Gray's rendezvous: the relay's public name without a public address.
-  "tunnel": { "server": ${j(options.tunnel.server)}, "zone": ${j(options.tunnel.zone)} },
-`}
-  // The relay's own page stays off on the public origin; ui.public set to true turns it on (passkeys only, GUIDE §12).
+${tunnel}
+  // gray-assistant's page stays off on the public origin; ui.public set to true turns it on (passkeys only, GUIDE §12).
 ${pairedChainText(options.chain ?? null)}
   "pairing": { "gray": ${j(options.pairing.gray)}, "fingerprint": ${j(options.pairing.fingerprint)}, "paired_at": ${j(options.pairing.pairedAt)} }
 }
@@ -413,7 +424,7 @@ function pairedChainText(chain: PairedConfigOptions["chain"] | null): string {
   if (chain === null || chain === undefined) return "";
   const j = (value: unknown): string => JSON.stringify(value);
   return `
-  // Phase 2: your relay's contract on Base, its app id. Gray deploys it at Deploy with the guardian's approvals this
+  // Phase 2: your contract on Base, its app id. Gray deploys it at Deploy with the guardian's approvals this
   // pairing signed; guardian-key.json is your release veto: back it up, never share it. Two endpoints of different
   // providers, which must agree; you may name others.
   "chain": {
@@ -457,7 +468,7 @@ export function pairedComposeText(image: string, relayId: string, keep: { readon
   // What every container of the kit is held to, whichever command it runs.
   const hardened = `    read_only: true
     user: "10001:10001"
-    # Core dumps can contain a credential; no swap keeps the relay's secrets out of a swap file.
+    # Core dumps can contain a credential; no swap keeps your secrets out of a swap file.
     ulimits:
       core: 0
     mem_limit: 512m
@@ -496,7 +507,7 @@ export function pairedComposeText(image: string, relayId: string, keep: { readon
 # Add to this file (another network, TZ, ...) in compose.override.yaml beside it, which docker compose merges; this
 # file is rewritten by the next init --pair --force, the override is not.
 #
-# The project is named after the relay, so several relays on one host do not share a container, volume or network.
+# The project is named after your deployment id, so several deployments on one host do not share a container, volume or network.
 name: ${JSON.stringify(name)}
 
 services:
@@ -512,7 +523,7 @@ ${hardened}
     ports:
       - "127.0.0.1:${KIT_UI_PORT}:${KIT_UI_PORT}"
 
-  # The operators' page: where your operators add accounts, sign subscriptions in and set proxies, with a passkey and no
+  # The operators' page: where your operators add accounts, sign accounts in and set proxies, with a passkey and no
   # terminal. Name its address in the config first (ui.origin, an https origin of your own that your TLS proxy forwards
   # to 127.0.0.1:${KIT_UI_PORT} of this host), then:
   #   docker compose up -d page          start it (naming the service enables its profile)
@@ -532,7 +543,7 @@ ${hardened}
 networks:
   relay:
     # Named after the compose project (the name above, or the one docker compose -p or COMPOSE_PROJECT_NAME gives),
-    # so the relay's own software (the service an http source reads) joins it by that name with
+    # so your own software (the service an http source reads) joins it by that name with
     # \`external: true\` and the config's source.url names that service.
     name: "\${COMPOSE_PROJECT_NAME}"
 

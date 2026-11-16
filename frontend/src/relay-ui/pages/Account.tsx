@@ -47,7 +47,7 @@ export function AccountPage({ id, part }: { id: string; part: AccountPart | null
       {accounts.error
         ? <Notice tone="danger" role="alert" actions={<Button size="sm" onClick={() => void accounts.reload()}>Try again</Button>}>Couldn’t read the accounts: {refusalText(accounts.error.code)}</Notice>
         : <EmptyState title="No account with this ID here"
-          description={source && source.kind !== 'file' ? 'Your relay software doesn’t list it. Add it there.' : 'accounts.json on the relay’s machine doesn’t name it.'}
+          description={source && source.kind !== 'file' ? 'Your software doesn’t list it. Add it there.' : 'accounts.json on your machine doesn’t name it.'}
           actions={<Inline gap={2}>
             {canEdit && <LinkButton variant="primary" href={href(`/accounts/new?id=${encodeURIComponent(id)}`)}>Add it</LinkButton>}
             <LinkButton href={href('/accounts')}>All accounts</LinkButton>
@@ -177,7 +177,7 @@ function RemovePart({ account }: { account: Account }) {
   async function remove() {
     if (!await confirm({
       title: `Remove ${account.account_id}?`,
-      description: 'It stops serving, and its key or sign-in is deleted from the relay’s machine. Gray’s panel keeps its record until you delete it there.',
+      description: 'It stops serving, and its key or sign-in is deleted from your machine. Gray’s panel keeps its record until you delete it there.',
       confirmLabel: 'Remove account',
       tone: 'danger',
     })) return;

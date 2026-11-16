@@ -103,7 +103,7 @@ export async function updatePasskeys<T>(path: string, random: (length: number) =
   const lock = await acquireControlLock(`${path}.lock`);
   try {
     const { store, result } = edit(readPasskeys(path, random));
-    if (store.passkeys.length > MAX_PASSKEYS) throw new RelayKitError("usage", `a relay keeps at most ${MAX_PASSKEYS} passkeys; revoke one first`);
+    if (store.passkeys.length > MAX_PASSKEYS) throw new RelayKitError("usage", `a deployment keeps at most ${MAX_PASSKEYS} passkeys; revoke one first`);
     writeAtomicPrivateFile(path, storeText(store));
     return result;
   } finally {

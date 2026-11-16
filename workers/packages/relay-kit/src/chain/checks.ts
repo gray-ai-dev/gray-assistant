@@ -16,7 +16,45 @@ import { isRelayKitError, RelayKitError } from "../errors.ts";
 import { APP_AUTH_ABI, APP_AUTH_DELAY_SECONDS, ERC1967_IMPLEMENTATION_SLOT, RELEASE_KIND_NUMBER, appAuthProxyCodeHash, implementationFromSlot, publishedImplementation } from "./app-auth.ts";
 import { rpcClient, rpcLabel, type RpcOptions } from "./rpc.ts";
 
-export const DSTACK_KMS_ABI = parseAbi(["function registeredApps(address app) view returns (bool)"]);
+export const DSTACK_KMS_ABI = parseAbi([
+  "function registeredApps(address app) view returns (bool)",
+  // DstackKms's `KmsInfo public kmsInfo` (Phala's DstackKms.sol): the KMS's keys, the CA one a compose names as its key provider.
+  "function kmsInfo() view returns (bytes k256Pubkey, bytes caPubkey, bytes quote, bytes eventlog)",
+]);
+
+/** A KMS root CA public key as `kms_ca_pubkey` and a compose's `key_provider_id` write it (lane-binding.ts). */
+const KMS_CA_PUBKEY = /^3059301306072a8648ce3d020106082a8648ce3d03010703420004[0-9a-f]{128}$/;
+
+/**
+ * DstackKms's KMS root CA public key (`kmsInfo().caPubkey`) as two endpoints read it, which must both answer `chainId`
+ * and the same key: lower-case hex without 0x, or null when the contract publishes no P-256 key there or does not
+ * answer `kmsInfo()` (a stand-in on a test chain). Throws `chain_refused` for an endpoint of another chain,
+ * `chain_disagreement` when they answer differently, `chain_unreachable` when one cannot be read.
+ */
+export async function readDstackKmsCa(rpcUrls: readonly string[], chainId: number, dstackKms: Address, options: RpcOptions & { readonly clients?: readonly PublicClient[] } = {}): Promise<string | null> {
+  if (rpcUrls.length !== 2) throw new RelayKitError("usage", "the chain checks read two RPC endpoints");
+  const clients = options.clients ?? rpcUrls.map((url) => rpcClient(url, options));
+  const answers = await Promise.all(
+    clients.map(async (client, index) => {
+      const url = rpcUrls[index] as string;
+      const id = await endpointChainId(client, url);
+      if (id !== chainId) throw new RelayKitError("chain_refused", `${rpcLabel(url)} is chain ${id}, not ${chainId}`);
+      try {
+        const [, caPubkey] = (await client.readContract({ address: dstackKms, abi: DSTACK_KMS_ABI, functionName: "kmsInfo" })) as readonly [Hex, Hex, Hex, Hex];
+        const bare = caPubkey.slice(2).toLowerCase();
+        return KMS_CA_PUBKEY.test(bare) ? bare : null;
+      } catch (error) {
+        // An endpoint that could not be reached is an error; a contract that does not answer `kmsInfo()` publishes none.
+        const kit = kitErrorIn(error);
+        if (kit !== null) throw kit;
+        return null;
+      }
+    }),
+  );
+  const [first, second] = answers as [string | null, string | null];
+  if (first !== second) throw new RelayKitError("chain_disagreement", `${rpcLabel(rpcUrls[0] as string)} and ${rpcLabel(rpcUrls[1] as string)} answer DstackKms ${dstackKms}'s KMS key differently`);
+  return first;
+}
 
 /**
  * The most the two endpoints' latest blocks may differ (10 s of Base's 2-second blocks): a lagging endpoint must not
@@ -152,7 +190,7 @@ export async function endpointChainId(client: PublicClient, url: string): Promis
 }
 
 async function readAt(client: PublicClient, url: string, input: ChainCheckInput, block: bigint): Promise<ChainReading> {
-  return onEndpoint(url, "the relay's contract", async () => {
+  return onEndpoint(url, "your contract", async () => {
     const code = await client.getCode({ address: input.contract, blockNumber: block });
     const codeHash = code === undefined || code === "0x" ? null : keccak256(code);
     const registered = await client.readContract({ address: input.dstackKms, abi: DSTACK_KMS_ABI, functionName: "registeredApps", args: [input.contract], blockNumber: block });
@@ -212,8 +250,8 @@ function judge(reading: ChainReading, input: ChainCheckInput, expectedCodeHash: 
   const delay = input.releaseDelaySeconds ?? APP_AUTH_DELAY_SECONDS;
   checks.push(
     reading.delaySeconds === delay
-      ? { name: "delay", ok: true, detail: `delay() is ${delay} s, the relay's release delay` }
-      : { name: "delay", ok: false, detail: `delay() is ${reading.delaySeconds ?? "unreadable"} s, not the relay's ${delay} s (chain.release_delay_seconds)` },
+      ? { name: "delay", ok: true, detail: `delay() is ${delay} s, your release delay` }
+      : { name: "delay", ok: false, detail: `delay() is ${reading.delaySeconds ?? "unreadable"} s, not your ${delay} s (chain.release_delay_seconds)` },
   );
   checks.push(
     reading.registered

@@ -46,9 +46,9 @@ export function isTunnelRelayId(value: string): boolean {
 export function tunnelOriginFromUrl(url: URL): TunnelOrigin | null {
   if (!url.pathname.startsWith(PEER_TUNNEL_PATH)) return null;
   const rest = url.pathname.slice(PEER_TUNNEL_PATH.length).replace(/\/$/u, "");
-  if (rest.includes("/")) throw new Error("a tunnel origin names one relay and nothing after it");
+  if (rest.includes("/")) throw new Error("a tunnel origin names one relay_id and nothing after it");
   const relayId = decodeSegment(rest);
-  if (relayId === null || !isTunnelRelayId(relayId)) throw new Error("a tunnel origin must name a relay id");
+  if (relayId === null || !isTunnelRelayId(relayId)) throw new Error("a tunnel origin must name a relay_id");
   return { origin: `${url.origin}${PEER_TUNNEL_PATH}${relayId}`, entry: url.origin, relayId };
 }
 
@@ -77,7 +77,7 @@ export function tunnelRequestOf(url: URL): TunnelRequest | null {
   const slash = rest.indexOf("/");
   const segment = slash === -1 ? rest : rest.slice(0, slash);
   const relayId = decodeSegment(segment);
-  if (relayId === null || !isTunnelRelayId(relayId)) throw new Error("the tunnel URL names no relay id");
+  if (relayId === null || !isTunnelRelayId(relayId)) throw new Error("the tunnel URL names no relay_id");
   const inner = slash === -1 ? "/" : rest.slice(slash);
   return { origin: `${url.origin}${PEER_TUNNEL_PATH}${relayId}`, entry: url.origin, relayId, path: `${inner}${url.search}` };
 }

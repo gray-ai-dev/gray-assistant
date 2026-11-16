@@ -38,6 +38,7 @@ import type { QuoteVerifier } from "@gray/lane-verify";
 import { checkVerifiedReport } from "../verified-report.ts";
 import { createRelayDaemon } from "../daemon/daemon.ts";
 import { policyOrigins, releasePinningProblem, stackPlaceholderProblem } from "../daemon/config.ts";
+import { failedChecksOf } from "../daemon/failed-checks.ts";
 import { createPullTokenService, type PullTokenService } from "../daemon/pull-token.ts";
 import { parsePolicyBundleValue, verifyPolicyBundleDocument } from "../policy-bundle.ts";
 import { RelayKitError } from "../errors.ts";
@@ -170,7 +171,11 @@ export function createDaemonAttest(options: {
     }
     if (!result.ok) {
       if (result.stage === "report") return { ok: false, stage: "report", code: "no_report" };
-      if (result.stage === "verification") return { ok: false, stage: "verification", code: "failed" };
+      if (result.stage === "verification") {
+        // The checks the report failed go with the refusal, for the command to name. With the relay's own `pccs_url`
+        // the `quote` check is named by its id only: its sentence can carry that URL.
+        return { ok: false, stage: "verification", code: "failed", failedChecks: failedChecksOf(result.verification.checks, { quoteDetail: options.config.daemon.pccsUrl === null }) };
+      }
       return { ok: false, stage: "pinning", code: result.verdict };
     }
     if (result.verification.keysetDigest === null) return { ok: false, stage: "verification", code: "no_keyset" };
@@ -223,7 +228,7 @@ export async function loadRunInputs(options: RunRelayOptions): Promise<{
   // K5-1: refuse the skeleton before reading a key, binding a port or fetching the release list.
   const pinning = releasePinningProblem(config.daemon) ?? stackPlaceholderProblem(config.daemon);
   if (pinning !== null) throw new RelayKitError("usage", pinning.message);
-  const key = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "relay key", 64 * 1024));
+  const key = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "deployment key", 64 * 1024));
   const publicKey = await ed25519PublicKey(key.seed);
   // S23: a relay whose only origin is its relay-stack app uploads no policy, so `run` reads none,
   // even when the config still names one; the config parser requires it for every other relay.
@@ -231,7 +236,7 @@ export async function loadRunInputs(options: RunRelayOptions): Promise<{
   const policyBundle = policyPath === null ? null : readPolicyBundle(policyPath);
   if (policyBundle !== null) {
     const parsed = parsePolicyBundleValue(policyBundle);
-    if (parsed.relayId !== config.daemon.relayId) throw new RelayKitError("invalid_policy_bundle", "the bundle names another relay");
+    if (parsed.relayId !== config.daemon.relayId) throw new RelayKitError("invalid_policy_bundle", "the bundle names another relay_id");
     const verified = await verifyPolicyBundleDocument(parsed, publicKey);
     if (!verified.ok) throw new RelayKitError("invalid_policy_bundle", verified.code);
   }

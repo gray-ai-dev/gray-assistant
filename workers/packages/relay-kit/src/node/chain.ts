@@ -54,8 +54,8 @@ export interface ChainContext {
  * here. `kitMount` is where the compose container has the kit directory (the tests name another).
  */
 export function readChainContext(configPath: string, kitMount: string = KIT_MOUNT): ChainContext | null {
-  const raw = parseJsoncText(readFileText(configPath, "relay config", MAX_FILE_BYTES), "relay config");
-  if (!isObject(raw as Json)) throw new RelayKitError("usage", "invalid relay config: not an object");
+  const raw = parseJsoncText(readFileText(configPath, "config", MAX_FILE_BYTES), "config");
+  if (!isObject(raw as Json)) throw new RelayKitError("usage", "invalid config: not an object");
   const member = get(raw as Json, "chain");
   if (member === undefined) return null;
   const chain = parseChainConfig(member);
@@ -215,7 +215,7 @@ export async function chainReleasesList(context: ChainContext, options: ChainCom
   // `--from-block`, else the config's, else the start this kit noted itself (the last block it read the contract without code).
   const noted = context.startFile === null ? null : readChainStart(context.startFile, context.chain.contract, context.chain.chainId).fromBlock;
   const fromBlock = options.fromBlock ?? context.chain.fromBlock ?? noted;
-  if (fromBlock === null) throw new RelayKitError("usage", "releases list reads the contract's events from a start block, and none is known: the config names no chain.from_block, and this kit first read the contract when it was already deployed, so it noted no block before the deployment: give --from-block <n> or set chain.from_block (a block shortly before your relay's first Deploy; the Deploy's transaction on a Base explorer names it). To see what waits for your approval without it, run gray-assistant doctor (its releases_pending line), or gray-assistant releases check <hash> for one release");
+  if (fromBlock === null) throw new RelayKitError("usage", "releases list reads the contract's events from a start block, and none is known: the config names no chain.from_block, and this kit first read the contract when it was already deployed, so it noted no block before the deployment: give --from-block <n> or set chain.from_block (a block shortly before your first Deploy; the Deploy's transaction on a Base explorer names it). To see what waits for your approval without it, run gray-assistant doctor (its releases_pending line), or gray-assistant releases check <hash> for one release");
   return { block: chain.block, fromBlock, releases: await listReleases(chain, context.chain.contract, fromBlock) };
 }
 
@@ -233,8 +233,8 @@ export function releaseVerdict(state: ReleaseState, now: bigint): string {
   const what = state.kind === "compose" ? "compose" : state.kind === "os_image" ? "OS image" : "upgrade";
   if (state.proposedAt === 0n) return `${what} ${state.hash} was never proposed`;
   if (state.removed) return `${what} ${state.hash} was removed; it is never effective again`;
-  if (state.vetoed) return `${what} ${state.hash} is vetoed by the relay; it is not effective until the guardian approves it`;
-  if (state.approved) return `${what} ${state.hash} is approved by the relay and effective`;
+  if (state.vetoed) return `${what} ${state.hash} is vetoed by you; it is not effective until the guardian approves it`;
+  if (state.approved) return `${what} ${state.hash} is approved by you and effective`;
   if (state.effective) return `${what} ${state.hash} became effective after its delay; a veto still stops it`;
   const left = state.effectiveAt - now;
   const days = Number(left) / 86_400;
@@ -314,7 +314,7 @@ async function signAndSend(
   // The default: Gray's relayer pays, the request signed with the relay key as a restart request is.
   const config = loadRelayConfigFile(context.configPath);
   if (config.daemon.stack === null) throw new RelayKitError("usage", "the config has no stack section (stack.report_origin, where Gray's relayer is): send it yourself with --submit --rpc <url>, or --print it");
-  const relayKey = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "relay key", 64 * 1024));
+  const relayKey = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "deployment key", 64 * 1024));
   const hash = await postToRelayer({ origin: config.daemon.stack.reportOrigin, relayId: config.daemon.relayId, seed: relayKey.seed, decision: json, ...(options.post === undefined ? {} : { post: options.post }) });
   return { json, transaction: { hash, block: await minedBlock(rpcClient(context.chain.rpc[0] as string, options), hash, RECEIPT_TIMEOUT_MS) }, via: "relayer", note };
 }

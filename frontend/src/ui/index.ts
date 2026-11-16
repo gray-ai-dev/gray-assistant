@@ -12,6 +12,7 @@ export { formatCount, formatShort, formatMoneyShort } from './number';
 export { Checkbox, Switch } from './Choice';
 export { SelectField } from './SelectField';
 export { SegmentedControl, Tabs, opensHere, type SegmentOption, type TabItem } from './Segmented';
+export { OptionCards, type OptionCard } from './OptionCards';
 export { Page, PageHeader, Section, SectionHeader, Panel, Stack, Inline, Grow, FormGrid, Split } from './Layout';
 export { Notice, EmptyState, Badge, Spinner, Skeleton, type Tone } from './Feedback';
 export { DescriptionList, DescriptionItem, Stat, StatGroup, type StatDelta, Table, TableHead, TableBody, TableRow, TableHeaderCell, TableCell, Disclosure, List, Steps, Step, type StepState, Progress } from './Data';

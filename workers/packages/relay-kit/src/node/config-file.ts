@@ -140,16 +140,16 @@ export function loadRelayConfigFile(path: string): LoadedRelayConfig {
   if (!existsSync(absolute)) {
     throw new RelayKitError(
       "io",
-      `no relay config at ${absolute}: pass --config <file>, set GRAY_ASSISTANT_CONFIG, or put it at ${HOST_CONFIG_PATH} or ./${LOCAL_CONFIG_NAME}`,
+      `no config at ${absolute}: pass --config <file>, set GRAY_ASSISTANT_CONFIG, or put it at ${HOST_CONFIG_PATH} or ./${LOCAL_CONFIG_NAME}`,
     );
   }
-  return parseRelayConfigText(readFileText(absolute, "relay config", MAX_CONFIG_BYTES), absolute);
+  return parseRelayConfigText(readFileText(absolute, "config", MAX_CONFIG_BYTES), absolute);
 }
 
 /** Parse and validate a config's text as if it were the file at `absolute` (relative paths resolve beside it). */
 export function parseRelayConfigText(text: string, absolute: string): LoadedRelayConfig {
-  const value = parseJsoncText(text, "relay config");
-  if (!isObject(value as never)) throw new RelayKitError("usage", "the relay config is not a JSON object");
+  const value = parseJsoncText(text, "config");
+  if (!isObject(value as never)) throw new RelayKitError("usage", "the config is not a JSON object");
   const directory = dirname(absolute);
   const raw = resolveConfigPaths(value as JsonObject, directory);
   const daemon = parseRelayDaemonConfig(raw);
