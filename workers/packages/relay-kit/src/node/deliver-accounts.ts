@@ -18,8 +18,7 @@
 import type { Account, Vendor } from "@gray/relay-connector";
 import { RelayKitError } from "../errors.ts";
 import { newAccountAliases, panelIdLookup, type AccountAliasStore } from "../daemon/account-aliases.ts";
-import { egressOf, isPerAccountSourceError, sourceProxyOf } from "../daemon/daemon.ts";
-import { credentialParkReason, metadataParkReason, planAccount } from "../daemon/eligibility.ts";
+import { credentialParkReason, egressOf, isPerAccountSourceError, metadataParkReason, planAccount, sourceProxyOf } from "../daemon/eligibility.ts";
 import type { DaemonSourceAccount } from "../daemon/types.ts";
 import type { SourceAdapter, SourceCredential } from "../source/types.ts";
 import type { LoadedRelayConfig } from "./config-file.ts";

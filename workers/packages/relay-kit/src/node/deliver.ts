@@ -519,13 +519,19 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
   // phase 1; a phase-2 boot asks for no token).
   let vm = adoptedPhase2Vm(config, options.chain);
   let candidate: DaemonStackInstance | null = null;
-  // Gray's answer to one signed agent status: the VM it deployed.
+  // Gray's answer to one signed agent status: the VM it deployed. Read the source's accounts for the discovery status
+  // without caching across step 4 so a transient read failure is not cached and delivery always reads fresh accounts.
+  const readSourceAccounts = (): Promise<ReadAccounts> => (options.readAccounts ?? (() => cliAccounts(config, io.now())))();
   let agentAnswer: Promise<unknown> | null = null;
   // Gray keeps only a status newer than the last (`issued_ms`), so the second of one run is a millisecond later at least.
   let issuedMs = 0;
   const nextIssuedMs = (): number => (issuedMs = Math.max(io.now(), issuedMs + 1));
   const postStatus = options.agentStatusPost ?? defaultPost;
-  const agentAnswerOnce = (): Promise<unknown> => (agentAnswer ??= cliAgentAnswer(config, seed, nextIssuedMs(), null, postStatus));
+  const agentAnswerOnce = (): Promise<unknown> =>
+    (agentAnswer ??= (async () => {
+      const initial = await readSourceAccounts().catch(() => null);
+      return cliAgentAnswer(config, seed, nextIssuedMs(), initial?.sources ?? null, postStatus, initial?.skipped ?? []);
+    })());
   if (vm === null) {
     // A state, not a misuse: a refusal with a code, which `login --vendor` reads to make the first delivery itself.
     if (action !== "deliver") return refuse(VM_NOT_ADOPTED, "no stack VM adopted yet: `gray-assistant deliver` adopts the VM Gray deployed once its quote proves it");
@@ -700,7 +706,7 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
   };
   let accounts: ReadAccounts | null = null;
   if (sendAccounts) {
-    accounts = await (options.readAccounts ?? (() => cliAccounts(config, io.now())))();
+    accounts = await readSourceAccounts();
     // What the source lists, for the panel's Adopt (the agent's `sources`): a failure here sends the accounts all the same.
     if (accounts.sources !== undefined) {
       try {
@@ -723,14 +729,14 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
     for (const said of accounts.notFollowed ?? []) {
       const who = said.panelId === null ? `an account of ${said.vendor}` : `${said.panelId} (${said.vendor})`;
       if (said.status !== null) {
-        io.stderr(`gray-assistant ${name}: note: the source lists ${who} as ${said.status}; Gray does not take an account's status from the source, so it is sealed and serves like the others. To keep it from serving, pause it on Gray (relay-stack.md section 9, "The panel's API": PATCH accounts with "status": "paused")\n`);
+        io.stderr(`gray-assistant ${name}: note: the source lists ${who} as ${said.status}; Gray does not take an account's status from the source, so it is sealed and serves like the others. To keep it from serving, pause it on Gray: gray-assistant accounts pause <account>, or the panel\n`);
       }
       if (said.members.length > 0) {
         io.stderr(`gray-assistant ${name}: note: the source names ${said.members.join(" and ")} for ${who}; on Gray these are the panel account's own (every model of its vendor and weight 1 when adopted), and the source's values are not used. Set them on Gray (relay-stack.md section 9, "The panel's API")\n`);
       }
     }
     if ((accounts.concurrencyStated ?? 0) > 0) {
-      io.stderr(`gray-assistant ${name}: note: the source states max_concurrency for ${accounts.concurrencyStated} account(s); Gray adopts a new account with it as its concurrency (10 when the source states none), and an account Gray has already keeps the concurrency set on Gray. Change that on Gray (relay-stack.md section 9, "The panel's API")\n`);
+      io.stderr(`gray-assistant ${name}: note: the source states max_concurrency for ${accounts.concurrencyStated} account(s); Gray adopts a new account with it as its concurrency (when the source states none, 10 for an API key and 5 for an account that signs in), and an account Gray has already keeps the concurrency set on Gray. Change that on Gray: gray-assistant accounts set <account> --max-concurrency <n>, or the panel\n`);
     }
     if (accounts.accounts.length === 0 && accounts.listed > 0) {
       // Nothing is sent. A first delivery would start the relay's image with no account, which serves nothing while the

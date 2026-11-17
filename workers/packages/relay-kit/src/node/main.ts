@@ -32,6 +32,9 @@
  *     gray-assistant accounts add --vendor <vendor> [--proxy <id>] [--id-prefix <text>] [--config <gray-assistant.jsonc>]
  *     gray-assistant accounts proxy <account>... (--proxy <id> | --none) [--config <gray-assistant.jsonc>]
  *     gray-assistant accounts group <account>... (--group <name> | --none) [--config <gray-assistant.jsonc>]
+ *     gray-assistant accounts set <account>... [--max-concurrency <n>] [--weight <n>] [--models <id,...> | --all-models]
+ *                    [--config <gray-assistant.jsonc>]
+ *     gray-assistant accounts pause|resume <account>... [--config <gray-assistant.jsonc>]
  *     gray-assistant proxies [--config <gray-assistant.jsonc>]
  *     gray-assistant proxies add [<url>] [--id <id>] [--config <gray-assistant.jsonc>]
  *     gray-assistant proxies remove <id> [--config <gray-assistant.jsonc>]
@@ -140,7 +143,7 @@ export interface CliIo {
   readonly kitMount?: string;
   /** Gray's messages route (`./messages.ts`); the tests pass a fake, the CLI global `fetch`. */
   readonly messagesPost?: import("./messages.ts").MessagesPost;
-  /** Gray's routes a command signs a request for with the relay key (`accounts group`); the tests pass a fake, the CLI global `fetch`. */
+  /** Gray's routes a command signs a request for with the relay key (`accounts group|set|pause|resume`); the tests pass a fake, the CLI global `fetch`. */
   readonly grayPost?: import("./stack.ts").StackPost;
   /** Standard input, whole (`proxies add`, `accounts add`: one a line); null when nothing is piped in. The tests pass a text. */
   readonly stdin?: () => string | null;
@@ -187,6 +190,7 @@ const BOOLEAN_FLAGS: ReadonlySet<string> = new Set([
   "seen",
   "none",
   "service",
+  "all-models",
 ]);
 
 function parseArgs(argv: readonly string[]): ParsedArgs {
@@ -284,6 +288,10 @@ function usage(): string {
     "                                    the keys on standard input, one a line, never on the command line; ids <prefix>-<n>, the prefix the vendor by default;",
     "                                    piped: docker compose run --rm --no-deps -T agent accounts add --vendor anthropic < keys.txt)",
     "       gray-assistant accounts group <account>... (--group <name> | --none) [--config <config>]   (the accounts' group on Gray's panel: a name for your people, kept on Gray)",
+    "       gray-assistant accounts set <account>... [--max-concurrency <n>] [--weight <n>] [--models <id,...> | --all-models] [--config <config>]",
+    "                                    (the accounts' settings on Gray, as the panel's Edit settings: requests at once, share of requests,",
+    "                                    upstream models of one vendor; --all-models: every model your stack endpoints map for their vendor)",
+    "       gray-assistant accounts pause|resume <account>... [--config <config>]   (stop the accounts taking requests on Gray, or start again, as the panel's Pause)",
     "       gray-assistant accounts proxy <account>... (--proxy <id> | --none) [--config <config>]   (the file source: the accounts leave through that proxy",
     "                                    of accounts.json's list, or through none)",
     "       gray-assistant proxies [--config <config>]   (the file source: accounts.json's proxy list and the accounts that name each; never a password)",
@@ -423,6 +431,7 @@ async function dispatch(args: ParsedArgs, io: CliIo): Promise<number> {
     if (args.positionals[1] === "add") return accountsAddCommand(args, io);
     if (args.positionals[1] === "proxy") return accountsProxyCommand(args, io);
     if (args.positionals[1] === "group") return accountsGroupCommand(args, io);
+    if (args.positionals[1] === "set" || args.positionals[1] === "pause" || args.positionals[1] === "resume") return accountsSettingsCommand(args, io, args.positionals[1]);
     return accountsCommand(args, io);
   }
   if (command === "proxies") return proxiesCommand(args, io);
@@ -1218,15 +1227,13 @@ async function accountsProxyCommand(args: ParsedArgs, io: CliIo): Promise<number
   });
 }
 
-/** What Gray's refusal of a group change means, in a sentence. */
-function groupRefusal(code: string): string {
+/** What Gray's refusal of a signed change of accounts on Gray means, in a sentence; `own` has one command's own codes. */
+function grayChangeRefusal(code: string, own: Readonly<Record<string, string>>): string {
+  const mine = own[code];
+  if (mine !== undefined) return mine;
   switch (code) {
     case "no_stack":
-      return "this config has no stack section: groups are for a deployment with a stack VM";
-    case "request_invalid":
-      return "an account id is not one Gray's panel knows, or the group's name is over 256 characters or has a line break";
-    case "invalid_request":
-      return "Gray refused the group's name: 1 to 64 characters, no control characters";
+      return "this config has no stack section: an account's settings on Gray are for a deployment with a stack VM";
     case "unreachable":
       return "Gray did not answer; run the command again";
     case "lane_stack_relay_unknown":
@@ -1238,6 +1245,14 @@ function groupRefusal(code: string): string {
     default:
       return `Gray refused the change (${code})`;
   }
+}
+
+/** What Gray's refusal of a group change means, in a sentence. */
+function groupRefusal(code: string): string {
+  return grayChangeRefusal(code, {
+    request_invalid: "an account id is not one Gray's panel knows, or the group's name is over 256 characters or has a line break",
+    invalid_request: "Gray refused the group's name: 1 to 64 characters, no control characters",
+  });
 }
 
 /**
@@ -1267,6 +1282,75 @@ async function accountsGroupCommand(args: ParsedArgs, io: CliIo): Promise<number
   // An account Gray has not adopted (not pushed yet, or its vendor has no model in relay-stack.json) has no group to be in.
   if (result.unknown.length > 0) io.stderr(`gray-assistant accounts group: Gray does not have ${result.unknown.join(", ")} yet (an account reaches Gray with accounts push): run accounts push, then this command again for ${result.unknown.length === 1 ? "it" : "them"}\n`);
   printJson(io, { command: "accounts group", ok: result.unknown.length === 0, relay_id: config.daemon.relayId, group: group === undefined ? null : group.trim(), accounts: [...result.grouped], unknown: [...result.unknown] });
+  return result.unknown.length === 0 ? 0 : 1;
+}
+
+const SET_USAGE =
+  "gray-assistant accounts set <account>... [--max-concurrency <n>] [--weight <n>] [--models <id,...> | --all-models]: the accounts, and at least one setting";
+
+/** A setting's whole number from 1 to 4294967295 (the panel's range), or undefined when the option is not given. */
+function settingNumber(args: ParsedArgs, name: string): number | undefined {
+  const text = args.flags.get(name);
+  if (text === undefined) return undefined;
+  const value = parsePositiveInt(text, `--${name}`);
+  if (value > 4_294_967_295n) throw new RelayKitError("usage", `--${name} is a whole number from 1 to 4294967295`);
+  return Number(value);
+}
+
+/**
+ * `accounts set <account>... [--max-concurrency <n>] [--weight <n>] [--models <id,...> | --all-models]` and
+ * `accounts pause|resume <account>...` (`./account-settings.ts`): what the panel's Edit settings and Pause/Resume do,
+ * signed with the relay key. These settings live on Gray only (the account file and the VM never carry them), so no
+ * push follows; Gray gives the lane one new configuration for the change. `--all-models` is what a new account starts
+ * with: every model the deployment's stack endpoints map for the accounts' vendor.
+ */
+async function accountsSettingsCommand(args: ParsedArgs, io: CliIo, sub: "set" | "pause" | "resume"): Promise<number> {
+  const command = `accounts ${sub}`;
+  assertFlags(args, sub === "set" ? ["config", "max-concurrency", "weight", "models", "all-models"] : ["config"]);
+  const accounts = args.positionals.slice(2);
+  let change: import("./account-settings.ts").AccountSettingsChange = { paused: sub === "pause" };
+  if (sub === "set") {
+    const listed = args.flags.get("models")?.split(",").map((model) => model.trim()).filter((model) => model !== "");
+    if (listed !== undefined && args.flags.has("all-models")) throw new RelayKitError("usage", "--models and --all-models are two ways to say the models: give one");
+    if (listed !== undefined && listed.length === 0) throw new RelayKitError("usage", "--models names at least one model ID, separated by commas (--all-models: every model of the accounts' vendor)");
+    const weight = settingNumber(args, "weight");
+    const concurrency = settingNumber(args, "max-concurrency");
+    change = {
+      ...(listed !== undefined ? { models: listed } : args.flags.has("all-models") ? { models: "*" as const } : {}),
+      ...(weight === undefined ? {} : { weight }),
+      ...(concurrency === undefined ? {} : { max_concurrency: concurrency }),
+    };
+    if (Object.keys(change).length === 0) throw new RelayKitError("usage", SET_USAGE);
+  }
+  if (accounts.length === 0) throw new RelayKitError("usage", sub === "set" ? SET_USAGE : `gray-assistant ${command} <account>...: the accounts' ids on Gray's panel`);
+  const { loadRelayConfigFile } = await import("./config-file.ts");
+  const config = loadRelayConfigFile(configPathOf(args));
+  const key = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "deployment key", MAX_KEY_BYTES));
+  const { writeAccountSettings } = await import("./account-settings.ts");
+  const result = await writeAccountSettings({ config, seed: key.seed, nowMs: io.now(), random: io.random, accountIds: accounts, change, ...(io.grayPost === undefined ? {} : { post: io.grayPost }) });
+  if (!result.ok) {
+    const refusal = grayChangeRefusal(result.code, {
+      request_invalid: "an account id is not one Gray's panel knows, or a model ID is not one (a letter or digit, then letters, digits and . _ : @ + / -)",
+      invalid_request: "Gray refused the change: a model ID twice or outside its rule, or --all-models for a vendor none of your stack endpoints maps a model of yet",
+      lane_stack_accounts_vendor_mixed: "the accounts are of more than one vendor, and a model ID is one vendor's: set the models of one vendor's accounts at a time",
+    });
+    io.stderr(`gray-assistant ${command}: ${refusal}\n`);
+    printJson(io, { command, ok: false, relay_id: config.daemon.relayId, code: result.code });
+    return 1;
+  }
+  for (const a of result.accounts) {
+    const models = a.models.length === 0 ? "no models" : `models ${a.models.join(", ")}`;
+    io.stdout(`gray-assistant ${command}: ${a.account_id} on Gray: ${a.status}, ${a.max_concurrency} at once, weight ${a.weight}, ${models}\n`);
+  }
+  // An account Gray has not adopted (not pushed yet, or its vendor has no model in relay-stack.json) has no settings on Gray yet.
+  if (result.unknown.length > 0) io.stderr(`gray-assistant ${command}: Gray does not have ${result.unknown.join(", ")} yet (an account reaches Gray with accounts push): run accounts push, then this command again for ${result.unknown.length === 1 ? "it" : "them"}\n`);
+  printJson(io, {
+    command,
+    ok: result.unknown.length === 0,
+    relay_id: config.daemon.relayId,
+    accounts: result.accounts.map((a) => ({ account_id: a.account_id, status: a.status, max_concurrency: BigInt(a.max_concurrency), weight: BigInt(a.weight), models: [...a.models] })),
+    unknown: [...result.unknown],
+  });
   return result.unknown.length === 0 ? 0 : 1;
 }
 

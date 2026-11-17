@@ -1216,6 +1216,13 @@ export interface ProvisionPlan {
   /** LANE_STACK_ENTRY_ORIGIN: the entry an outbound VM's health and gray-assistant's tunnel go through; null when unset. */
   readonly entryOrigin?: string | null;
   /**
+   * LANE_STACK_ENTRY_ORIGINS (docs/design/entry-replicas.md ER11): the entries the provisioner reads the VM at one by
+   * one, each replica by its own name; "serving" and a rollout's watch need the VM at every one in service (an entry
+   * being released or down is skipped), and its drain sums the streams each holds. `entryOrigin` stays the shared name of the tunnel lane origin. Absent or empty (a console from
+   * before replicas): `entryOrigin` alone.
+   */
+  readonly entryOrigins?: readonly string[];
+  /**
    * Phase 2 (docs/design/relay-no-always-on-host.md 13.11 P5a-2): a Deploy of a relay whose pairing gave a guardian part
    * (lane_stack_relay_guardians), with the phase-2 switch on for it. The app id is `contract`; the profile is the release
    * the guardian approved at pairing while it is current, else a newer release effective on the contract (the chain part

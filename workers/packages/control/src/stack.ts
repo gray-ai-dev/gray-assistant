@@ -359,6 +359,16 @@ export const STACK_LANE_TUNNEL_NO_ENTRY_RULE =
 export function stackLaneTunnelEntryRule(entryOrigin: string): string {
   return `A tunnel lane origin goes through this deployment's entry, ${entryOrigin}: ${entryOrigin}${PEER_TUNNEL_PATH}<relay_id>.`;
 }
+/**
+ * The refusal of a tunnel lane origin at one entry replica's own name (LANE_STACK_ENTRY_ORIGINS,
+ * docs/design/entry-replicas.md ER11): it stays at the replicas' shared name.
+ */
+export function stackLaneTunnelReplicaRule(entryOrigin: string, replica: string): string {
+  return (
+    `A tunnel lane origin goes through the entry's shared name, ${entryOrigin}, not the replica ${replica}: a replica's own name reaches ` +
+    `that replica only, which an entry release takes out, while every replica holds sessions to every VM: ${entryOrigin}${PEER_TUNNEL_PATH}<relay_id>.`
+  );
+}
 export const STACK_KMS_CA_PUBKEY_RULE = "A KMS CA public key is the node KMS's ca_pubkey: a P-256 SubjectPublicKeyInfo as 182 lower-case hex digits.";
 
 /** Whether `origin` is an https origin as `new URL(origin).origin` writes it (what relay-kit's `lane.instances` keys on). */
@@ -422,13 +432,24 @@ export type StackInstanceInput = z.infer<typeof stackInstanceInputSchema>;
  * is outbound-only (docs/design/relay-outbound-only.md section 5). Each refusal has its own rule: not a tunnel route,
  * no entry configured, another entry (the rule names the expected one, so a typo is not a VM nobody reaches), or
  * another relay's tunnel (gray-relay would refuse to adopt it).
+ *
+ * With entry replicas (`replicas`, LANE_STACK_ENTRY_ORIGINS, docs/design/entry-replicas.md ER11) `entryOrigin` is their
+ * shared name, and it stays the only entry a tunnel lane origin names: the tunnel carries the VM's own TLS, and every
+ * replica holds sessions to every VM, so any replica the shared name reaches serves it. A replica's own name is refused
+ * with a rule of its own: gray-assistant would pin one replica, and lose the lane while an entry release updates it.
  */
-export function checkStackInstance(input: Pick<StackInstanceInput, "app_id" | "lane_origin" | "kms_ca_pubkey">, relayId: string, entryOrigin: string | null): void {
+export function checkStackInstance(
+  input: Pick<StackInstanceInput, "app_id" | "lane_origin" | "kms_ca_pubkey">,
+  relayId: string,
+  entryOrigin: string | null,
+  replicas: readonly string[] = [],
+): void {
   if (input.app_id !== null && !STACK_APP_ID_PATTERN.test(input.app_id)) refuse(STACK_APP_ID_RULE);
   if (input.lane_origin !== null) {
     const tunnel = tunnelOriginParts(input.lane_origin);
     if (tunnel === null) refuse(STACK_LANE_ORIGIN_RULE);
     if (entryOrigin === null || entryOrigin === "") refuse(STACK_LANE_TUNNEL_NO_ENTRY_RULE);
+    if (tunnel.entry !== entryOrigin && replicas.includes(tunnel.entry)) refuse(stackLaneTunnelReplicaRule(entryOrigin, tunnel.entry));
     if (tunnel.entry !== entryOrigin) refuse(stackLaneTunnelEntryRule(entryOrigin));
     if (tunnel.relayId !== relayId) refuse(STACK_LANE_TUNNEL_RULE);
   }
@@ -659,6 +680,51 @@ export const STACK_ACCOUNT_GROUP_DOMAIN = "gray-relay-account-group/v1";
  */
 export function stackAccountGroupMessage(r: StackAccountGroupRequest): Uint8Array {
   return new TextEncoder().encode([STACK_ACCOUNT_GROUP_DOMAIN, r.relay_id, String(r.issued_ms), r.nonce, r.group === null ? "-" : `=${r.group}`, ...r.account_ids].join("\n"));
+}
+
+// ------------------------------------------------------------------------------------- the relay's own account settings
+
+/**
+ * A relay's own change of its accounts' settings (`POST /v1/lane-stack/account-settings`, docs/design/relay-operator-page.md
+ * section 2): what the panel's Edit settings and Pause/Resume do, signed by the relay key as the group change is, so
+ * `gray-assistant accounts set|pause|resume` offer what the panel offers. One change a request, as the panel's PATCH:
+ * any of `models`, `weight` and `max_concurrency`, or `paused` alone. `models` is model IDs, or `"*"`: every model the
+ * vendor's enabled stack endpoints map now, what a new account starts with.
+ */
+export const stackAccountSettingsRequestSchema = z
+  .object({
+    relay_id: z.string().regex(LANE_RELAY_ID_PATTERN),
+    issued_ms: u64,
+    nonce: z.string().regex(STACK_PANEL_VIEW_NONCE_PATTERN),
+    account_ids: z.array(z.string().regex(STACK_ID_PATTERN)).min(1).max(STACK_ACCOUNTS_PATCH_MAX),
+    // A model ID holds no comma or line break (validModelId), so the signed message reads one way.
+    models: z.union([z.literal("*"), z.array(z.string().refine(validModelId, STACK_MODELS_RULE))]).optional(),
+    weight: z.number().int().min(1).max(U32).optional(),
+    max_concurrency: z.number().int().min(1).max(U32).optional(),
+    paused: z.boolean().optional(),
+  })
+  .strict()
+  .refine((r) => (r.paused === undefined) !== (r.models === undefined && r.weight === undefined && r.max_concurrency === undefined), {
+    message: "a request names models, weight or max_concurrency, or paused alone",
+  });
+export type StackAccountSettingsRequest = z.infer<typeof stackAccountSettingsRequestSchema>;
+
+/** The request and the relay's Ed25519 signature over `stackAccountSettingsMessage`, 128 lower-case hex digits. */
+export const stackAccountSettingsReportSchema = z.object({ request: stackAccountSettingsRequestSchema, signature: z.string().regex(/^[0-9a-f]{128}$/) }).strict();
+export type StackAccountSettingsReport = z.infer<typeof stackAccountSettingsReportSchema>;
+
+/** The first line of the signed settings change. */
+export const STACK_ACCOUNT_SETTINGS_DOMAIN = "gray-relay-account-settings/v1";
+
+/**
+ * The bytes the relay signs: the domain, `relay_id`, `issued_ms`, `nonce`, then a line for each of `models` (`*`, or
+ * `=` and the IDs joined by commas), `weight`, `max_concurrency` and `paused` (`true`, `false`), `-` for one the
+ * request does not name, then each account id on a line of its own, in the request's order.
+ */
+export function stackAccountSettingsMessage(r: StackAccountSettingsRequest): Uint8Array {
+  const models = r.models === undefined ? "-" : r.models === "*" ? "*" : `=${r.models.join(",")}`;
+  const value = (v: number | boolean | undefined): string => (v === undefined ? "-" : String(v));
+  return new TextEncoder().encode([STACK_ACCOUNT_SETTINGS_DOMAIN, r.relay_id, String(r.issued_ms), r.nonce, models, value(r.weight), value(r.max_concurrency), value(r.paused), ...r.account_ids].join("\n"));
 }
 
 /** Where a restart request stands: recorded and waiting, or settled by the provisioner or Gray's operator. */

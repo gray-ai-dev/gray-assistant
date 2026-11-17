@@ -430,7 +430,8 @@ export interface DaemonSourceAccount {
   readonly proxy?: DaemonSourceProxy | null;
   /**
    * The `max_concurrency` the source states for the account (1 to 10000), absent when it states none: Gray adopts the
-   * account with it as its concurrency, else with the panel's default (10). Later changes are made on Gray.
+   * account with it as its concurrency, else with its default (10 for an API key, 5 for an account that signs in).
+   * Later changes are made on Gray.
    */
   readonly maxConcurrency?: number;
 }

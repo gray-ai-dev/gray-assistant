@@ -16,10 +16,11 @@
  * - A park is cleared only when the source's `changeMark` changes or the account disappears: the
  *   source says something about that account changed, so the new secret is tried again.
  */
-import { RelayConnectorError, assertCredentialFormat, credentialClass, type Credential, type Vendor } from "@gray/relay-connector";
-import type { SourceAccount, SourceKind } from "../source/types.ts";
+import { RelayConnectorError, assertCredentialFormat, credentialClass, egressSchema, type Credential, type EgressSpec, type Vendor } from "@gray/relay-connector";
+import { RelayKitError } from "../errors.ts";
+import type { SourceAccount, SourceCredential, SourceEgress, SourceKind } from "../source/types.ts";
 import { deriveLaneAccountId } from "./account-id.ts";
-import type { DaemonParkedAccount } from "./types.ts";
+import type { DaemonParkedAccount, DaemonSourceProxy } from "./types.ts";
 
 /** The closed reasons an account is parked. */
 export type ParkReason =
@@ -140,4 +141,42 @@ export class ParkRegistry {
   clear(): void {
     this.#parked.clear();
   }
+}
+
+/**
+ * The sealed egress member for one source account, or `"invalid"` when the source's fields fail the
+ * connector's own E2 rules. The password is the one secret half of the proxy (K4-1); a username with
+ * no declared password is sealed with an empty password, which is the one wire form E2 has for it.
+ * Nothing here logs or returns a value in an error.
+ */
+export function egressOf(planned: PlannedAccount, read: SourceCredential): EgressSpec | undefined | "invalid" {
+  const declared = planned.account.egress;
+  if (declared === undefined) {
+    // A password without a declared proxy has no wire form.
+    return read.egressPassword === undefined ? undefined : "invalid";
+  }
+  if (declared.username === undefined && read.egressPassword !== undefined) return "invalid";
+  const candidate = {
+    type: declared.type,
+    host: declared.host,
+    port: declared.port,
+    ...(declared.username === undefined ? {} : { username: declared.username, password: read.egressPassword ?? "" }),
+  };
+  const parsed = egressSchema.safeParse(candidate);
+  return parsed.success ? parsed.data : "invalid";
+}
+
+/**
+ * The proxy a source account declares, as the agent status reports it (`DaemonSourceAccount.proxy`): its type, host and
+ * port only, null for none, undefined when those fail the connector's own rules (it would not be sealed).
+ */
+export function sourceProxyOf(declared: SourceEgress | undefined): DaemonSourceProxy | null | undefined {
+  if (declared === undefined) return null;
+  const parsed = egressSchema.safeParse({ type: declared.type, host: declared.host, port: declared.port });
+  return parsed.success ? { type: parsed.data.type, host: parsed.data.host, port: parsed.data.port } : undefined;
+}
+
+/** R04: a source error that names one account, so the rest of the bundle can still install. */
+export function isPerAccountSourceError(error: unknown): boolean {
+  return error instanceof RelayKitError && (error.code === "source_not_found" || error.code === "source_shape_changed");
 }

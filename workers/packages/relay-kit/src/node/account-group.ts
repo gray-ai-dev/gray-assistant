@@ -65,7 +65,7 @@ export interface AccountGroupOptions {
 }
 
 /** Gray's error code (`{"error": {"code": …}}`), or null. Only a closed lower-case word is passed on. */
-function errorCodeOf(text: string): string | null {
+export function errorCodeOf(text: string): string | null {
   try {
     const error = get(parsePlain(text) as Json, "error");
     const code = isObject(error) ? get(error, "code") : null;

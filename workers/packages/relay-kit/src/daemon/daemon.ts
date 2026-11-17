@@ -27,7 +27,6 @@ import { isObject, parseStrict, toJsonString, type Json, type JsonObject } from 
 import {
   RelayConnectorError,
   SCHEDULER_MAX_SKEW_MS,
-  egressSchema,
   hexBytes,
   type Credential,
   type CredentialBundle,
@@ -45,19 +44,21 @@ import { sealCredentialBundleForReplicas, sealCredentialRevokeForReplicas, sealC
 import { accountAliasKey, newAccountAliases, panelIdOf, type AccountAlias } from "./account-aliases.ts";
 import { parseRelayDaemonConfig, policyOrigins, type RelayDaemonConfig } from "./config.ts";
 import { daemonControlText, EMPTY_DAEMON_CONTROL, withPairingAcceptances, withStackInstance } from "./control.ts";
-import { credentialParkReason, metadataParkReason, ParkRegistry, planAccount, type ParkReason, type PlannedAccount } from "./eligibility.ts";
+import { credentialParkReason, egressOf, isPerAccountSourceError, metadataParkReason, ParkRegistry, planAccount, sourceProxyOf, type ParkReason, type PlannedAccount } from "./eligibility.ts";
 import { ReplicaQueue } from "./queue.ts";
 import { decideRefusal } from "./refusals.ts";
 import { ReleaseListError, ReleaseRegistry, fetchReleaseList, releaseListHasOsMeasurements, type VerifiedReleaseList } from "./releases.ts";
 import { DaemonSchedulerPool, type PoolAccount } from "./scheduler-pool.ts";
 import { EMPTY_DAEMON_STATE } from "./state.ts";
-import { DaemonTransportError, type DaemonStackInstance, type DaemonStackInstanceView, type StackBindingChoice, type StackInstanceValues, type DaemonAlert, type DaemonAttestResult, type DaemonControl, type DaemonControlLoad, type DaemonHealth, type DaemonHealthReason, type DaemonLogEvent, type DaemonReleaseListStatus, type DaemonReplicaStatus, type DaemonSourceProxy, type DaemonStackSecondaryStatus, type DaemonState, type DaemonStateLoad, type DaemonStatus, type RelayDaemon, type RelayDaemonOptions, type ReleaseRefusal, type StackReleaseDecision } from "./types.ts";
+import { DaemonTransportError, type DaemonStackInstance, type DaemonStackInstanceView, type StackBindingChoice, type StackInstanceValues, type DaemonAlert, type DaemonAttestResult, type DaemonControl, type DaemonControlLoad, type DaemonHealth, type DaemonHealthReason, type DaemonLogEvent, type DaemonReleaseListStatus, type DaemonReplicaStatus, type DaemonStackSecondaryStatus, type DaemonState, type DaemonStateLoad, type DaemonStatus, type RelayDaemon, type RelayDaemonOptions, type ReleaseRefusal, type StackReleaseDecision } from "./types.ts";
 import { normalizeHttpsOrigin, type CheckedVerifiedReport } from "../verified-report.ts";
 import { tunnelOriginOf } from "../lane-origin.ts";
 import { failedChecksText } from "./failed-checks.ts";
 import { attestationMismatch, stackBootDecision } from "./stack-boot.ts";
 import { DaemonVersionError, VersionLedger } from "./versions.ts";
-import type { SourceAccount, SourceCredential, SourceEgress, SourceSnapshot } from "../source/types.ts";
+import type { SourceAccount, SourceCredential, SourceSnapshot } from "../source/types.ts";
+
+export { egressOf, isPerAccountSourceError, sourceProxyOf };
 
 /** The policy registry GET (the lane's M22 document); the one route that proves a policy is installed. */
 export const POLICY_REGISTRY_PREFIX = "/v1/aci/relay-policy/";
@@ -214,39 +215,6 @@ interface BundleAccount {
 /** A bundle account as one replica's lane holds it. */
 interface LaneBundleAccount extends BundleAccount {
   readonly laneId: string;
-}
-
-/**
- * The sealed egress member for one source account, or `"invalid"` when the source's fields fail the
- * connector's own E2 rules. The password is the one secret half of the proxy (K4-1); a username with
- * no declared password is sealed with an empty password, which is the one wire form E2 has for it.
- * Nothing here logs or returns a value in an error.
- */
-export function egressOf(planned: PlannedAccount, read: SourceCredential): EgressSpec | undefined | "invalid" {
-  const declared = planned.account.egress;
-  if (declared === undefined) {
-    // A password without a declared proxy has no wire form.
-    return read.egressPassword === undefined ? undefined : "invalid";
-  }
-  if (declared.username === undefined && read.egressPassword !== undefined) return "invalid";
-  const candidate = {
-    type: declared.type,
-    host: declared.host,
-    port: declared.port,
-    ...(declared.username === undefined ? {} : { username: declared.username, password: read.egressPassword ?? "" }),
-  };
-  const parsed = egressSchema.safeParse(candidate);
-  return parsed.success ? parsed.data : "invalid";
-}
-
-/**
- * The proxy a source account declares, as the agent status reports it (`DaemonSourceAccount.proxy`): its type, host and
- * port only, null for none, undefined when those fail the connector's own rules (it would not be sealed).
- */
-export function sourceProxyOf(declared: SourceEgress | undefined): DaemonSourceProxy | null | undefined {
-  if (declared === undefined) return null;
-  const parsed = egressSchema.safeParse({ type: declared.type, host: declared.host, port: declared.port });
-  return parsed.success ? { type: parsed.data.type, host: parsed.data.host, port: parsed.data.port } : undefined;
 }
 
 /** The daemon implementation; `createRelayDaemon` is the one constructor. */
@@ -2940,11 +2908,6 @@ export function refusalCode(response: { readonly status: number; readonly body: 
     }
   }
   return `http_${response.status}`;
-}
-
-/** R04: a source error that names one account, so the rest of the bundle can still install. */
-export function isPerAccountSourceError(error: unknown): boolean {
-  return error instanceof RelayKitError && (error.code === "source_not_found" || error.code === "source_shape_changed");
 }
 
 /** P12: whether two named instances are the same app at the same origin with the same KMS. */
