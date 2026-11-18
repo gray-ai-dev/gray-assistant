@@ -519,19 +519,16 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
   // phase 1; a phase-2 boot asks for no token).
   let vm = adoptedPhase2Vm(config, options.chain);
   let candidate: DaemonStackInstance | null = null;
-  // Gray's answer to one signed agent status: the VM it deployed. Read the source's accounts for the discovery status
-  // without caching across step 4 so a transient read failure is not cached and delivery always reads fresh accounts.
-  const readSourceAccounts = (): Promise<ReadAccounts> => (options.readAccounts ?? (() => cliAccounts(config, io.now())))();
+  // Gray's answer to one signed agent status: the VM it deployed. That status names no account (`sources: null`, as kit
+  // 1.8.0 sent it): nothing of the source's accounts, not even their ids, vendors or proxy addresses, leaves before the
+  // VM attests (Roteo, kit 1.9.0). Gray keeps the last list it had across a status without one (the console's
+  // `recordAgentStatus`), so a refusal before step 4 clears nothing there; step 4 sends the list after the VM attested.
   let agentAnswer: Promise<unknown> | null = null;
   // Gray keeps only a status newer than the last (`issued_ms`), so the second of one run is a millisecond later at least.
   let issuedMs = 0;
   const nextIssuedMs = (): number => (issuedMs = Math.max(io.now(), issuedMs + 1));
   const postStatus = options.agentStatusPost ?? defaultPost;
-  const agentAnswerOnce = (): Promise<unknown> =>
-    (agentAnswer ??= (async () => {
-      const initial = await readSourceAccounts().catch(() => null);
-      return cliAgentAnswer(config, seed, nextIssuedMs(), initial?.sources ?? null, postStatus, initial?.skipped ?? []);
-    })());
+  const agentAnswerOnce = (): Promise<unknown> => (agentAnswer ??= cliAgentAnswer(config, seed, nextIssuedMs(), null, postStatus));
   if (vm === null) {
     // A state, not a misuse: a refusal with a code, which `login --vendor` reads to make the first delivery itself.
     if (action !== "deliver") return refuse(VM_NOT_ADOPTED, "no stack VM adopted yet: `gray-assistant deliver` adopts the VM Gray deployed once its quote proves it");
@@ -555,27 +552,27 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
   if (!attested.ok) {
     // The code stays the word guides and agents match on; the checks the report failed follow it, as doctor says them.
     const code = `attest_${attested.stage}_${attested.code}`;
-    return refuse(code, `the stack VM did not attest (${code})${failedChecksClause(attested.failedChecks)}; nothing was sent`, failedChecksJson(attested.failedChecks));
+    return refuse(code, `the stack VM did not attest (${code})${failedChecksClause(attested.failedChecks)}; nothing was sent to the VM`, failedChecksJson(attested.failedChecks));
   }
   const mismatch = attestationMismatch(attested, vm.origin, relayId);
-  if (mismatch !== null) return refuse(mismatch, `the attestation is not this deployment's VM at ${vm.origin} (${mismatch}); nothing was sent`);
+  if (mismatch !== null) return refuse(mismatch, `the attestation is not this deployment's VM at ${vm.origin} (${mismatch}); nothing was sent to the VM`);
   const boot = phase2Boot(attested.stackBoot, relayId, relayKeyHex);
-  if (!boot.ok) return refuse(`attest_${boot.code}`, `${boot.message} (attest_${boot.code}); nothing was sent`);
+  if (!boot.ok) return refuse(`attest_${boot.code}`, `${boot.message} (attest_${boot.code}); nothing was sent to the VM`);
   io.stdout(`gray-assistant ${name}: the VM attests ${boot.running === null ? "the empty slot: it waits for its first delivery" : `${boot.running} (designation seq ${boot.seq})`}\n`);
 
   // 1b. The compose the VM measured, by its published text (P6).
-  if (attested.composeHash === null) return refuse("compose_unmeasured", "the VM's quote measured no compose hash; nothing was sent");
+  if (attested.composeHash === null) return refuse("compose_unmeasured", "the VM's quote measured no compose hash; nothing was sent to the VM");
   let content: ReleaseContentResult;
   try {
     content = options.releaseContent !== undefined ? await options.releaseContent(attested.composeHash) : await cliReleaseContent(config, vm.instance, attested.composeHash, io.now());
   } catch (error) {
     if (error instanceof RelayKitError && error.code === "usage") throw error;
-    return refuse("release_list_unavailable", "Gray's signed release list could not be read, so the VM's compose was not checked; nothing was sent");
+    return refuse("release_list_unavailable", "Gray's signed release list could not be read, so the VM's compose was not checked; nothing was sent to the VM");
   }
   if (!content.ok) {
     for (const check of content.checks.filter((c) => !c.ok)) io.stderr(`gray-assistant ${name}: compose ${check.name}: ${check.detail}\n`);
     const code = CONTENT_CODES[content.code] ?? "compose_refused";
-    return refuse(code, `the VM's compose does not pass this deployment's checks (${code}); nothing was sent`);
+    return refuse(code, `the VM's compose does not pass this deployment's checks (${code}); nothing was sent to the VM`);
   }
   io.stdout(`gray-assistant ${name}: the VM's compose passes (Gray's published text, hashed and checked here: the closed policy, the KMS, the lease, the vault)\n`);
 
@@ -587,11 +584,11 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
     chain = options.chainCheck !== undefined ? await options.chainCheck(compose, osImage) : (await (await import("./chain.ts")).chainChecksFor(options.chain, compose, osImage, { nowMs: io.now() })).result;
   } catch (error) {
     if (error instanceof RelayKitError && error.code === "usage") throw error;
-    return refuse("chain_unreachable", "your contract could not be read; nothing was sent");
+    return refuse("chain_unreachable", "your contract could not be read; nothing was sent to the VM");
   }
   if (!chain.ok) {
     for (const check of chain.checks.filter((c) => !c.ok)) io.stderr(`gray-assistant ${name}: chain ${check.name}: ${check.detail}\n`);
-    return refuse(`chain_${chain.reason}`, `your contract does not allow this VM (chain ${chain.reason}: ${chain.detail}); nothing was sent`);
+    return refuse(`chain_${chain.reason}`, `your contract does not allow this VM (chain ${chain.reason}: ${chain.detail}); nothing was sent to the VM`);
   }
   io.stdout(`gray-assistant ${name}: the contract ${options.chain.chain.contract} allows this VM's compose and OS image (block ${chain.block}, both endpoints agree)\n`);
 
@@ -648,7 +645,7 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
   if (sendAccounts && target === null && boot.running !== null && !stack.relayImages.includes(boot.running)) {
     return refuse(
       "running_image_not_allowed",
-      `the VM runs ${boot.running}, which is not one of stack.relay_images: no accounts go to it; move it to an allowed image first (\`gray-assistant stack rollout <image>\`); nothing was sent`,
+      `the VM runs ${boot.running}, which is not one of stack.relay_images: no accounts go to it; move it to an allowed image first (\`gray-assistant stack rollout <image>\`); nothing was sent to the VM`,
     );
   }
 
@@ -706,7 +703,7 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
   };
   let accounts: ReadAccounts | null = null;
   if (sendAccounts) {
-    accounts = await readSourceAccounts();
+    accounts = await (options.readAccounts ?? (() => cliAccounts(config, io.now())))();
     // What the source lists, for the panel's Adopt (the agent's `sources`): a failure here sends the accounts all the same.
     if (accounts.sources !== undefined) {
       try {
@@ -744,7 +741,7 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
       // workspace); a push to a VM that serves would replace the accounts it has with none.
       return refuse(
         "no_account_sealed",
-        `none of the source's ${accounts.listed} account(s) can be sealed (each is named above), so nothing was sent${boot.running === null ? "" : " and the VM keeps the accounts it has"}: put each right in the source as its line above says (\`gray-assistant doctor\` checks the source), then run the command again`,
+        `none of the source's ${accounts.listed} account(s) can be sealed (each is named above), so nothing was sent to the VM${boot.running === null ? "" : " and the VM keeps the accounts it has"}: put each right in the source as its line above says (\`gray-assistant doctor\` checks the source), then run the command again`,
         { accounts_listed: BigInt(accounts.listed), left_out: accounts.skipped.map((skipped) => ({ vendor: skipped.vendor, account: skipped.panelId, reason: skipped.reason })) },
       );
     }

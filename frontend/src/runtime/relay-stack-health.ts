@@ -331,9 +331,14 @@ export function serverStateText(h: Pick<AccountHealth, 'state' | 'reason' | 'unt
       return { label, reason: `${why}; the lane rests it${until ? ` until ${until}` : ''} and then tries it again.` };
     }
     case 'proxy_failing': return { label: 'Proxy failing', reason: 'Its proxy failed every call in the last 15 minutes. Check the proxy, or move the account to another.' };
-    case 'credential_expiring': return h.reason === 'credential_expired'
-      ? { label: 'Credential expired', reason: 'Its sealed credential has expired. Renew it in your credential source; gray-assistant seals the new one.' }
-      : { label: until ? `Credential expires ${until}` : 'Credential expiring', reason: `Its sealed credential expires${until ? ` at ${until}` : ' within a day'}. Renew it in your credential source; gray-assistant seals the new one.` };
+    case 'credential_expiring': {
+      // Where the credential is renewed says what to do: an account the relay's software signs in inside the VM signs in
+      // again there, one the source holds is replaced there (Roteo, kit 1.9.0: both were told to renew it in the source).
+      const fix = credentialFix(credentialKind(h.report), h.account_id);
+      return h.reason === 'credential_expired'
+        ? { label: 'Credential expired', reason: `Its sealed credential has expired. ${fix}` }
+        : { label: until ? `Credential expires ${until}` : 'Credential expiring', reason: `Its sealed credential expires${until ? ` at ${until}` : ' within a day'}. ${fix}` };
+    }
     case 'failing': {
       const share = failing && failing.counted ? Math.round((failing.failures / failing.counted) * 100) : null;
       const top = failing?.top.length ? `, mostly ${failing.top.slice(0, 2).map(c => lowerFirst(CLASS_WORDS[c])).join(' and ')}` : '';
@@ -364,7 +369,7 @@ export function shortReason(h: Pick<AccountHealth, 'state' | 'reason' | 'model' 
     }
     case 'cooling': return `${coolingShort(h.reason)}${on}${BANNED_CLASSES.has(h.reason) ? ` · ${h.reason === 'auth' ? CREDENTIAL_SHORT_FIX[credentialKind(h.report)] : 'replace'}` : ''}`;
     case 'proxy_failing': return 'Every call failed at its proxy (15 min)';
-    case 'credential_expiring': return h.reason === 'credential_expired' ? 'Expired; renew it in your source' : 'Renew it in your source';
+    case 'credential_expiring': return `${h.reason === 'credential_expired' ? 'Expired' : 'Ends soon'} · ${CREDENTIAL_SHORT_FIX[credentialKind(h.report)]}`;
     case 'failing': return failing && failing.counted
       ? `${n(failing.failures)} of ${n(failing.counted)} calls failed in 1 h${failing.top[0] ? `, mostly ${lowerFirst(CLASS_WORDS[failing.top[0]])}` : ''}`
       : 'Half its calls failed in the last hour';
@@ -663,7 +668,11 @@ export function stepContext(relay: Pick<StackRelay, 'relay_id' | 'token_url' | '
   };
 }
 /** The exact next step of a re-login item, with the command to run on the relay's machine (the relay's own values filled in). */
-export function nextStep(issue: CredentialIssue, { clock, accountsText, ctx }: { clock: (ms: number) => string; accountsText: (ids: readonly string[]) => string; ctx?: StepContext }): NextStep {
+export function nextStep(issue: CredentialIssue, { clock, accountsText, ctx, kindOf }: {
+  clock: (ms: number) => string; accountsText: (ids: readonly string[]) => string; ctx?: StepContext;
+  /** Where an account's credential is renewed (`credentialKind` of its report); absent: not known. */
+  kindOf?: (accountId: string) => CredentialKind;
+}): NextStep {
   const who = issue.account_ids.length ? accountsText(issue.account_ids) : null;
   // The page's own addresses (frontend/src/relay-ui/App.tsx): the accounts, the doctor's checks.
   const open = (path: (page: string) => string, label: string) => ctx?.page ? { href: path(ctx.page), label } : null;
@@ -673,8 +682,12 @@ export function nextStep(issue: CredentialIssue, { clock, accountsText, ctx }: {
     case 'credential_expiring': {
       const title = `${who ?? 'A credential'}: credential ${issue.detail === 'expired' ? 'expired' : `expires ${issue.since_ms ? clock(issue.since_ms) : 'soon'}`}`;
       const tone = issue.detail === 'expired' ? 'danger' as const : 'warning' as const;
-      // accounts push seals what the source holds: renewing it there, then pushing, is the whole step.
-      return { title, tone, open: open(accounts, 'Renew it on your machine'), command: PUSH_COMMAND, detail: 'Renew it in your account source (sign in again, or replace the token there), then run accounts push in the kit directory: it seals the new one to the VM.' };
+      // By where the credential is renewed: an account the relay's software signs in inside the VM signs in again there
+      // (its command); one the source holds is replaced there, and accounts push seals the new one.
+      const one = issue.account_ids.length === 1 ? issue.account_ids[0] : '';
+      const kind = one && kindOf ? kindOf(one) : 'unknown';
+      if (kind === 'sign_in') return { title, tone, open: null, command: signInCommand(one), detail: credentialFix(kind, one, 'below') };
+      return { title, tone, open: open(accounts, 'Renew it on your machine'), command: PUSH_COMMAND, detail: credentialFix(kind, one) };
     }
     case 'not_sealed': return {
       title: `${who ?? 'An account'}: no credential since the VM started`, tone: 'danger', open: open(checks, 'Check it on your machine'),

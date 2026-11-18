@@ -556,6 +556,25 @@ const gray = (title: string, fix = "This is on Gray's side and Gray's operators 
   waits: false,
 });
 
+/**
+ * The release codes (`release_rejected`, `release_not_accepted` and their OS-image twins) come only from a phase-1 token
+ * service: a deployment with no release contract, whose gray-assistant kept a list of the releases it accepted.
+ * `releases accept` left the CLI in kit 1.6.10, and a deployment decides releases on its contract now, so the fix is
+ * STEP_FAILURE_WORDS.release_not_accepted's: pair again with the current kit, then Deploy. The `*_not_accepted` codes
+ * still wait (the token service answers 503 and pre-launch asks again), though no command clears them in place any more.
+ */
+const phase1ReleaseWords = (title: string, approve: string, waits: boolean): TokenServiceWords => ({
+  title,
+  fix:
+    "Your deployment was paired before release contracts (phase 1), and the current gray-assistant keeps no list of accepted releases: a deployment decides Gray's releases on its contract now. " +
+    `Pair gray-assistant again with the current kit and a new code from the Integration page; the pairing makes the contract and approves the release and OS image it pairs on. Then Deploy. Later ones take effect when your guardian approves them (${approve}, in gray-assistant's kit directory) or when your release delay passes.`,
+  side: "relay",
+  command: null,
+  waits,
+});
+const APPROVE_RELEASE = "releases approve with the release's compose hash";
+const APPROVE_OS_IMAGE = "releases approve with the image's hash and --kind os_image";
+
 export const TOKEN_SERVICE_CODE_WORDS: Readonly<Record<TokenServiceCode, TokenServiceWords>> = {
   method_not_allowed: gray("Your VM's start-up asked your token service the wrong way."),
   request_too_large: gray("Your VM's start-up sent your token service a request it does not take."),
@@ -629,38 +648,14 @@ export const TOKEN_SERVICE_CODE_WORDS: Readonly<Record<TokenServiceCode, TokenSe
     waits: true,
   },
   compose_not_listed: gray("The VM runs a Gray release your release list does not name."),
-  release_rejected: {
-    title: "You rejected the Gray release this VM runs.",
-    fix: "Accept it on the gray-assistant page (gray-assistant ui) under Releases, or on the host, then retry the boot.",
-    side: "relay",
-    command: kitRun("releases accept <compose hash>"),
-    waits: false,
-  },
-  release_not_accepted: {
-    title: "This Gray release waits for your acceptance.",
-    fix: "Accept it on the gray-assistant page (gray-assistant ui) under Releases, or on the host. The waiting boot then goes on.",
-    side: "relay",
-    command: kitRun("releases accept <compose hash>"),
-    waits: true,
-  },
+  release_rejected: phase1ReleaseWords("You rejected the Gray release this VM runs.", APPROVE_RELEASE, false),
+  release_not_accepted: phase1ReleaseWords("This Gray release waits for your acceptance.", APPROVE_RELEASE, true),
   os_image_missing: gray("The VM's OS image is not in Gray's release list."),
   os_image_not_listed: gray("The VM's OS image is not in Gray's release list."),
-  os_image_rejected: {
-    title: "You rejected the VM's OS image.",
-    fix: "Accept it on the gray-assistant page (gray-assistant ui) under Releases, or on the host, then retry the boot.",
-    side: "relay",
-    command: kitRun("releases accept <os image hash>"),
-    waits: false,
-  },
+  os_image_rejected: phase1ReleaseWords("You rejected the VM's OS image.", APPROVE_OS_IMAGE, false),
   os_image_dev: gray("The VM runs a development OS image."),
   os_image_unverified: gray("The VM's OS image could not be verified."),
-  os_image_not_accepted: {
-    title: "The VM's OS image waits for your acceptance.",
-    fix: "Accept it on the gray-assistant page (gray-assistant ui) under Releases, or on the host. The waiting boot then goes on.",
-    side: "relay",
-    command: kitRun("releases accept <os image hash>"),
-    waits: true,
-  },
+  os_image_not_accepted: phase1ReleaseWords("The VM's OS image waits for your acceptance.", APPROVE_OS_IMAGE, true),
   os_image_retiring: gray("The VM's OS image is being retired."),
   os_image_measurements: gray("The VM's measurements are not those Gray's release list names."),
   app_id_mismatch: {

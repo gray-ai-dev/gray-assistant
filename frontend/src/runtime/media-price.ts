@@ -109,6 +109,15 @@ export function selectorError(key: string): string | null {
   if (key.length > 64) return `Selector "${key.slice(0, 16)}…" is longer than 64 characters.`;
   return selectorPattern.test(key) ? null : `Selector "${key}" must be * or lowercase letters, digits, ".", "_" or "-" in segments joined by ":" (for example 1024x1024:hd).`;
 }
+/**
+ * Selectors a request of the protocol is priced by, as examples: an image request's `{size}:{quality}`, then `{size}`;
+ * a video request's `size` as sent (@gray/media apis/images.ts, apis/video.ts). None for the other APIs, whose requests
+ * carry no selector.
+ */
+export function selectorExamples(protocol: string): readonly string[] {
+  const modality = protocolModality(protocol);
+  return modality === 'image' ? ['1024x1024:hd', '1024x1024'] : modality === 'video' ? ['1280x720', '720x1280'] : [];
+}
 /** Selectors in display order: the default first, then alphabetical. */
 export const unitPriceEntries = (prices: Record<string, number> = {}) => Object.entries(prices).sort(([a], [b]) => a === '*' ? -1 : b === '*' ? 1 : a.localeCompare(b));
 /**

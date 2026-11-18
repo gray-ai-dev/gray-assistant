@@ -20,6 +20,7 @@
  * `stack.registry.expires_at` and the token has no known expiry (a pull the registry refuses is then the signal).
  */
 import type { JsonObject } from "@gray/json";
+import { RELAY_KIT_VERSION } from "./endpoints.ts";
 
 /** The placeholder `init` writes when `--relay-id` is not given; `doctor` refuses it. */
 export const RELAY_ID_PLACEHOLDER = "REPLACE-WITH-GRAY-RELAY-ID";
@@ -445,6 +446,14 @@ function pairedChainText(chain: PairedConfigOptions["chain"] | null): string {
 /** The compose file `init --pair` writes beside the config when it runs from the published image (`$GRAY_ASSISTANT_IMAGE`). */
 export const PAIRED_COMPOSE_FILE = "compose.yaml";
 
+/** This kit's version without its build (`1.9.1` of `1.9.1+0123456789ab`): what compose.yaml's `# kit` line names. */
+export const KIT_VERSION: string = RELAY_KIT_VERSION.split("+")[0] as string;
+/**
+ * compose.yaml's line naming the kit that wrote it (`# kit 1.9.1`), from kit 1.9.1 on: `upgrade` names its backups of
+ * the files it replaces after that kit. A directory an earlier kit wrote has no such line.
+ */
+export const COMPOSE_KIT_LINE = /^# kit ([0-9A-Za-z][0-9A-Za-z.-]{0,40})$/mu;
+
 /** The compose project and network of a paired relay's kit: one per relay, so several relays share a host. */
 export function pairedComposeName(relayId: string): string {
   return `gray-assistant-${relayId}`;
@@ -460,9 +469,10 @@ export function pairedComposeName(relayId: string): string {
  * beside it, and the relay's own software joins it by that name.
  *
  * `keep` is what `upgrade` carries over from an older kit's file: its project name (the one kits up to 1.1.1 wrote, under the old name)
- * and its state volume's key, so the project keeps its volume and network.
+ * and its state volume's key, so the project keeps its volume and network. `kitVersion` is the kit the file names in
+ * its `# kit` line (COMPOSE_KIT_LINE): this one.
  */
-export function pairedComposeText(image: string, relayId: string, keep: { readonly name?: string; readonly stateVolume?: string } = {}): string {
+export function pairedComposeText(image: string, relayId: string, keep: { readonly name?: string; readonly stateVolume?: string } = {}, kitVersion: string = KIT_VERSION): string {
   const name = keep.name ?? pairedComposeName(relayId);
   const volume = keep.stateVolume ?? "relay-state";
   // What every container of the kit is held to, whichever command it runs.
@@ -508,6 +518,8 @@ export function pairedComposeText(image: string, relayId: string, keep: { readon
 # file is rewritten by the next init --pair --force, the override is not.
 #
 # The project is named after your deployment id, so several deployments on one host do not share a container, volume or network.
+# The kit that wrote this file; gray-assistant upgrade names its backups of the files it replaces after it:
+# kit ${kitVersion}
 name: ${JSON.stringify(name)}
 
 services:

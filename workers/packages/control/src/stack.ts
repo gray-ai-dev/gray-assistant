@@ -727,6 +727,42 @@ export function stackAccountSettingsMessage(r: StackAccountSettingsRequest): Uin
   return new TextEncoder().encode([STACK_ACCOUNT_SETTINGS_DOMAIN, r.relay_id, String(r.issued_ms), r.nonce, models, value(r.weight), value(r.max_concurrency), value(r.paused), ...r.account_ids].join("\n"));
 }
 
+// ------------------------------------------------------------------------------------- the relay's public name
+
+/**
+ * A relay's own read or change of its workspace's public name (`POST /v1/lane-stack/public-name`; docs/api-contract.md,
+ * "Provider handle"): what the provider pages' Public name panel does, signed by the relay key as the settings change is,
+ * so `gray-assistant public-name [set <name> | show | hide]` offer what the panel offers. `handle` claims the name (once:
+ * the console's claim rules), `show_name` chooses whether the Models page shows it; neither: a read.
+ */
+export const stackPublicNameRequestSchema = z
+  .object({
+    relay_id: z.string().regex(LANE_RELAY_ID_PATTERN),
+    issued_ms: u64,
+    nonce: z.string().regex(STACK_PANEL_VIEW_NONCE_PATTERN),
+    // The console checks the grammar and the reserved names; here only that the signed message reads one way.
+    handle: z.string().regex(/^[a-z0-9-]{1,64}$/).optional(),
+    show_name: z.boolean().optional(),
+  })
+  .strict()
+  .refine((r) => r.handle === undefined || r.show_name === undefined, { message: "a request names handle or show_name, or neither (a read)" });
+export type StackPublicNameRequest = z.infer<typeof stackPublicNameRequestSchema>;
+
+/** The request and the relay's Ed25519 signature over `stackPublicNameMessage`, 128 lower-case hex digits. */
+export const stackPublicNameReportSchema = z.object({ request: stackPublicNameRequestSchema, signature: z.string().regex(/^[0-9a-f]{128}$/) }).strict();
+export type StackPublicNameReport = z.infer<typeof stackPublicNameReportSchema>;
+
+/** The first line of the signed public-name request. */
+export const STACK_PUBLIC_NAME_DOMAIN = "gray-relay-public-name/v1";
+
+/**
+ * The bytes the relay signs: the domain, `relay_id`, `issued_ms`, `nonce`, then `handle` (`=` and the name) and
+ * `show_name` (`true`, `false`), `-` for one the request does not name, each on a line of its own.
+ */
+export function stackPublicNameMessage(r: StackPublicNameRequest): Uint8Array {
+  return new TextEncoder().encode([STACK_PUBLIC_NAME_DOMAIN, r.relay_id, String(r.issued_ms), r.nonce, r.handle === undefined ? "-" : `=${r.handle}`, r.show_name === undefined ? "-" : String(r.show_name)].join("\n"));
+}
+
 /** Where a restart request stands: recorded and waiting, or settled by the provisioner or Gray's operator. */
 export const STACK_RESTART_STATUSES = ["pending", "done", "failed", "superseded"] as const;
 export type StackRestartStatus = (typeof STACK_RESTART_STATUSES)[number];

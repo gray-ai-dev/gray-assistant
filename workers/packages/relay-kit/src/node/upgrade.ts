@@ -10,6 +10,9 @@
  * - `compose.yaml`, when an `init --pair` of any kit wrote it: rewritten from `pairedComposeText` (init's template)
  *   with `image`, keeping its project name and its state volume's key, so the volume and the network stay. A file whose
  *   agent ran all the time (`restart:`) gets a note: remove that container, which this kit's image cannot run.
+ * - The backups are named after the kit they come from, the one compose.yaml's `# kit <version>` line names
+ *   (`<file>.bak-1.9.1`); a directory written before kit 1.9.1 has no such line, and its backups are
+ *   `<file>.bak-before-<this kit's version>`.
  *
  * Running it again changes nothing. No value of the config is printed: the result names files and members only.
  */
@@ -18,7 +21,7 @@ import { join, resolve } from "node:path";
 import { applyEdits, modify, parseTree, type JSONPath, type Node } from "jsonc-parser";
 import { isYamlMap, parseComposeText } from "@gray/lane-compose";
 import { RelayKitError } from "../errors.ts";
-import { INIT_FILES, PAIRED_COMPOSE_FILE, pairedComposeText, STATE_MOUNT } from "../init.ts";
+import { COMPOSE_KIT_LINE, INIT_FILES, PAIRED_COMPOSE_FILE, pairedComposeText, STATE_MOUNT } from "../init.ts";
 import { MAX_CONFIG_BYTES, parseRelayConfigText } from "./config-file.ts";
 import { readFileText, writePrivateFile } from "./files.ts";
 import { PHASE1_TEXT } from "./doctor.ts";
@@ -53,7 +56,10 @@ export interface UpgradeOptions {
   readonly directory: string;
   /** The image the compose file runs: `--image`, else `$GRAY_ASSISTANT_IMAGE`; null: compose.yaml is not rewritten. */
   readonly image: string | null;
-  /** This kit's version, the backups' suffix. */
+  /**
+   * This kit's version: what the new compose.yaml's `# kit` line names. The backups take the replaced kit's version
+   * (`backupSuffix`), or `before-<this version>` when the directory does not name its kit.
+   */
   readonly version: string;
 }
 
@@ -94,10 +100,26 @@ function oldPathMembers(node: Node | undefined, path: JSONPath = [], out: Array<
   return out;
 }
 
-/** `<file>.bak-<version>`, or with `-2`, `-3`, ... when that backup is already there. */
-function backupPath(path: string, version: string): string {
+/**
+ * The kit that wrote a compose file `init --pair` wrote (its `# kit <version>` line, from kit 1.9.1 on), or null: a file
+ * of an earlier kit, or one init did not write.
+ */
+export function composeKitVersion(composeText: string): string | null {
+  return OWN_COMPOSE.test(composeText) ? (COMPOSE_KIT_LINE.exec(composeText)?.[1] ?? null) : null;
+}
+
+/**
+ * The backups' suffix: the version of the kit being replaced, which compose.yaml names (Roteo, kit 1.9.0: the backups
+ * were named after the new kit, so `compose.yaml.bak-1.9.0` held kit 1.8.0's file), else `before-<this kit's version>`.
+ */
+export function backupSuffix(composeText: string | null, version: string): string {
+  return (composeText === null ? null : composeKitVersion(composeText)) ?? `before-${version}`;
+}
+
+/** `<file>.bak-<suffix>`, or with `-2`, `-3`, ... when that backup is already there. */
+function backupPath(path: string, suffix: string): string {
   for (let n = 1; ; n += 1) {
-    const candidate = `${path}.bak-${version}${n === 1 ? "" : `-${n}`}`;
+    const candidate = `${path}.bak-${suffix}${n === 1 ? "" : `-${n}`}`;
     if (!existsSync(candidate)) return candidate;
   }
 }
@@ -154,6 +176,11 @@ export function upgradeWorkspace(options: UpgradeOptions): UpgradeResult {
   const notes: string[] = [];
   const written: string[] = [];
   const backups: string[] = [];
+  // compose.yaml as the replaced kit left it: it names that kit, whose version the backups take.
+  const composePath = join(directory, PAIRED_COMPOSE_FILE);
+  const composeOwner = regularFile(composePath);
+  const composeText = composeOwner === null ? null : readFileText(composePath, "compose file", MAX_CONFIG_BYTES);
+  const suffix = backupSuffix(composeText, options.version);
   const source = current === null ? oldPath : configPath;
   const text = readFileText(source, "config", MAX_CONFIG_BYTES);
   const members = oldPathMembers(parseTree(text));
@@ -164,7 +191,7 @@ export function upgradeWorkspace(options: UpgradeOptions): UpgradeResult {
   // The whole document as run and doctor read it; the refusal names the member, never its value.
   const loaded = parseRelayConfigText(next, configPath);
   if (current === null || next !== text) {
-    const backup = backupPath(source, options.version);
+    const backup = backupPath(source, suffix);
     if (current !== null) writeLike(backup, text, 0o600, current, notes);
     writeLike(configPath, next, 0o600, current ?? old, notes);
     // The old file stays as the backup (renamed, so a running container keeps reading it until it is recreated).
@@ -176,13 +203,10 @@ export function upgradeWorkspace(options: UpgradeOptions): UpgradeResult {
   if (loaded.daemon.pairing !== null && (loaded.daemon.chain ?? null) === null) notes.push(PHASE1_TEXT);
   if (current !== null && existsSync(oldPath)) notes.push(`${oldPath} is left as it is: ${INIT_FILES.config} is the config this kit reads`);
 
-  const composePath = join(directory, PAIRED_COMPOSE_FILE);
-  const composeOwner = regularFile(composePath);
   let project: string | null = null;
-  if (composeOwner === null) {
+  if (composeOwner === null || composeText === null) {
     notes.push(`no ${PAIRED_COMPOSE_FILE} in ${directory}: a host install starts the agent itself; point it at ${configPath}`);
   } else {
-    const composeText = readFileText(composePath, "compose file", MAX_CONFIG_BYTES);
     const keep = pairedComposeKeep(composeText);
     if (keep === null) {
       notes.push(`${composePath} was not written by init --pair (or names no project or state volume): left as it is; mount ${INIT_FILES.config} at /etc/gray-assistant/gray-assistant.jsonc and the state volume at ${STATE_MOUNT}`);
@@ -190,9 +214,9 @@ export function upgradeWorkspace(options: UpgradeOptions): UpgradeResult {
       throw new RelayKitError("usage", "upgrade needs the image compose.yaml should run: pass --image <image@sha256:...> (the published image sets $GRAY_ASSISTANT_IMAGE)");
     } else {
       project = keep.name;
-      const composeNext = pairedComposeText(options.image, loaded.daemon.relayId, keep);
+      const composeNext = pairedComposeText(options.image, loaded.daemon.relayId, keep, options.version);
       if (composeNext !== composeText) {
-        const backup = backupPath(composePath, options.version);
+        const backup = backupPath(composePath, suffix);
         writeLike(backup, composeText, 0o644, composeOwner, notes);
         backups.push(backup);
         writeLike(composePath, composeNext, 0o644, composeOwner, notes);

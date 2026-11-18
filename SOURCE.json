@@ -2,11 +2,11 @@
   "schema": "gray-public-source/1",
   "image": "gray-assistant",
   "image_repository": "ghcr.io/gray-ai-dev/gray-assistant",
-  "image_ref": "ghcr.io/gray-ai-dev/gray-assistant:5ed1cd785e39@sha256:082945fdc0d632c07381c9d92c03d79dac573ad5713c492c42b4b4591db35fd8",
-  "tag": "v1.9.0-5ed1cd785e39",
-  "version": "v1.9.0",
-  "commit": "5ed1cd785e39f36f28faac2f8028bbc0ddc163a2",
-  "commit_time": 1794890289,
-  "files": 504,
+  "image_ref": "ghcr.io/gray-ai-dev/gray-assistant:0aa8d9bc4419@sha256:d041ef441745b0183c0f816ead919edd1fdf0a9711954d279bdf30c12b4b5225",
+  "tag": "v1.9.1-0aa8d9bc4419",
+  "version": "v1.9.1",
+  "commit": "0aa8d9bc44198029c525708bdc7f0298f6eae5e0",
+  "commit_time": 1795021763,
+  "files": 505,
   "npm_packages_bundled": 288
 }
