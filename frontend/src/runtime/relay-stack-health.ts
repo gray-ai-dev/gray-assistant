@@ -6,7 +6,6 @@
 // `node --test` loads this file directly.
 import { relayPageOrigin } from './relay-page.ts';
 import type { RelayDebugShare } from './debug-share.ts';
-import { compatibleRows } from './lane-vendors.ts';
 import {
   OWN_CALL_OPS, OWN_CALL_TABLE, ownCallRun, STACK_VENDORS, upkeepCredential, VENDOR_LABEL, vendorLabel,
   type OwnCallOp, type OwnCalls, type StackAccount, type StackCredential, type StackRelay, type StackRoute, type StackVendor,
@@ -152,9 +151,6 @@ export type StackAgentStatus = {
   tunnel_origin?: string | null;
 };
 export type IdentityValue = { headers: Record<string, string>; betas: string[]; generated: string[] };
-/** Gray's preset (`GET …/identity-presets`): a client identity to copy into a profile, with the client version it is of. */
-export type IdentityPreset = { id: string; vendor: StackVendor | null; client: string; version: string | null; source: string; identity: IdentityValue };
-export type IdentityProfile = { name: string; vendor: StackVendor; identity: IdentityValue; account_ids: string[]; created_ms: number; updated_ms: number };
 export type ApiTokenScope = 'read' | 'manage';
 export type ApiToken = {
   token_id: string; name: string; scope: ApiTokenScope; token_prefix: string; created_by: string; created_ms: number;
@@ -1068,36 +1064,19 @@ export function setupPreview(): ChecklistItem[] {
 }
 
 // ---------------------------------------------------------------------------
-// Client identity names per vendor's route (@gray/lane-wire stack-health.ts STACK_IDENTITY_*)
+// A client identity an account still stores (retired 2026-11-18: never sent to the VM, console store.ts documentOf)
 
-export const IDENTITY_STATIC: Readonly<Record<StackVendor, readonly string[]>> = {
-  anthropic: ['user-agent', 'accept', 'x-app', 'anthropic-dangerous-direct-browser-access', 'x-stainless-lang', 'x-stainless-package-version', 'x-stainless-os', 'x-stainless-arch', 'x-stainless-runtime', 'x-stainless-runtime-version', 'x-stainless-retry-count', 'x-stainless-timeout'],
-  openai: ['user-agent', 'accept'],
-  chatgpt_codex: ['user-agent', 'accept', 'originator', 'version'],
-  ...compatibleRows(() => ['user-agent', 'accept']),
-};
-export const IDENTITY_GENERATED: Readonly<Record<StackVendor, readonly string[]>> = {
-  anthropic: ['x-client-request-id', 'x-claude-code-session-id'],
-  openai: [],
-  chatgpt_codex: ['x-client-request-id', 'session_id', 'session-id', 'conversation_id', 'thread-id'],
-  ...compatibleRows(() => [] as string[]),
-};
-/** An identity value's rule (S32a): 1 to 512 bytes of printable ASCII, no space at either end. */
-export const identityValueProblem = (value: string) => !/^[\x21-\x7e]([\x20-\x7e]{0,510}[\x21-\x7e])?$/.test(value) ? 'Use 1 to 512 printable ASCII characters, with no space at either end.' : null;
-/** A profile's name (`identity-profiles/{name}`): 1 to 64 of a-z 0-9 _ -, starting with a letter or digit. */
-export const PROFILE_NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/;
-
-// ---------------------------------------------------------------------------
-// The client identity an account is served (console store.ts documentOf): no default (owner, 2026-11-09)
-
-/** An identity with no header, beta or id: as an account's own, it is no client identity. */
+/** An identity with no header, beta or id: stored, it is none. */
 export const isNoIdentity = (i: IdentityValue | null | undefined) => !!i && !Object.keys(i.headers).length && !i.betas.length && !i.generated.length;
-export type ServedIdentity = { kind: 'account' | 'profile' | 'none'; text: string; note: string | null };
-/** What the vendor gets as the client of an account's calls, in the console's order: its own identity (an empty one is none), its profile, none. */
-export function servedIdentity(account: { vendor: StackVendor; credential_type?: CredentialType | null; identity?: IdentityValue | null; identity_profile?: string | null }): ServedIdentity {
-  if (account.identity && !isNoIdentity(account.identity)) return { kind: 'account', text: 'Its own (set through the API)', note: null };
-  if (account.identity_profile && !account.identity) return { kind: 'profile', text: `${account.identity_profile} profile`, note: null };
-  return { kind: 'none', text: 'None', note: signsIn(account) ? 'Gray adds no client headers: your software sends them, or give the account a profile.' : null };
+/** What an account's details say it stores, read-only; the panel no longer sets either. */
+/**
+ * The client identity an account still stores (retired 2026-11-18, never applied), in a few words: its profile by the
+ * name the relay gave it (as written), and its own; null when it stores none.
+ */
+export function storedIdentity(account: { identity?: IdentityValue | null; identity_profile?: string | null }): string | null {
+  const own = !!account.identity && !isNoIdentity(account.identity);
+  if (account.identity_profile) return `${account.identity_profile} profile${own ? ' and its own' : ''}`;
+  return own ? 'Its own' : null;
 }
 
 /**

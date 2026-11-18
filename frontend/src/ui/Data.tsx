@@ -85,7 +85,7 @@ export function StatGroup({ className, children, cards, style, ...rest }: HTMLAt
 
 /** A data table in a bordered, horizontally scrolling frame. Compose it with
  *  `TableHead`, `TableBody`, `TableRow`, `TableHeaderCell` and `TableCell`. */
-export function Table({ label, describedBy, caption, className, children, minWidth }: {
+export function Table({ label, describedBy, caption, className, children, minWidth, density }: {
   /** Accessible name for the scroll region and table. */
   label?: string;
   /** Id of text that explains the table, e.g. a caveat under it. */
@@ -95,8 +95,11 @@ export function Table({ label, describedBy, caption, className, children, minWid
   children: ReactNode;
   /** Minimum table width before the frame scrolls, e.g. '44rem'. */
   minWidth?: string;
+  /** `tight`: two-thirds of the room between columns, the frame's edges as they are, for a table its page has
+   *  measured as too wide for its frame at the usual room. */
+  density?: 'tight';
 }) {
-  return <div className={cx('ui-table-wrap', className)} role="region" aria-label={label} aria-describedby={describedBy} tabIndex={0}>
+  return <div className={cx('ui-table-wrap', density === 'tight' && 'ui-table-wrap--tight', className)} role="region" aria-label={label} aria-describedby={describedBy} tabIndex={0}>
     <table className="ui-table" aria-label={label} style={minWidth ? { minWidth } : undefined}>
       {children}
       {caption && <caption>{caption}</caption>}

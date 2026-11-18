@@ -29,8 +29,8 @@ function warnIfMisplaced(cell: HTMLTableCellElement | null) {
   console.warn(`StackedTable: ${problem}, so a card's label may open another column's definition. Give the table one header row and a cell per column.`, cell);
 }
 
-/** Holds a StackedTable's column definitions for its cells. */
-export function StackedColumnsProvider({ children }: { children: ReactNode }) {
+/** Holds a StackedTable's column definitions for its cells. `cards`: the table is cards at any width (`StackedTable`). */
+export function StackedColumnsProvider({ children, cards = false }: { children: ReactNode; cards?: boolean }) {
   const [entries, setEntries] = useState<ReadonlyMap<string, Entry>>(new Map());
   const define = useCallback((id: string, column: number | null, definition: string | null) => setEntries(current => {
     const now = current.get(id);
@@ -43,7 +43,7 @@ export function StackedColumnsProvider({ children }: { children: ReactNode }) {
     // Unchanged, the same map: nothing renders again.
     return now?.column === column && now.definition === definition ? current : new Map(current).set(id, { column, definition });
   }), []);
-  const phone = usePhone();
+  const phone = usePhone() || cards;
   const definitions = useMemo(() => new Map([...entries.values()].map(entry => [entry.column, entry.definition])), [entries]);
   const value = useMemo(() => ({ define, definitions, phone }), [define, definitions, phone]);
   return <StackedColumns.Provider value={value}>{children}</StackedColumns.Provider>;

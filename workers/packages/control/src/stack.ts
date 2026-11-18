@@ -188,16 +188,15 @@ export const stackAccountInputSchema = z
     /** The type of credential the relay seals for the account; null: not declared. */
     credential_type: z.enum(["api_key", "oauth_access_token"]).nullable().default(null),
     /**
-     * The client identity the relay registers for the account (S32a, the owner's trust-model decision of 2026-10-29):
-     * the static `headers` and Anthropic `betas` of the vendor's own client and the ids egress makes itself
-     * (`generated`), which egress holds the account's calls to. Which names a vendor's route takes and the values'
-     * rules are `@gray/lane-wire`'s (`stackIdentitySchema`, `stackIdentityProblem`), which the console applies; null:
-     * none. An account replaced without it has none.
+     * A client identity stored with the account (S32a), retired on 2026-11-18 (owner): still taken, checked as before
+     * (`@gray/lane-wire` `stackIdentitySchema`, `stackIdentityProblem`, which the console applies) and shown, but never
+     * sent to the VM; the vendor gets the client's own headers and any the deployment's software sends. Null: none. An
+     * account replaced without it has none.
      */
     identity: stackIdentityInputSchema.nullable().default(null),
     /**
-     * The relay's identity profile the account takes its client identity from (`.../identity-profiles/{name}`), or
-     * null. An inline `identity` wins when both are set; the profile must be of the account's vendor. An account
+     * The deployment's identity profile the account names (`.../identity-profiles/{name}`), retired with `identity`:
+     * stored and checked (the profile exists and is of the account's vendor), never applied. Null: none. An account
      * replaced without it names none.
      */
     identity_profile: z.string().regex(STACK_IDENTITY_PROFILE_PATTERN, STACK_IDENTITY_PROFILE_RULE).nullable().default(null),
@@ -206,13 +205,10 @@ export const stackAccountInputSchema = z
 export type StackAccountInput = z.infer<typeof stackAccountInputSchema>;
 
 /**
- * An identity profile (`PUT .../identity-profiles/{name}` body): a vendor and a client identity, or a preset of
- * Gray's (`GET .../identity-presets`) to copy; the `none` preset names no vendor, so its body names one.
+ * An identity profile (`PUT .../identity-profiles/{name}` body): a vendor and a client identity. Retired on 2026-11-18
+ * with an account's `identity`: stored and shown, never sent to the VM. Gray's presets to copy are gone.
  */
-export const stackIdentityProfileInputSchema = z.union([
-  z.object({ vendor: z.enum(STACK_VENDORS), identity: stackIdentityInputSchema }).strict(),
-  z.object({ preset: z.string().min(1).max(64), vendor: z.enum(STACK_VENDORS).optional() }).strict(),
-]);
+export const stackIdentityProfileInputSchema = z.object({ vendor: z.enum(STACK_VENDORS), identity: stackIdentityInputSchema }).strict();
 export type StackIdentityProfileInput = z.infer<typeof stackIdentityProfileInputSchema>;
 
 /** The most accounts one batch names: the most a relay's VM serves (`@gray/relay-connector` DEFAULT_MAX_ACCOUNTS_PER_RELAY, S42). */
@@ -220,7 +216,7 @@ export const STACK_ACCOUNTS_PATCH_MAX = 1000;
 
 /**
  * A batch edit of accounts (`PATCH .../accounts` body): for every listed account, the identity profile (null clears
- * it).
+ * it). Retired with the profiles (2026-11-18): still taken, never applied.
  */
 export const stackAccountsPatchSchema = z
   .object({

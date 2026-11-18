@@ -193,13 +193,18 @@ export function CodeBlock({ code, language, title, level = 2, icon, description,
 
 export type CodeExample<T extends string> = { id: T; label: string; language: CodeLanguage; code: string };
 
-/** The same request in several languages, with a switch between them. */
+/**
+ * The same request in several languages, with a switch between them. One example alone has nothing to switch to: its
+ * label is the header's description instead (a switch of one option beside the copy button is a control that does
+ * nothing, and sits lower than it).
+ */
 export function CodeExamples<T extends string>({ examples, value, onValueChange, ...block }: Omit<CodeBlockProps, 'code' | 'language' | 'tools'> & {
   examples: readonly CodeExample<T>[];
   value: T;
   onValueChange: (value: T) => void;
 }) {
   const current = examples.find(example => example.id === value) ?? examples[0];
+  if (examples.length === 1) return <CodeBlock {...block} code={current.code} language={current.language} description={block.description ?? current.label} />;
   return <CodeBlock {...block} code={current.code} language={current.language}
     tools={<SegmentedControl size="sm" aria-label="Code language" value={current.id} onValueChange={onValueChange} options={examples.map(example => ({ value: example.id, label: example.label }))} />} />;
 }

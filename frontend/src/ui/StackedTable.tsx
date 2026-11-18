@@ -10,7 +10,9 @@ import './stacked-table.css';
  *  the full card width, a `menu` cell sits in the card's top corner. Do not set `minWidth`.
  *  A column whose header defines it (`title` on `TableHeaderCell` or `SortableHeaderCell`)
  *  has each card's label open the same definition (an `InfoTip`), so the definition is
- *  written once, in the header. One header row, a cell per column. */
-export function StackedTable({ className, ...rest }: Omit<ComponentProps<typeof Table>, 'minWidth'>) {
-  return <StackedColumnsProvider><Table className={cx('ui-table--stack', className)} {...rest} /></StackedColumnsProvider>;
+ *  written once, in the header. One header row, a cell per column.
+ *  `cards` lays the rows out as cards at any width, their label/value pairs in as many
+ *  columns as fit: for a page that has measured its table too wide for its frame. */
+export function StackedTable({ className, cards, ...rest }: Omit<ComponentProps<typeof Table>, 'minWidth'> & { cards?: boolean }) {
+  return <StackedColumnsProvider cards={cards}><Table className={cx('ui-table--stack', cards && 'ui-table--cards', className)} {...rest} /></StackedColumnsProvider>;
 }

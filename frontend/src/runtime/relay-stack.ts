@@ -112,12 +112,12 @@ export type StackPairing = {
 /** `POST …/pairing-codes`: the code, answered once, the command that pairs with it, and the pairing after it. */
 export type PairingCodeAnswer = { code: string; expires_ms: number; command: string; pairing: StackPairing };
 export type AccountStatus = 'active' | 'paused';
-/** An account's client identity (S32a): the static headers, Anthropic betas and generated ids egress sends for it. */
+/** An account's stored client identity (S32a): headers, Anthropic betas and generated ids. Retired 2026-11-18: never sent to the VM. */
 export type StackIdentity = { headers: Record<string, string>; betas: string[]; generated: string[] };
 export type StackAccount = {
   account_id: string; vendor: StackVendor; labels: string[]; models: string[]; weight: number; max_concurrency: number;
   windows: StackWindow[]; status: AccountStatus; proxy_id: string | null; credential_version: number; created_ms: number; updated_ms: number;
-  /** Set through the API for now (no page yet); a save from these pages sends them back as stored. */
+  /** Set through the API (identity and identity_profile are retired: stored, never applied); a save from these pages sends them back as stored. */
   credential_type?: 'api_key' | 'oauth_access_token' | null; identity?: StackIdentity | null; identity_profile?: string | null;
   /** The account's group, a name for the relay's people (docs/design/relay-operator-page.md section 2): never in the lane configuration. */
   group: string | null;
