@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Combobox } from '@cloudflare/kumo/primitives/combobox';
 import { CaretDown, Check, MagnifyingGlass } from '../components/icons';
 import { cx } from './cx';
@@ -27,7 +27,7 @@ const includes = (choice: PickerChoice, query: string) => `${choice.label} ${cho
  * when it fits.
  */
 export function Picker({ choices, value, onValueChange, open, onOpenChange, valueText, placeholder = 'Choose…', searchPlaceholder = 'Search…', searchLabel, popupLabel,
-  match = includes, rank, limit = 80, emptyText = 'No matches.', noun = 'options', disabled, className, popupClassName, id, ...aria }: {
+  match = includes, rank, limit = 80, emptyText = 'No matches.', noun = 'options', onQueryChange, note, disabled, className, popupClassName, id, ...aria }: {
   /** Every choice, in the order to list them. */
   choices: readonly PickerChoice[];
   value: string;
@@ -53,6 +53,13 @@ export function Picker({ choices, value, onValueChange, open, onOpenChange, valu
   emptyText?: ReactNode | ((query: string) => ReactNode);
   /** What the choices are, for the note under a capped list: "Showing 80 of 312 models." */
   noun?: string;
+  /**
+   * The page searches by itself (e.g. on the server): it is told the search text as it changes, and `choices` are its
+   * matches for that text, listed as given (`match`, `rank` and `limit` do not apply).
+   */
+  onQueryChange?(query: string): void;
+  /** A line under the list in place of the capped list's note, e.g. that the page's search found more than it lists. */
+  note?: ReactNode;
   disabled?: boolean;
   /** On the trigger. */
   className?: string;
@@ -71,17 +78,23 @@ export function Picker({ choices, value, onValueChange, open, onOpenChange, valu
   const search = useRef<HTMLInputElement>(null);
   const selected = choices.find(choice => choice.value === value) ?? null;
   const term = query.trim();
+  const searches = onQueryChange !== undefined;
+  const told = useRef(onQueryChange);
+  told.current = onQueryChange;
+  useEffect(() => { told.current?.(query); }, [query]);
   const matches = useMemo(() => {
+    if (searches) return [...choices];
     const found = choices.filter(choice => match(choice, term));
     if (!rank || !term) return found;
     return found.map((choice, order) => ({ choice, order, rank: rank(choice, term) })).sort((a, b) => a.rank - b.rank || a.order - b.order).map(entry => entry.choice);
-  }, [choices, match, rank, term]);
+  }, [searches, choices, match, rank, term]);
   const shown = useMemo(() => {
+    if (searches) return matches;
     const rows = matches.slice(0, limit);
     // Opening the list must not hide the current choice behind the cap.
     if (!term && selected && rows.length === limit && !rows.includes(selected) && matches.includes(selected)) rows[limit - 1] = selected;
     return rows;
-  }, [matches, limit, term, selected]);
+  }, [searches, matches, limit, term, selected]);
   const all = useMemo(() => [...choices], [choices]);
 
   return <Combobox.Root<PickerChoice> items={all} filteredItems={shown} value={selected} disabled={disabled} autoHighlight
@@ -101,7 +114,8 @@ export function Picker({ choices, value, onValueChange, open, onOpenChange, valu
           {choice.meta != null && <span className="ui-picker__option-meta">{choice.meta}</span>}
           <Combobox.ItemIndicator className="select-check"><Check size={14} aria-hidden="true" /></Combobox.ItemIndicator>
         </Combobox.Item>}</Combobox.List>
-        {matches.length > shown.length && <p className="ui-picker__note">Showing {shown.length} of {matches.length} {noun}. Search to narrow the list.</p>}
+        {note != null ? <p className="ui-picker__note">{note}</p>
+          : matches.length > shown.length && <p className="ui-picker__note">Showing {shown.length} of {matches.length} {noun}. Search to narrow the list.</p>}
       </Combobox.Popup>
     </Combobox.Positioner></Combobox.Portal>
   </Combobox.Root>;

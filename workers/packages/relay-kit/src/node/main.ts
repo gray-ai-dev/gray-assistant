@@ -35,7 +35,6 @@
  *     gray-assistant accounts set <account>... [--max-concurrency <n>] [--weight <n>] [--models <id,...> | --all-models]
  *                    [--config <gray-assistant.jsonc>]
  *     gray-assistant accounts pause|resume <account>... [--config <gray-assistant.jsonc>]
- *     gray-assistant public-name [set <name> | show | hide] [--config <gray-assistant.jsonc>]
  *     gray-assistant proxies [--config <gray-assistant.jsonc>]
  *     gray-assistant proxies add [<url>] [--id <id>] [--config <gray-assistant.jsonc>]
  *     gray-assistant proxies remove <id> [--config <gray-assistant.jsonc>]
@@ -293,8 +292,6 @@ function usage(): string {
     "                                    (the accounts' settings on Gray, as the panel's Edit settings: requests at once, share of requests,",
     "                                    upstream models of one vendor; --all-models: every model your stack endpoints map for their vendor)",
     "       gray-assistant accounts pause|resume <account>... [--config <config>]   (stop the accounts taking requests on Gray, or start again, as the panel's Pause)",
-    "       gray-assistant public-name [set <name> | show | hide] [--config <config>]   (your workspace's public name on Gray, as the Public name panel:",
-    "                                    set claims it, once; show names your routes by it on the Models page, hide keeps them anonymous there)",
     "       gray-assistant accounts proxy <account>... (--proxy <id> | --none) [--config <config>]   (the file source: the accounts leave through that proxy",
     "                                    of accounts.json's list, or through none)",
     "       gray-assistant proxies [--config <config>]   (the file source: accounts.json's proxy list and the accounts that name each; never a password)",
@@ -437,7 +434,6 @@ async function dispatch(args: ParsedArgs, io: CliIo): Promise<number> {
     if (args.positionals[1] === "set" || args.positionals[1] === "pause" || args.positionals[1] === "resume") return accountsSettingsCommand(args, io, args.positionals[1]);
     return accountsCommand(args, io);
   }
-  if (command === "public-name") return publicNameCommand(args, io);
   if (command === "proxies") return proxiesCommand(args, io);
   if (command === "deliver") return withMessagesNote(args, io, () => deliverCli(args, io, "deliver", null));
   if (command === "messages") return messagesCliCommand(args, io);
@@ -1356,53 +1352,6 @@ async function accountsSettingsCommand(args: ParsedArgs, io: CliIo, sub: "set" |
     unknown: [...result.unknown],
   });
   return result.unknown.length === 0 ? 0 : 1;
-}
-
-const PUBLIC_NAME_USAGE = "gray-assistant public-name [set <name> | show | hide] [--config <config>]";
-
-/**
- * `public-name [set <name> | show | hide]` (`./public-name.ts`): what the provider pages' Public name panel does, signed
- * with the relay key. Without a subcommand it reads the name and the choice; `set` claims the name (once: customers'
- * configurations name it, so only Gray operations change it after); `show` names the workspace's routes by it on the
- * Models page, `hide` keeps them anonymous there (the default), at any time.
- */
-async function publicNameCommand(args: ParsedArgs, io: CliIo): Promise<number> {
-  assertFlags(args, ["config"]);
-  const sub = args.positionals[1];
-  let change: import("./public-name.ts").PublicNameChange = {};
-  if (sub === "set") {
-    const name = args.positionals[2];
-    if (name === undefined || args.positionals.length !== 3) throw new RelayKitError("usage", `${PUBLIC_NAME_USAGE}: set takes the name`);
-    change = { handle: name };
-  } else if (sub === "show" || sub === "hide") {
-    if (args.positionals.length !== 2) throw new RelayKitError("usage", PUBLIC_NAME_USAGE);
-    change = { show_name: sub === "show" };
-  } else if (sub !== undefined) throw new RelayKitError("usage", PUBLIC_NAME_USAGE);
-  const command = sub === undefined ? "public-name" : `public-name ${sub}`;
-  const { loadRelayConfigFile } = await import("./config-file.ts");
-  const config = loadRelayConfigFile(configPathOf(args));
-  const key = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "deployment key", MAX_KEY_BYTES));
-  const { writePublicName } = await import("./public-name.ts");
-  const result = await writePublicName({ config, seed: key.seed, nowMs: io.now(), random: io.random, change, ...(io.grayPost === undefined ? {} : { post: io.grayPost }) });
-  if (!result.ok) {
-    const refusal = grayChangeRefusal(result.code, {
-      no_stack: "this config has no stack section: the public name is set from a deployment with a stack VM (or on Gray's provider pages)",
-      request_invalid: "a public name is 2 to 32 lowercase letters, digits and hyphens, starting with a letter or a digit",
-      invalid_handle: "a public name is 2 to 32 lowercase letters, digits and hyphens, starting with a letter or a digit",
-      handle_reserved: "this name is reserved; ask Gray operations to assign it to your workspace",
-      handle_taken: "another workspace holds this name",
-      handle_already_set: "your workspace already has a public name; only Gray operations can change it",
-      handle_missing: "set a public name first (public-name set <name>): the Models page shows it",
-      forbidden: "your workspace is not an active provider workspace on Gray",
-    });
-    io.stderr(`gray-assistant ${command}: ${refusal}\n`);
-    printJson(io, { command, ok: false, relay_id: config.daemon.relayId, code: result.code });
-    return 1;
-  }
-  const shown = result.handle === null ? "no public name: the Models page lists your routes anonymously" : result.showName ? `the Models page names your routes ${result.handle}` : "the Models page lists your routes anonymously";
-  io.stdout(`gray-assistant ${command}: public name ${result.handle ?? "(none)"}; ${shown}\n`);
-  printJson(io, { command, ok: true, relay_id: config.daemon.relayId, handle: result.handle, show_name: result.showName });
-  return 0;
 }
 
 /** `accounts add --vendor <vendor> [--proxy <id>] [--id-prefix <text>]`: one API-key account per key on standard input. */
