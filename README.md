@@ -1,14 +1,14 @@
-# gray-assistant v1.10.1 (v1.10.1-f6e54e60ae63)
+# gray-assistant v1.10.2 (v1.10.2-9c8d9b4adc63)
 
-The source of `gray-assistant` 1.10.1, built from Gray's commit `f6e54e60ae63381fb38fc8b530b9d21335cf2999`. gray-assistant is the agent a relay runs
+The source of `gray-assistant` 1.10.2, built from Gray's commit `9c8d9b4adc63c6997c8606dc649339598ecb0aca`. gray-assistant is the agent a relay runs
 on its own server, and it holds the relay's account credentials. It checks a lane CVM's attestation and Gray's signed
 release list. It seals each credential to a boot it has verified. It accepts Gray's releases. It also serves the
 relay's page, where the relay enters its keys.
 
-This tree holds exactly the 504 files that the published image `ghcr.io/gray-ai-dev/gray-assistant:f6e54e60ae63` and the
+This tree holds exactly the 504 files that the published image `ghcr.io/gray-ai-dev/gray-assistant:9c8d9b4adc63` and the
 relay's page are built from, at the paths they have in Gray's repository. Tests, documentation and Gray's other
 services are not included. Each release is one commit in this repository, and its parent is the release published
-before it, so `git diff <previous tag> v1.10.1-f6e54e60ae63` shows the code that changed between the two.
+before it, so `git diff <previous tag> v1.10.2-9c8d9b4adc63` shows the code that changed between the two.
 
 | Part | Where its source is |
 |-|-|
@@ -21,14 +21,14 @@ before it, so `git diff <previous tag> v1.10.1-f6e54e60ae63` shows the code that
 
 ## From a version to this tag
 
-The image's tag is the first 12 hex digits of the commit (`ghcr.io/gray-ai-dev/gray-assistant:f6e54e60ae63`), and its version
-label is `1.10.1+f6e54e60ae63`. This repository's tag is `v<kit version>-<the same 12 hex digits>`.
+The image's tag is the first 12 hex digits of the commit (`ghcr.io/gray-ai-dev/gray-assistant:9c8d9b4adc63`), and its version
+label is `1.10.2+9c8d9b4adc63`. This repository's tag is `v<kit version>-<the same 12 hex digits>`.
 `deploy/relay/kit/cosign.sh verify-image <image>` checks Gray's signature on an image with the key in
 `deploy/relay/kit/keys/gray-assistant-cosign.pub`. The signed payload names the commit.
 
 ## What to review
 
-> Review this tree (and `git diff <the tag you run now> v1.10.1-f6e54e60ae63`) for any way gray-assistant could retain or transmit
+> Review this tree (and `git diff <the tag you run now> v1.10.2-9c8d9b4adc63`) for any way gray-assistant could retain or transmit
 > the relay's account keys other than sealed to a CVM boot it has verified. Trace: (1) where credentials enter: the
 > relay's page (`frontend/src/relay-ui/`) and the server behind it (`workers/packages/relay-kit/src/node/ui/`), the
 > configuration and its sources (`workers/packages/relay-kit/src/node/source/`), and the sign-in command that relays a
@@ -43,7 +43,7 @@ label is `1.10.1+f6e54e60ae63`. This repository's tag is `v<kit version>-<the sa
 
 `./rebuild.sh` builds the image for one platform (linux/amd64 by default, `PLATFORM=linux/arm64` for the other)
 with the build command of `deploy/relay/image/release.sh`. It prints `rebuild.sh: manifest sha256:…`. Compare that
-digest with the published image's manifest for the same platform: `docker buildx imagetools inspect --raw ghcr.io/gray-ai-dev/gray-assistant:f6e54e60ae63`
+digest with the published image's manifest for the same platform: `docker buildx imagetools inspect --raw ghcr.io/gray-ai-dev/gray-assistant:9c8d9b4adc63`
 lists one manifest per platform.
 
 The page: run `npm ci` and then `RELAY_UI_OUT=<an empty directory> npx vite build --config relay-ui/vite.config.ts`

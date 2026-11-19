@@ -111,7 +111,7 @@ export type CoolingRule = {
 };
 export type WindowRule = { id: string; window: 'short' | 'long' | 'model'; at_percent: number; scope: 'account' | 'model' };
 export type StackCooling = {
-  mode: CoolingMode; defaults: 'gray-cooling-v1' | null; rules: CoolingRule[]; windows: WindowRule[]; version: number; digest: string; applied: boolean | null; presets: CoolingRule[];
+  mode: CoolingMode; defaults: 'gray-cooling-v2' | null; rules: CoolingRule[]; windows: WindowRule[]; version: number; digest: string; applied: boolean | null; presets: CoolingRule[];
   /** Gray's current defaults, whatever the relay runs: what "Use Gray's defaults" puts back. */
   gray_defaults: { rules: CoolingRule[]; windows: WindowRule[] };
 };
