@@ -35,6 +35,8 @@
  *     gray-assistant accounts set <account>... [--max-concurrency <n>] [--weight <n>] [--models <id,...> | --all-models]
  *                    [--config <gray-assistant.jsonc>]
  *     gray-assistant accounts pause|resume <account>... [--config <gray-assistant.jsonc>]
+ *     gray-assistant accounts test <account> [--model <id>] [--no-wait] [--timeout <s>] [--config <gray-assistant.jsonc>]
+ *     gray-assistant accounts test <account> --test <test id> [--config <gray-assistant.jsonc>]
  *     gray-assistant proxies [--config <gray-assistant.jsonc>]
  *     gray-assistant proxies add [<url>] [--id <id>] [--config <gray-assistant.jsonc>]
  *     gray-assistant proxies remove <id> [--config <gray-assistant.jsonc>]
@@ -292,6 +294,11 @@ function usage(): string {
     "                                    (the accounts' settings on Gray, as the panel's Edit settings: requests at once, share of requests,",
     "                                    upstream models of one vendor; --all-models: every model your stack endpoints map for their vendor)",
     "       gray-assistant accounts pause|resume <account>... [--config <config>]   (stop the accounts taking requests on Gray, or start again, as the panel's Pause)",
+    "       gray-assistant accounts test <account> [--model <id>] [--no-wait] [--timeout <seconds>] [--config <config>]",
+    "                                    (as the panel's Test: the VM calls the vendor with the account and a few tokens; a pass ends that",
+    "                                    model's hold or cool. --model: one of the account's upstream models; without it, the first that",
+    "                                    rests on its own, else the first. Waits for the answer, 150 s by default; exit 1 unless it passed)",
+    "       gray-assistant accounts test <account> --test <test id> [--config <config>]   (read a test queued before, with --no-wait)",
     "       gray-assistant accounts proxy <account>... (--proxy <id> | --none) [--config <config>]   (the file source: the accounts leave through that proxy",
     "                                    of accounts.json's list, or through none)",
     "       gray-assistant proxies [--config <config>]   (the file source: accounts.json's proxy list and the accounts that name each; never a password)",
@@ -432,6 +439,7 @@ async function dispatch(args: ParsedArgs, io: CliIo): Promise<number> {
     if (args.positionals[1] === "proxy") return accountsProxyCommand(args, io);
     if (args.positionals[1] === "group") return accountsGroupCommand(args, io);
     if (args.positionals[1] === "set" || args.positionals[1] === "pause" || args.positionals[1] === "resume") return accountsSettingsCommand(args, io, args.positionals[1]);
+    if (args.positionals[1] === "test") return accountsTestCommand(args, io);
     return accountsCommand(args, io);
   }
   if (command === "proxies") return proxiesCommand(args, io);
@@ -1352,6 +1360,97 @@ async function accountsSettingsCommand(args: ParsedArgs, io: CliIo, sub: "set" |
     unknown: [...result.unknown],
   });
   return result.unknown.length === 0 ? 0 : 1;
+}
+
+/** What a test's failure says: the vendor's answer, or why the VM made no call. */
+function testFailureText(t: import("./account-test.ts").AccountTest): string {
+  const answer = t.status === null ? null : `the vendor answered ${t.status}${t.class !== null && t.class !== "ok" ? ` (${t.class.replaceAll("_", " ")}${t.vendor_code !== null ? `, ${t.vendor_code}` : ""})` : ""}`;
+  return [t.code === null ? null : t.code.replaceAll("_", " "), answer].filter((part) => part !== null).join(": ") || "failed";
+}
+
+/**
+ * `accounts test <account> [--model <id>] [--no-wait] [--timeout <s>]` and `accounts test <account> --test <id>`
+ * (`./account-test.ts`): what the panel's Test does, signed with the relay key. Gray queues the test and its VM makes the
+ * call; the command waits for the answer (or with --no-wait prints the test's id, which --test reads later). A pass ends
+ * the tested model's rests, so an account held on one model is lifted by a test of that model (Roteo, 2026-11-19).
+ */
+async function accountsTestCommand(args: ParsedArgs, io: CliIo): Promise<number> {
+  const command = "accounts test";
+  assertFlags(args, ["config", "model", "test", "no-wait", "timeout"]);
+  const usage = "gray-assistant accounts test <account> [--model <id>] [--no-wait] [--timeout <s>], or --test <test id>: one account's id on Gray's panel";
+  if (args.positionals.length !== 3) throw new RelayKitError("usage", usage);
+  const account = args.positionals[2] as string;
+  const model = args.flags.get("model")?.trim();
+  const testId = args.flags.get("test")?.trim();
+  if (model === "") throw new RelayKitError("usage", "--model names one of the account's upstream model IDs");
+  if (testId !== undefined && (model !== undefined || args.flags.has("timeout"))) throw new RelayKitError("usage", "--test reads a test queued before: it takes no --model or --timeout");
+  if (testId !== undefined && !/^[0-9a-f]{32}$/.test(testId)) throw new RelayKitError("usage", "--test is the test's id: 32 hex digits, as a test with --no-wait printed it");
+  const timeout = args.flags.get("timeout");
+  if (timeout !== undefined && !/^[1-9][0-9]{0,5}$/.test(timeout)) throw new RelayKitError("usage", "--timeout is whole seconds");
+  const { loadRelayConfigFile } = await import("./config-file.ts");
+  const config = loadRelayConfigFile(configPathOf(args));
+  const key = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "deployment key", MAX_KEY_BYTES));
+  const { runAccountTest } = await import("./account-test.ts");
+  const wait = testId === undefined && !args.flags.has("no-wait");
+  const result = await runAccountTest({
+    config,
+    seed: key.seed,
+    now: io.now,
+    random: io.random,
+    sleep: io.sleep,
+    accountId: account,
+    model,
+    testId,
+    wait,
+    ...(timeout === undefined ? {} : { timeoutMs: Number(timeout) * 1000 }),
+    ...(io.grayPost === undefined ? {} : { post: io.grayPost }),
+    onQueued: (t) => {
+      if (testId === undefined) io.stdout(`gray-assistant ${command}: testing ${t.account_id} on ${t.model} from the VM (test ${t.test_id})${wait ? "; waiting for its answer" : ""}\n`);
+    },
+  });
+  if (!result.ok) {
+    const refusal = grayChangeRefusal(result.code, {
+      request_invalid: "the account id or the model ID is not one Gray's panel takes (a model ID: a letter or digit, then letters, digits and . _ : @ + / -)",
+      invalid_request: `${model ?? "the model"} is not one of ${account}'s models on Gray: name one of them with --model (the panel's account details list them), or give the account the model first (accounts set ${account} --models <id,...>)`,
+      lane_stack_account_unknown: `Gray does not have ${account} yet (an account reaches Gray with accounts push): run accounts push, then test it`,
+      lane_stack_account_no_model: `${account} has no model on Gray, so there is nothing to test: give it one (accounts set ${account} --models <id,...>)`,
+      lane_stack_test_too_soon: `${account} was tested less than a minute ago: wait for that test's answer (on the panel, or --test <id>), then test again`,
+      lane_stack_tests_full: "64 tests wait for your VM: wait for their answers, then test again",
+      lane_stack_test_unknown: `Gray has no test ${testId ?? ""} of ${account}`,
+    });
+    io.stderr(`gray-assistant ${command}: ${refusal}\n`);
+    printJson(io, { command, ok: false, relay_id: config.daemon.relayId, account_id: account, code: result.code });
+    return 1;
+  }
+  const t = result.test;
+  const passed = t.state === "answered" && t.outcome === "ok";
+  if (t.state === "pending") {
+    if (wait) io.stderr(`gray-assistant ${command}: the VM has not answered test ${t.test_id} yet; read it later: gray-assistant accounts test ${t.account_id} --test ${t.test_id}\n`);
+    else if (testId !== undefined) io.stdout(`gray-assistant ${command}: test ${t.test_id} of ${t.account_id} on ${t.model} waits for the VM\n`);
+  } else if (t.state === "expired") {
+    io.stderr(`gray-assistant ${command}: the VM did not answer test ${t.test_id} in time, so it ran no call: check that the VM serves (gray-assistant doctor), then test again\n`);
+  } else if (passed) {
+    const timing = [t.first_token_ms === null ? null : `first token ${t.first_token_ms} ms`, t.total_ms === null ? null : `${t.total_ms} ms in all`].filter((part) => part !== null).join(", ");
+    const ended = (t.cleared ?? 0) > 0 ? `; it ended ${t.cleared} ${t.cleared === 1 ? "rest" : "rests"} of ${t.account_id} on ${t.model} or across the account` : "";
+    io.stdout(`gray-assistant ${command}: ${t.account_id} on ${t.model} passed${timing === "" ? "" : ` (${timing})`}${ended}\n`);
+  } else {
+    io.stderr(`gray-assistant ${command}: ${t.account_id} on ${t.model} failed: ${testFailureText(t)}\n`);
+  }
+  printJson(io, {
+    command,
+    ok: passed || (t.state === "pending" && !wait),
+    relay_id: config.daemon.relayId,
+    account_id: t.account_id,
+    model: t.model,
+    test_id: t.test_id,
+    state: t.state,
+    outcome: t.outcome,
+    code: t.code,
+    status: t.status === null ? null : BigInt(t.status),
+    class: t.class,
+    cleared: t.cleared === null ? null : BigInt(t.cleared),
+  });
+  return passed || (t.state === "pending" && !wait) ? 0 : 1;
 }
 
 /** `accounts add --vendor <vendor> [--proxy <id>] [--id-prefix <text>]`: one API-key account per key on standard input. */

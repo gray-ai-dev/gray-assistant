@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Checks that a gray-assistant image, a relay kit tarball, the conformance image or a gray-lane image is the one Gray
-# published: Gray signs all of them with one cosign key (Sigstore cosign, key-based), whose public half is
+# Checks that a gray-assistant image, a relay kit tarball, the conformance image, a gray-lane image, or a gray-lane-verify
+# bundle or image is the one Gray published: Gray signs all of them with one cosign key (Sigstore cosign, key-based), whose public half is
 # keys/gray-assistant-cosign.pub beside this script. Gray's release scripts sign with the same file
 # (deploy/relay/image/release.sh, deploy/relay/kit/publish.sh, deploy/relay/conformance/release.sh,
-# scripts/ops/lane-image.sh push).
+# scripts/ops/lane-image.sh push, deploy/lane-verify/release.sh).
 #
 #   cosign.sh verify <gray-assistant-kit-<version>.tar.gz>
 #       the tarball against <tarball>.sigstore.json beside it, then the gray-assistant image its VERSIONS names (signed by
@@ -12,6 +12,10 @@
 #   cosign.sh verify-image <registry>/<path>[:<tag>][@sha256:<hex>]
 #       one image, e.g. the `image:` line of your compose.yaml, the conformance image, or the gray-lane image a release
 #       of Gray's signed list names (its `stack.gray_image`). Prints its digest, commit and version as signed.
+#   cosign.sh verify-file <file>
+#       one file Gray publishes with its signature beside it as <file>.sigstore.json, e.g. the gray-lane-verify bundle
+#       (gray-lane-verify-<version>.mjs); also checks <file>.sha256 when it is there. Prints the file's sha256 and the
+#       signer.
 #   cosign.sh path          installs the pinned cosign (below) if needed and prints its path
 #   cosign.sh run <args>    runs the pinned cosign with <args>
 #
@@ -166,6 +170,27 @@ cmd_verify() {
   echo "cosign.sh: OK: the kit and its images are signed by Gray's release key"
 }
 
+cmd_verify_file() {
+  local file=${1:?verify-file needs a file} bundle err sum listed
+  [ -f "$file" ] || die "no file $file"
+  bundle="$file.sigstore.json"
+  [ -f "$bundle" ] || die "no signature $bundle: download it from beside the file"
+  need_key
+  err=$(mktemp)
+  cosign verify-blob --key "$KEY" --bundle "$bundle" ${offline_verify[@]+"${offline_verify[@]}"} "$file" >/dev/null 2>"$err" \
+    || { cat "$err" >&2; rm -f "$err"; die "$file: the signature does not verify with $KEY"; }
+  rm -f "$err"
+  sum=$(sha256_of "$file")
+  if [ -f "$file.sha256" ]; then
+    listed=$(cut -d' ' -f1 <"$file.sha256")
+    [ "$listed" = "$sum" ] || die "$file.sha256 names $listed, but the file's sha256 is $sum"
+  fi
+  echo "file     $file"
+  echo "sha256   $sum"
+  echo "signer   $(signer)"
+  echo "cosign.sh: OK: the file is signed by Gray's release key"
+}
+
 cmd_sign_image() {
   local private=${1:?} ref=${2:?} commit=${3:?} version=${4:?}
   [[ $ref =~ @sha256:[0-9a-f]{64}$ ]] || die "sign-image takes the image by digest"
@@ -187,6 +212,7 @@ if [ "${1:-}" = --key ]; then KEY=${2:?--key needs a file}; shift 2; fi
 case ${1:-} in
   verify) shift; cmd_verify "$@" ;;
   verify-image) shift; cmd_verify_image "$@" ;;
+  verify-file) shift; cmd_verify_file "$@" ;;
   sign-image) shift; cmd_sign_image "$@" ;;
   sign-blob) shift; cmd_sign_blob "$@" ;;
   check-key) shift; check_private_key "${1:?check-key needs the private key file}" ;;

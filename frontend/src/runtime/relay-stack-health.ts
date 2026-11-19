@@ -580,6 +580,27 @@ const TEST_CODE_WORDS: Readonly<Record<string, string>> = {
   header_refused: 'A registered header was refused', not_sealed: 'The VM holds no credential for it', credential_expired: 'Its sealed credential has expired',
   account_unknown: 'The VM doesn’t know the account yet', model_unknown: 'The model isn’t one the account serves',
 };
+/** The account's enforced rests that have not ended, the account-wide ones first, then by model: what the sheet lists. */
+export function activeRests(report: Pick<ReportAccount, 'cooling'> | null | undefined, now: number): CoolingEntry[] {
+  const key = (e: CoolingEntry) => `${e.model === null ? '0' : `1${e.model}`}\n${e.kind === 'hold' ? 0 : 1}`;
+  return (report?.cooling ?? []).filter(e => !e.observed && (e.until_minute_ms === null || e.until_minute_ms > now))
+    .sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
+}
+
+/**
+ * The account's models as the Test picker offers them: those that rest on their own first (an enforced hold or cool of
+ * that model), the held ones before the cooling ones (a hold does not end by itself), each with its rest, then the
+ * others, each group in the account's order. The first
+ * is the default, the console's own when a test names no model (health.ts `testModelOf`): a passing test ends the tested
+ * model's rests and the account-wide ones, never another model's, so the model that rests is the one worth testing.
+ */
+export function testModels(models: readonly string[], report: Pick<ReportAccount, 'cooling'> | null | undefined, now: number): { model: string; rest: CoolingEntry | null }[] {
+  const rests = new Map<string, CoolingEntry>();
+  for (const e of activeRests(report, now)) if (e.model !== null && (!rests.has(e.model) || e.kind === 'hold')) rests.set(e.model, e);
+  const resting = [...models.filter(m => rests.get(m)?.kind === 'hold'), ...models.filter(m => rests.get(m)?.kind === 'cool')].map(model => ({ model, rest: rests.get(model)! }));
+  return [...resting, ...models.filter(m => !rests.has(m)).map(model => ({ model, rest: null }))];
+}
+
 /** A test's result in one line: "Passed · first token 640 ms · 1.9 s" or "Failed: Rate limited (429)". */
 export function testResultText(t: StackTest): { label: string; tone: 'success' | 'danger' | 'neutral' | 'info'; detail: string } {
   if (t.state === 'pending') return { label: 'Testing…', tone: 'info', detail: 'Waiting for the VM to run it (it polls every few seconds).' };
