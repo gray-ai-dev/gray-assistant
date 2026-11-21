@@ -284,8 +284,10 @@ export type RelayReleaseNoticeKind = (typeof RELAY_RELEASE_NOTICE_KINDS)[number]
 /**
  * What a relay is told about by e-mail and webhook (lifecycle §3.7): a failed boot (the token service unreachable is
  * its `token_service` class), its registry token near its end (only once gray-assistant reports it), Gray's release list
- * stale, a release waiting for the relay, a container crash loop, account-health problems (S46's states), and the VM's
- * credential lease past its renewal (S45, the credentials list's `lease_expiring`), most of its calls failing for a few
+ * stale, a release waiting for the relay, a move of its VM to a Gray release that failed and is tried again
+ * (`release_move_failed`, docs/design/relay-release-zero-downtime.md), a container crash loop, account-health problems
+ * (S46's states), and the VM's credential lease past its renewal (S45, the credentials list's `lease_expiring`), most of
+ * its calls failing for a few
  * minutes (`relay_failing`, its container's own failures included), and a non-compliant change: the relay
  * taken out of routing (`relay_ejected`), or the change recorded with the relay left routing (`relay_violation`).
  */
@@ -294,6 +296,7 @@ export const RELAY_ALERT_KINDS = [
   "registry_token_expiring",
   "release_list_stale",
   "release_pending",
+  "release_move_failed",
   "container_crash_loop",
   "account_health",
   "lease_expiring",

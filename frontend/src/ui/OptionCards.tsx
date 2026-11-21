@@ -18,6 +18,8 @@ export type OptionCard<T extends string> = {
   icon?: ReactNode;
   /** A short mark beside the title (a `Badge`): something the option gives, which other pages show too. */
   badge?: ReactNode;
+  /** A page of the option's own at the card's foot, e.g. its guide: a link of its own above the card's, so it takes its click. */
+  more?: { label: string; href: string };
 };
 
 /**
@@ -27,12 +29,12 @@ export type OptionCard<T extends string> = {
  * (`aria-current="page"` on the chosen one, like link `Tabs`; a link needs no Base UI part): the title is the link, its
  * box stretched over the card, so the whole card takes the click while the link's name stays the title. Every card is
  * drawn alike, so none reads as the better choice; the chosen card has an ink edge and a filled check, the others an
- * empty ring.
+ * empty ring. With no `value` none is chosen: a choice not made yet.
  */
 export function OptionCards<T extends string>({ items, value, 'aria-label': label }: {
   items: readonly OptionCard<T>[];
-  /** The option of the page this is on. */
-  value: T;
+  /** The option of the page this is on; none while nothing is chosen. */
+  value?: T;
   /** Names the `nav` landmark ("What you connect"). */
   'aria-label': string;
 }) {
@@ -59,7 +61,10 @@ export function OptionCards<T extends string>({ items, value, 'aria-label': labe
               <span>{fact}</span>
             </li>)}
           </ul>}
-          {item.footer != null && <p className="ui-option-card__footer">{item.footer}</p>}
+          {(item.footer != null || item.more) && <p className="ui-option-card__footer">
+            {item.footer != null && <span>{item.footer}</span>}
+            {item.more && <a className="ui-link ui-option-card__more" href={item.more.href}>{item.more.label}</a>}
+          </p>}
         </li>;
       })}
     </ul>

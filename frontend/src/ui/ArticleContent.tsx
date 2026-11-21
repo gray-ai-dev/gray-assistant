@@ -4,6 +4,7 @@ import rehypeSlug from 'rehype-slug';
 import remarkGfm from 'remark-gfm';
 import { ArrowLeft } from '../components/icons';
 import type { ArticleImage, ArticleLang, ArticleProps } from './Article';
+import { remarkDropComments } from './article-comments';
 import { CodeBlock, type CodeLanguage } from './Code';
 import { Table, TableBody, TableCell, TableHead, TableHeaderCell, TableRow } from './Data';
 import { Skeleton } from './Feedback';
@@ -140,6 +141,6 @@ function ArticleContent({ markdown, lang, resolveLink, resolveImage, headingHref
   }, [headingHref, resolveImage, resolveLink, words]);
 
   return <article ref={root} lang={lang} className={`ui-article ui-article--${lang}`}>
-    <Markdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSlug]} components={components}>{markdown}</Markdown>
+    <Markdown remarkPlugins={[remarkGfm, remarkDropComments]} rehypePlugins={[rehypeSlug]} components={components}>{markdown}</Markdown>
   </article>;
 }

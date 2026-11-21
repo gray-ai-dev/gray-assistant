@@ -37,32 +37,105 @@ export function protocolGroups() {
 }
 export const isProtocolId = (value: unknown): value is ProtocolId => endpointProtocols.some(protocol => protocol.id === value);
 export const endpointProtocolLabel = (id: string) => endpointProtocols.find(protocol => protocol.id === id)?.label ?? id;
+/** A base URL Gray can call, or null while it is not one (still being typed, another scheme, a query or a user). */
+function parsedBase(baseUrl: string): URL | null {
+  let url: URL;
+  try { url = new URL(baseUrl.trim()); } catch { return null; }
+  return (url.protocol === 'https:' || url.protocol === 'http:') && !url.username && !url.password && !url.search && !url.hash ? url : null;
+}
+/** A base URL's path without its trailing slashes: '' for a bare host, or while the URL is not one. */
+function basePath(baseUrl: string): string {
+  let path = parsedBase(baseUrl)?.pathname ?? '';
+  while (path.endsWith('/')) path = path.slice(0, -1);
+  return path;
+}
 /**
- * The native request path Gray fills in for a mapping. Gemini's names the upstream model,
- * `/v1beta/models/<upstream model>:generateContent` (Gray sends the path as written and switches it to
- * `:streamGenerateContent` for a stream), so it is blank until that model is known. Blank for an unknown protocol.
+ * The native request path Gray fills in for a mapping: the path a check takes when it is given none (verifier
+ * runner.ts `nativeUrl`, runner.rs `native_url`): the base URL's path, its trailing slashes dropped, then `/v1`
+ * (Gemini's `/v1beta`) unless the path already ends in it, then the protocol's own path. So base URLs
+ * `https://openrouter.ai/api/v1` and `https://openrouter.ai/api` both give `/api/v1/chat/completions`, and
+ * `https://api.example.com` gives `/v1/chat/completions`. Gray sends a stored path as written, in place of the base
+ * URL's path (`requestUrl`), so the path is filled in whole. Gemini's names the upstream model,
+ * `…/v1beta/models/<upstream model>:generateContent` (switched to `:streamGenerateContent` for a stream), so it is blank
+ * until that model is known. Blank for an unknown protocol.
  */
-export function defaultNativePath(protocol: string, upstreamModel = ''): string {
-  if (protocol === 'gemini') {
-    const model = upstreamModel.trim();
-    return model ? `/v1beta/models/${model}:generateContent` : '';
-  }
-  return endpointProtocols.find(item => item.id === protocol)?.path ?? '';
+export function defaultNativePath(protocol: string, upstreamModel = '', baseUrl = ''): string {
+  const gemini = protocol === 'gemini', model = upstreamModel.trim();
+  const own = gemini ? (model ? `/models/${model}:generateContent` : '') : (endpointProtocols.find(item => item.id === protocol)?.path?.slice('/v1'.length) ?? '');
+  if (!own) return '';
+  const version = gemini ? '/v1beta' : '/v1', prefix = basePath(baseUrl);
+  return `${prefix.endsWith(version) ? prefix : `${prefix}${version}`}${own}`;
 }
 /** The Gemini default the console once filled in. Nothing substitutes `{model}`, so a mapping saved with it never worked. */
 const RETIRED_GEMINI_TEMPLATE = '/v1beta/models/{model}:generateContent';
-/** Whether Gray filled in `path` for this protocol and upstream model (or it is blank, or the retired Gemini template). */
-export function isFilledInPath(path: string, protocol: string, upstreamModel: string) {
-  const value = path.trim();
-  return !value || value === RETIRED_GEMINI_TEMPLATE || value === defaultNativePath(protocol, upstreamModel);
-}
-type PathInputs = { protocol: string; upstream: string };
 /**
- * The native path after a mapping's protocol or upstream model changes from `before` to `after`: a path Gray filled
- * in follows them, so a Gemini path keeps naming the upstream model; a path the provider typed stays as typed.
+ * Whether Gray filled in `path` for this protocol, upstream model and base URL: blank, the retired Gemini template, the
+ * default under the base URL's path, or the default under none (what Gray filled in before it read the base URL).
+ */
+export function isFilledInPath(path: string, protocol: string, upstreamModel: string, baseUrl = '') {
+  const value = path.trim();
+  return !value || value === RETIRED_GEMINI_TEMPLATE || value === defaultNativePath(protocol, upstreamModel) || value === defaultNativePath(protocol, upstreamModel, baseUrl);
+}
+type PathInputs = { protocol: string; upstream: string; base?: string };
+/**
+ * The native path after a mapping's protocol, upstream model or base URL changes from `before` to `after`: a path Gray
+ * filled in follows them, so a Gemini path keeps naming the upstream model and a path stays under the base URL's; a
+ * path the provider typed stays as typed.
  */
 export function followNativePath(path: string, before: PathInputs, after: PathInputs): string {
-  return isFilledInPath(path, before.protocol, before.upstream) && isProtocolId(after.protocol) ? defaultNativePath(after.protocol, after.upstream) : path;
+  return isFilledInPath(path, before.protocol, before.upstream, before.base) && isProtocolId(after.protocol) ? defaultNativePath(after.protocol, after.upstream, after.base) : path;
+}
+
+/**
+ * `valid_native_path` (verifier runner.ts `validNativePath`): a path a check sends as written. A check of any other
+ * path sends nothing (`invalid_target`).
+ */
+export function validNativePath(path: string): boolean {
+  return path.startsWith('/') && !path.startsWith('//') && new TextEncoder().encode(path).length <= 2048
+    && !/[\p{Cc}?#\\%{}]/u.test(path) && !path.split('/').some(part => part === '.' || part === '..');
+}
+/**
+ * `gemini_method_path` (@gray/protocol paths.ts `geminiMethodPath`): a Gemini native path with `method` in place of the
+ * method it names; null when its last segment names no model with a generation method.
+ */
+function geminiMethodPath(path: string, method: string): string | null {
+  const colon = path.lastIndexOf(':');
+  if (colon < 0) return null;
+  const prefix = path.slice(0, colon), named = path.slice(colon + 1);
+  if (!prefix.slice(prefix.lastIndexOf('/') + 1) || (named !== 'generateContent' && named !== 'streamGenerateContent')) return null;
+  return `${prefix}:${method}`;
+}
+/**
+ * Where Gray sends a mapping's requests, its checks and customers' alike (verifier runner.ts `nativeUrl` with a native
+ * path; serving's `routeUrl` and `geminiOperationUrl`): the base URL with its path replaced by the native path, a Gemini
+ * path's method by the call's (`streamGenerateContent` and `?alt=sse` for a stream). Null while the base URL or the
+ * path cannot be used, as a check then sends nothing.
+ */
+export function requestUrl(baseUrl: string, nativePath: string, protocol: string, stream = false): string | null {
+  const url = parsedBase(baseUrl), path = nativePath.trim();
+  if (!url || !validNativePath(path)) return null;
+  const sent = protocol === 'gemini' ? geminiMethodPath(path, stream ? 'streamGenerateContent' : 'generateContent') : path;
+  if (sent === null) return null;
+  const host = url.host;
+  url.pathname = sent;
+  url.search = stream && protocol === 'gemini' ? 'alt=sse' : '';
+  return url.host === host ? url.href : null;
+}
+/**
+ * Where Gray reads an API's model list (verifier discovery.ts `catalogPath` and `pageQuery`): one GET at the base URL's
+ * path plus `/v1/models`, or `/models` under a path ending in `/v1`; Gemini's at `/v1beta/models`, or `/models` under a
+ * path ending in `/v1beta`, where its requests go too (`defaultNativePath`). Anthropic's list asks for 1,000 models a
+ * page and Gemini's too. Null while the base URL is not one Gray can call.
+ */
+export function catalogUrl(baseUrl: string, protocol: string): string | null {
+  const url = parsedBase(baseUrl);
+  if (!url) return null;
+  const prefix = basePath(baseUrl);
+  url.pathname = protocol === 'gemini'
+    ? prefix.endsWith('/v1beta') ? `${prefix}/models` : `${prefix}/v1beta/models`
+    : prefix.endsWith('/v1') ? `${prefix}/models` : `${prefix}/v1/models`;
+  url.search = protocol === 'anthropic_messages' ? 'limit=1000' : protocol === 'gemini' ? 'pageSize=1000' : '';
+  return url.href;
 }
 
 export type AdapterId = 'gemini' | 'volcengine' | 'minimax' | 'kling' | 'fal';
@@ -86,23 +159,28 @@ export type MappingFields = { protocol: string; native_path: string; adapter?: s
  * A mapping after its protocol changes: a native path Gray filled in follows the protocol (`followNativePath`), and
  * an adapter that does not serve the new protocol is dropped.
  */
-export function withProtocol<M extends MappingFields>(mapping: M, protocol: string): M {
+export function withProtocol<M extends MappingFields>(mapping: M, protocol: string, base = ''): M {
   const upstream = mapping.upstream_model ?? '';
-  const next: M = { ...mapping, protocol, native_path: followNativePath(mapping.native_path, { protocol: mapping.protocol, upstream }, { protocol, upstream }) };
+  const next: M = { ...mapping, protocol, native_path: followNativePath(mapping.native_path, { protocol: mapping.protocol, upstream, base }, { protocol, upstream, base }) };
   if (next.adapter && !adapterServes(next.adapter, protocol)) delete next.adapter;
   return next;
 }
 /** A mapping after its upstream model changes: a Gemini path Gray filled in keeps naming the upstream model. */
-export function withUpstreamModel<M extends MappingFields>(mapping: M, upstream: string): M {
-  return { ...mapping, upstream_model: upstream, native_path: followNativePath(mapping.native_path, { protocol: mapping.protocol, upstream: mapping.upstream_model ?? '' }, { protocol: mapping.protocol, upstream }) };
+export function withUpstreamModel<M extends MappingFields>(mapping: M, upstream: string, base = ''): M {
+  return { ...mapping, upstream_model: upstream, native_path: followNativePath(mapping.native_path, { protocol: mapping.protocol, upstream: mapping.upstream_model ?? '', base }, { protocol: mapping.protocol, upstream, base }) };
+}
+/** A mapping after the endpoint's base URL changes from `before` to `after`: a path Gray filled in moves under the new base URL's path. */
+export function withBaseUrl<M extends MappingFields>(mapping: M, before: string, after: string): M {
+  const upstream = mapping.upstream_model ?? '';
+  return { ...mapping, native_path: followNativePath(mapping.native_path, { protocol: mapping.protocol, upstream, base: before }, { protocol: mapping.protocol, upstream, base: after }) };
 }
 /**
  * A stored mapping as the edit form opens it: the retired Gemini template becomes the path that names the upstream
  * model, so saving the edit repairs a mapping that could never pass its check. Any other path is left as saved.
  */
-export function repairedMapping<M extends MappingFields>(mapping: M): M {
+export function repairedMapping<M extends MappingFields>(mapping: M, base = ''): M {
   return mapping.native_path.trim() === RETIRED_GEMINI_TEMPLATE && mapping.protocol === 'gemini' && mapping.upstream_model?.trim()
-    ? { ...mapping, native_path: defaultNativePath('gemini', mapping.upstream_model) } : mapping;
+    ? { ...mapping, native_path: defaultNativePath('gemini', mapping.upstream_model, base) } : mapping;
 }
 /** A mapping with `adapter` set, or without the field when none is chosen: the control API rejects an empty adapter and omits an unset one. */
 export function withAdapter<M extends MappingFields>(mapping: M, adapter: string): M {

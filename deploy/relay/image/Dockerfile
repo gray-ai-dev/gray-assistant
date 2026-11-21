@@ -16,7 +16,7 @@
 #   runs it into the kit; empty (the default), `init --pair` writes no compose file.
 # - The agent runs as uid/gid 10001 with every file root-owned and read-only; compose supplies the read-only root,
 #   /tmp and the state volume.
-ARG NODE_BASE=node:24-bookworm-slim@sha256:a5f4366e834695d5f363b920c104953a535d3a9864d1bdf74566a0ebe01daee5
+ARG NODE_BASE=node:24.22.1-bookworm-slim@sha256:be8204d4bd327363357f532187b752ff62759c31bedf98e9e18fc08c9cbd605c
 ARG FRPC_IMAGE=fatedier/frpc:v0.71.1@sha256:7a0a18bc9c83dc106a7e5213a890f521affdf90d595829c56b0ed8481377d50e
 ARG CADDY_IMAGE=caddy:2.11.7-alpine@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f
 

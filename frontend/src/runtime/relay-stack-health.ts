@@ -24,6 +24,7 @@ export type ServerState = typeof SERVER_STATES[number];
 export const ATTEMPT_CLASSES = [
   'ok', 'stream_error', 'vendor_reset', 'relay_closed', 'gray_ended', 'egress_limit', 'client_error', 'auth', 'forbidden', 'billing', 'restricted', 'window_exhausted', 'rate_limit',
   'overloaded', 'unavailable', 'vendor_5xx', 'challenge', 'connect', 'proxy', 'relay_refused', 'cooling', 'credential_unknown', 'container_fault',
+  'relay_declined',
 ] as const;
 export type AttemptClass = typeof ATTEMPT_CLASSES[number];
 export type CoolingMode = 'off' | 'observe' | 'enforce';
@@ -194,7 +195,7 @@ export const CLASS_WORDS: Readonly<Record<AttemptClass, string>> = {
   egress_limit: 'Over Gray’s egress limit', client_error: 'Client error (4xx)', auth: 'Credential rejected (401)', forbidden: 'Forbidden (403)', billing: 'Billing problem',
   restricted: 'Account restricted', window_exhausted: 'Limit used up', rate_limit: 'Rate limited (429)', overloaded: 'Overloaded (529)', unavailable: 'Unavailable (503)',
   vendor_5xx: 'Vendor error (5xx)', challenge: 'Challenge page (IP or proxy check)', connect: 'Couldn’t connect', proxy: 'Proxy failed', relay_refused: 'Refused by Gray',
-  cooling: 'Refused while cooling', credential_unknown: 'Unknown credential', container_fault: 'Container fault',
+  cooling: 'Refused while cooling', credential_unknown: 'Unknown credential', container_fault: 'Container fault', relay_declined: 'Declined by your software',
 };
 /** The classes that are the vendor's or the network's failures (the console's FAILURE_CLASSES, state.ts). */
 export const FAILURE_CLASSES: ReadonlySet<AttemptClass> = new Set<AttemptClass>(['stream_error', 'vendor_reset', 'auth', 'forbidden', 'billing', 'restricted', 'window_exhausted', 'rate_limit', 'overloaded', 'unavailable', 'vendor_5xx', 'challenge', 'connect', 'proxy']);

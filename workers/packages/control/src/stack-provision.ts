@@ -1002,6 +1002,8 @@ export const RELAY_ALERT_WORDS: Readonly<Record<RelayAlertKind, { readonly title
   registry_token_expiring: { title: "Your registry token expires within 14 days", resolved: "Your registry token was renewed" },
   release_list_stale: { title: "Gray's release list is out of date", resolved: "Gray's release list is current again" },
   release_pending: { title: "A Gray release is waiting for your decision", resolved: "No Gray release is waiting for you" },
+  // One per release (its key `compose:<hash>`), open across Gray's tries; the move's end resolves it.
+  release_move_failed: { title: "Your VM has not moved to a new Gray release yet", resolved: "Your VM moved to the new Gray release" },
   container_crash_loop: { title: "A container in your VM keeps restarting", resolved: "The containers in your VM are running" },
   account_health: { title: "Accounts in your deployment need attention", resolved: "Your accounts are healthy again" },
   lease_expiring: { title: "Your VM's credential lease hasn't been renewed", resolved: "gray-assistant renewed your VM's credential lease" },
@@ -1016,7 +1018,8 @@ export const RELAY_ALERT_WORDS: Readonly<Record<RelayAlertKind, { readonly title
   // Phase 2's release notices (P5b-2): told once each, never resolved; `resolved` is not sent.
   relay_release_proposed: { title: "Gray proposed a release for your deployment", resolved: "" },
   relay_release_reminder: { title: "A proposed Gray release takes effect in 2 days", resolved: "" },
-  relay_release_effective: { title: "A Gray release took effect for your deployment", resolved: "" },
+  // A fact of the relay's contract: the VM moves to the release after it (release_move_failed while that fails).
+  relay_release_effective: { title: "A Gray release took effect on your contract", resolved: "" },
   relay_release_traffic: { title: "Your deployment stops receiving traffic in a day", resolved: "" },
 };
 
