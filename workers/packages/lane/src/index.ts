@@ -10,6 +10,9 @@
  *    `gray-lane-rewrites-v1` policy — Gray's own rewrites (the upstream model, the output cap, the
  *    stripped end-user ids, `models`, Chat's `include_usage`) are declared as typed
  *    `request.modified` events and applied as byte-level ops before F, so the same replay works.
+ *    `applyApiChanges`, `replayApiChanges` and `gray-lane-rewrites-v2` do the same for the standard
+ *    APIs a provider's own API serves (embeddings, images, audio, videos, rerank, System One), whose
+ *    body is JSON or a `multipart/form-data` form (`applyFormOps`, the two form ops).
  *
  * D. `validateMethod`, `applyMethod` — a relay's registered change method (`gray-relay-method-v1`,
  *    docs/relay-changes-v2.md §2.2–§2.4): the registration checks, and V = apply(m, E, facts) by byte splices.
@@ -17,6 +20,9 @@
  * And for a relay stack (S19): `StackEventDigester`, `stackEventDigest`, `stackBodyDigest` — the
  * per-event and body digests the entry compares with the ones Gray's egress computed over the
  * vendor's bytes (`deploy/tee/egress/stack_digest.go`, shared vectors in its testdata).
+ *
+ * And for a video job the entry serves (`readVideoObject`): what Gray reads of a provider's `video` object and the
+ * three changes it makes to the copy the client gets, at byte offsets (the provider standard's clause 11.14).
  *
  * The purpose is in `workers/packages/lane/IMPLEMENTATION_NOTES.md`, the review it follows is
  * review.md (sections 2.3, 3.x, 4), and the comparison with Phala's Private AI Gateway is
@@ -37,6 +43,19 @@ export {
   type LaneProtocol,
   type Position,
 } from "./protocol.ts";
+export {
+  GRAY_LANE_TRANSLATION_V1,
+  GRAY_LANE_TRANSLATION_V1_ID,
+  HEADER_DROPPED,
+  geminiPathOf,
+  isTranslatedApi,
+  replayTranslated,
+  translateDeclared,
+  translatedForwarded,
+  type TranslationEvents,
+  type TranslationReplay,
+  type TranslationSpec,
+} from "./translation.ts";
 export { checkOfficialUpstream, type OfficialOrigin, type OfficialVendor, type OriginRefusalCode } from "./origin.ts";
 export {
   LANE_STACK_VENDORS,
@@ -94,14 +113,37 @@ export { MAX_POINTER_LENGTH, MAX_POINTER_TOKENS, parseJsonPointer, type JsonPoin
 export {
   GRAY_LANE_REWRITES_V1,
   GRAY_LANE_REWRITES_V1_ID,
+  GRAY_LANE_REWRITES_V2,
+  GRAY_LANE_REWRITES_V2_ID,
+  GRAY_LANE_REWRITES_V2_TEXT,
   LANE_REWRITE_OPS,
+  REWRITE_APIS,
+  apiRewriteRuleFor,
+  isRewriteApi,
   rewriteRuleFor,
   ruleAllowsValue,
   validateRewritePolicy,
+  validateRewritePolicyV2,
+  type ApiRewriteRule,
+  type FormRewriteRule,
   type LaneRewritePolicy,
+  type LaneRewritePolicyV2,
+  type RewriteApi,
   type RewriteRule,
   type RewriteValueRule,
 } from "./policy.ts";
+export { FORM_BOUNDARY_MAX_BYTES, FORM_HEADER_MAX_BYTES, FORM_NAME_MAX_BYTES, applyFormOps, formBodyBoundary, formBoundaryOf, formOpSegments, isFormBoundary, type FormRefusalCode, type GrayFormOp } from "./form.ts";
+export {
+  apiChangeSegments,
+  applyApiChanges,
+  replayApiChanges,
+  type ApiBody,
+  type ApiChangeRefusalCode,
+  type ApiChangeSegmentsOk,
+  type ApplyApiChangesOk,
+  type ApplyApiChangesOptions,
+  type GrayApiOp,
+} from "./api-changes.ts";
 export { StackEventDigester, stackBodyDigest, stackCanonical, stackEventDigest, stackJsonTree, stackTreeText, type StackJsonTree } from "./stack-digest.ts";
 export {
   GRAY_LANE_RESPONSE_REWRITES_V1,
@@ -115,6 +157,7 @@ export {
   type LaneResponseRewriteRule,
   type StackRewritten,
 } from "./response-rewrites.ts";
+export { VIDEO_OBJECT_MAX_DEPTH, VIDEO_STATES, isHttpUrl, isVideoProviderId, readVideoObject, videoStateOf, type VideoObject, type VideoSeconds, type VideoState } from "./video-object.ts";
 export {
   applyDeclaredChanges,
   changeValueSha256,

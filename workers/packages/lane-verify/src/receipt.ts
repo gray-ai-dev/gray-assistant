@@ -49,6 +49,30 @@
  * A Gemini receipt is an entry's endpoint route's (docs/design/lane-provider-routes.md section 5): the lane has no
  * rewrite policy and no relay templates for Gemini, so Gray forwards the customer's bytes as they are, and step 1 is
  * the whole content check (a `request.modified` or `relay_policy` event fails it).
+ *
+ * A receipt of a standard API (docs/design/standard-media-at-entry.md section 2.4: embeddings, rerank, image generations
+ * and edits, speech, transcriptions, translations, videos, System One) is an entry's endpoint route's too. Its declared
+ * ops name `gray-lane-rewrites-v2`, and the content check is the replay of @gray/lane `replayApiChanges`, the code the
+ * entry runs: member ops on a JSON body, or the two form ops (`set_form_field`, `remove_form_field`) on a
+ * `multipart/form-data` body. A form is read by the boundary of its own first line (`--`, the boundary, CRLF as the
+ * body's first bytes) and by nothing else: the receipt hashes bodies and carries no header, and the received body's
+ * hash binds that line. A body that does not begin so (a preamble, a CRLF before the first boundary line) does not
+ * replay, and the entry refuses such a form before it sends anything. A file's bytes are covered as every other byte
+ * of the body is, by the two body hashes. No relay policy and no relay stack serves these APIs, so such an event
+ * fails the receipt. A video job's retrieve and content requests are GETs with an empty body and no op.
+ *
+ * A text request's ops may name `gray-lane-rewrites-v2` instead of v1: v2 keeps v1's rules for the three text APIs, and
+ * the replay is the same under either id. All ops of one receipt name one policy.
+ *
+ * A translated receipt (`request.translated`, docs/design/lane-provider-routes.md section 10) is an endpoint route's
+ * whose request the entry translated onto another text API, Gemini included on either side. It replaces steps 1–3 with
+ * the replay of @gray/lane `replayTranslated`, the code the gateway runs: the `request.modified` ops before the event
+ * (gray-lane-rewrites-v1, on the customer's body in its API), the translation the event names, then the ops after it
+ * (gray-lane-translation-v1, on the translated body). The forwarded hash must be that replay's, the event's `from` the
+ * API the receipt's endpoint names, its `dropped` the replay's names plus at most the client headers the receipt cannot
+ * show (`HEADER_DROPPED`), and every `upstream.verified` must name a provider's own API (`provider_api_not_tee`): Gray
+ * translates for endpoint routes only. The answer's translation back is not replayed; `response.returned` hashes the
+ * bytes the customer got, as on every endpoint route's receipt.
  */
 import { get, isObject, parseSerdeBytes, type Json } from "@gray/json";
 import {
@@ -62,11 +86,14 @@ import {
   EVENT_REQUEST_FORWARDED,
   EVENT_REQUEST_MODIFIED,
   EVENT_REQUEST_RECEIVED,
+  EVENT_REQUEST_TRANSLATED,
   EVENT_RESPONSE_RETURNED,
   EVENT_UPSTREAM_RESPONSE,
   EVENT_UPSTREAM_VERIFIED,
+  isFormOp,
   StackEventsChain,
   adoptKeyset,
+  bodyHash,
   eventType,
   findEvent,
   STACK_TLS_HELLOS,
@@ -80,6 +107,7 @@ import {
   relayStackAppendedSchema,
   relayStackChangedSchema,
   requestModifiedSchema,
+  requestTranslatedSchema,
   sealKeyset,
   verifyReceipt,
   type ReceiptDocument,
@@ -88,13 +116,22 @@ import {
   type RequestModifiedEvent,
   type SealedKeyset,
   type StackTlsHello,
+  type TranslatedApi,
   type WorkloadKeyset,
 } from "@gray/attest";
 import {
+  GRAY_LANE_REWRITES_V1,
+  GRAY_LANE_REWRITES_V2,
+  GRAY_LANE_REWRITES_V2_TEXT,
+  HEADER_DROPPED,
   StackEventDigester,
+  formBodyBoundary,
   isLaneProtocol,
   isPositionForProtocol,
+  isRewriteApi,
+  replayApiChanges,
   replayForwarded,
+  replayTranslated,
   stackBodyDigest,
   stackVendorBodyDigest,
   stackVendorEventsSha256,
@@ -104,6 +141,7 @@ import {
   type AppliedAppend,
   type LaneProtocol,
   type LaneResponseRewrite,
+  type RewriteApi,
 } from "@gray/lane";
 import { applyRelayChanges } from "./relay-patch.ts";
 
@@ -185,6 +223,23 @@ export interface ResponseReceiptVerification {
   readonly relayImage: string | null;
   /** The receipt's `arrival` (`gray_api`: the request reached the VM through Gray's API), or null when it names none. */
   readonly arrival: string | null;
+  /**
+   * The translation the receipt names (`request.translated`): Gray sent the request to the provider on another text API
+   * than the customer's. Null for a receipt that names none.
+   */
+  readonly translation: ReceiptTranslation | null;
+}
+
+/** What a translated receipt's `request.translated` says, as the receipt records it (the checks say whether it replays). */
+export interface ReceiptTranslation {
+  /** The API the customer sent the request on. */
+  readonly from: TranslatedApi;
+  /** The API Gray sent it to the provider on. */
+  readonly to: TranslatedApi;
+  /** The customer's fields the translated request does not carry, by name, sorted. */
+  readonly dropped: readonly string[];
+  /** The output cap Gray wrote into the translated body, or null when it wrote none. */
+  readonly output_cap: bigint | null;
 }
 
 /** One upstream attempt of a relay-stack receipt, as the receipt records it. */
@@ -242,11 +297,31 @@ export interface StackReceiptSummary {
   readonly feed_incomplete: string | null;
 }
 
+/** A standard API the entry serves on a provider's own API (docs/design/standard-media-at-entry.md section 2.1). */
+export type StandardApi = Exclude<RewriteApi, LaneProtocol>;
+
 /**
- * A protocol a lane receipt may name: the lane relays' three, and Gemini's generation API, which the entry serves on
- * endpoint routes only (docs/design/lane-provider-routes.md sections 2 and 7).
+ * A protocol a lane receipt may name: the lane relays' three; Gemini's generation API, which the entry serves on
+ * endpoint routes only (docs/design/lane-provider-routes.md sections 2 and 7); and the standard APIs, endpoint routes
+ * only as well.
  */
-export type ReceiptProtocol = LaneProtocol | "gemini";
+export type ReceiptProtocol = LaneProtocol | "gemini" | StandardApi;
+
+/** The standard APIs' paths (@gray/protocol `endpointPath`). */
+const STANDARD_API_PATHS: readonly (readonly [string, StandardApi])[] = [
+  ["/v1/embeddings", "open_ai_embeddings"],
+  ["/v1/rerank", "rerank"],
+  ["/v1/images/generations", "open_ai_image_generations"],
+  ["/v1/images/edits", "open_ai_image_edits"],
+  ["/v1/audio/speech", "open_ai_speech"],
+  ["/v1/audio/transcriptions", "open_ai_transcriptions"],
+  ["/v1/audio/translations", "open_ai_translations"],
+  ["/v1/videos", "open_ai_videos"],
+  ["/v1/systemone", "system_one"],
+];
+
+/** A video job's retrieve and content paths: `/v1/videos/<id>` and `/v1/videos/<id>/content`, the id in the standard's clause 11.10 grammar. */
+const VIDEO_JOB_PATH = /\/v1\/videos\/(?!\.{1,2}(?:\/|$))[A-Za-z0-9_.:-]{1,256}(?:\/content)?$/;
 
 /**
  * A Gemini generation path as the gateway serves it (`servedProtocol`): `/v1beta/models/<model>` or, without the `models`
@@ -261,6 +336,9 @@ export function protocolForEndpoint(endpoint: string): ReceiptProtocol | null {
   if (path.endsWith("/v1/chat/completions")) return "open_ai_chat";
   if (path.endsWith("/v1/responses")) return "open_ai_responses";
   if (GEMINI_GENERATION_PATH.test(path)) return "gemini";
+  const standard = STANDARD_API_PATHS.find(([suffix]) => path.endsWith(suffix));
+  if (standard !== undefined) return standard[1];
+  if (VIDEO_JOB_PATH.test(path)) return "open_ai_videos";
   return null;
 }
 
@@ -289,6 +367,7 @@ export async function verifyResponseReceiptText(text: string, options: VerifyRes
       stack: null,
       relayImage: null,
       arrival: null,
+      translation: null,
     };
   }
   return verifyResponseReceipt(parsed.value, options);
@@ -317,6 +396,7 @@ export async function verifyResponseReceipt(receipt: Json, options: VerifyRespon
     stack: null as StackReceiptSummary | null,
     relayImage: null as string | null,
     arrival: null as string | null,
+    translation: null as ReceiptTranslation | null,
   };
   const result = (): ResponseReceiptVerification => ({
     ok: checks.every((check) => check.status !== "fail"),
@@ -390,6 +470,15 @@ export async function verifyResponseReceipt(receipt: Json, options: VerifyRespon
     checks.push(fail("protocol", `the receipt endpoint ${JSON.stringify(document.endpoint)} is not a lane protocol`));
     return result();
   }
+  // A request the entry translated onto another text API, Gemini included on either side. The event-log check held the
+  // event to once, in a single-forward log, between request.received and request.forwarded, with no relay policy.
+  const translatedAt = document.event_log.findIndex((event) => eventType(event) === EVENT_REQUEST_TRANSLATED);
+  if (translatedAt >= 0) {
+    checks.push(pass("protocol", state.protocol));
+    if (options.expectedRelayImage !== undefined) checks.push(relayImageCheck(document.relay_image, options.expectedRelayImage));
+    translationChecks({ document, at: translatedAt, protocol: state.protocol, forwardedHash: state.forwardedBodyHash, options, checks, state });
+    return result();
+  }
   if (state.protocol === "gemini") {
     checks.push(pass("protocol", "gemini"));
     if (options.expectedRelayImage !== undefined) checks.push(relayImageCheck(document.relay_image, options.expectedRelayImage));
@@ -397,7 +486,13 @@ export async function verifyResponseReceipt(receipt: Json, options: VerifyRespon
     return result();
   }
   if (!isLaneProtocol(state.protocol)) {
-    checks.push(fail("protocol", `unknown protocol ${JSON.stringify(state.protocol)}`));
+    if (!isRewriteApi(state.protocol)) {
+      checks.push(fail("protocol", `unknown protocol ${JSON.stringify(state.protocol)}`));
+      return result();
+    }
+    checks.push(pass("protocol", state.protocol));
+    if (options.expectedRelayImage !== undefined) checks.push(relayImageCheck(document.relay_image, options.expectedRelayImage));
+    state.modified = standardApiChecks({ api: state.protocol, events: document.event_log, forwardedHash: state.forwardedBodyHash, receivedHash: state.receivedBodyHash, options, checks });
     return result();
   }
   const protocol = state.protocol;
@@ -492,7 +587,9 @@ export async function verifyResponseReceipt(receipt: Json, options: VerifyRespon
   }
   const forwardedBare = forwardedHash.startsWith("sha256:") ? forwardedHash.slice("sha256:".length) : forwardedHash;
   if (modified.length > 0) {
-    if (verifyForwardedWithChanges(options.receivedBody, protocol, modified, forwardedBare, applied)) {
+    // The ops replay under the policy they name: v1, or v2 when every one names it (v2 keeps v1's rules for the text APIs).
+    const policy = modified.every((op) => op.declared_in === GRAY_LANE_REWRITES_V2.id) ? GRAY_LANE_REWRITES_V2_TEXT : GRAY_LANE_REWRITES_V1;
+    if (verifyForwardedWithChanges(options.receivedBody, protocol, modified, forwardedBare, applied, policy)) {
       checks.push(pass("forwarded_body_hash", `${forwardedHash} = SHA-256(${modified.length} declared op(s) then F(received, declared appends))`));
     } else {
       checks.push(fail("forwarded_body_hash", `${forwardedHash} is not SHA-256(received + declared request.modified ops + declared appends)`));
@@ -532,6 +629,190 @@ function geminiChecks(events: readonly Json[], forwardedHash: string | null, rec
     checks.push(fail("forwarded_body_hash", `no relay_policy.applied and no request.modified, but forwarded ${forwardedHash} != received ${String(receivedHash)}`));
   } else {
     checks.push(pass("forwarded_body_hash", "no rewrites; forwarded hash equals received hash"));
+  }
+}
+
+/**
+ * A standard API's content checks (docs/design/standard-media-at-entry.md section 2.4), an entry's endpoint route's:
+ *
+ * - `standard_api`: no relay stack and no relay policy serves these APIs, so such an event fails the receipt;
+ * - `request_modified`: every op names gray-lane-rewrites-v2, and they are all member ops (a JSON body) or all form ops
+ *   (a form);
+ * - `routing_preference`, when an op removed the customer's `provider` from a JSON body;
+ * - `forwarded_body_hash`: with no op the forwarded hash is the received one; with ops, SHA-256 of `replayApiChanges`
+ *   over the received bytes is `request.forwarded.body_hash`. A form is read by the boundary of its first line; a body
+ *   that does not begin with a boundary line does not replay.
+ *
+ * Returns the declared ops, for the transcript and the machine output.
+ */
+function standardApiChecks(input: {
+  readonly api: StandardApi;
+  readonly events: readonly Json[];
+  readonly forwardedHash: string | null;
+  readonly receivedHash: string | null;
+  readonly options: VerifyResponseReceiptOptions;
+  readonly checks: ReceiptCheck[];
+}): RequestModifiedEvent[] {
+  const { api, events, forwardedHash, options, checks } = input;
+  if (isStackEventLog(events)) {
+    checks.push(fail("standard_api", `a ${api} receipt is never a relay stack's`));
+    return [];
+  }
+  const relay = [EVENT_RELAY_POLICY_APPLIED, EVENT_RELAY_POLICY_REFUSED].filter((type) => findEvent(events, type) !== undefined);
+  if (relay.length > 0) {
+    checks.push(fail("standard_api", `no relay policy runs on a ${api} request, but the receipt carries ${relay.join(", ")}`));
+    return [];
+  }
+  const modified: RequestModifiedEvent[] = [];
+  for (const raw of findEvents(events, EVENT_REQUEST_MODIFIED)) {
+    const parsed = requestModifiedSchema.safeParse(raw);
+    if (!parsed.success) {
+      checks.push(fail("request_modified", parsed.error.issues.map((issue) => issue.message).join("; ")));
+      return modified;
+    }
+    modified.push(parsed.data as RequestModifiedEvent);
+  }
+  const form = modified.filter((op) => isFormOp(op.op)).length;
+  const misdeclared = modified.filter((op) => op.declared_in !== GRAY_LANE_REWRITES_V2.id).map((op) => `${op.op} ${op.path} is declared in ${op.declared_in}, not ${GRAY_LANE_REWRITES_V2.id}`);
+  if (form !== 0 && form !== modified.length) misdeclared.push("the receipt declares member ops and form ops: a body is JSON or a form");
+  if (misdeclared.length > 0) checks.push(fail("request_modified", misdeclared.join("; ")));
+  else if (modified.length > 0) checks.push(pass("request_modified", `${modified.length} declared op(s) on your ${form === 0 ? "JSON body" : "form"} (${GRAY_LANE_REWRITES_V2.id})`));
+  if (modified.some((op) => op.op === "remove_member" && op.path === "/provider")) checks.push(routingPreferenceCheck(options.receivedBody, events));
+
+  if (forwardedHash === null) {
+    checks.push(fail("request_forwarded_hash", "a non-refused receipt must carry request.forwarded"));
+    return modified;
+  }
+  if (modified.length === 0) {
+    if (forwardedHash !== input.receivedHash) checks.push(fail("forwarded_body_hash", `no request.modified, but forwarded ${forwardedHash} != received ${String(input.receivedHash)}`));
+    else checks.push(pass("forwarded_body_hash", "no rewrites; forwarded hash equals received hash"));
+    return modified;
+  }
+  if (misdeclared.length > 0) {
+    checks.push(fail("forwarded_body_hash", `${forwardedHash} is not checked: the declared ops do not replay under ${GRAY_LANE_REWRITES_V2.id}`));
+    return modified;
+  }
+  // The receipt hashes bodies and carries no header: a form is read by the boundary of its own first line.
+  if (form > 0 && formBodyBoundary(options.receivedBody) === null) {
+    checks.push(fail("forwarded_body_hash", `${forwardedHash} is not checked: the receipt declares changes to a multipart form, and the received body does not begin with a boundary line (two hyphens, the boundary, CRLF)`));
+    return modified;
+  }
+  const replayed = replayApiChanges(options.receivedBody, api, modified);
+  const what = `${modified.length} declared op(s) on your ${form === 0 ? "JSON body" : "form, read by the boundary of its first line"}`;
+  if (replayed === null) checks.push(fail("forwarded_body_hash", `${forwardedHash} is not SHA-256(${what}): they do not replay on the received body`));
+  else if (bodyHash(replayed) === forwardedHash) checks.push(pass("forwarded_body_hash", `${forwardedHash} = SHA-256(${what})`));
+  else checks.push(fail("forwarded_body_hash", `${forwardedHash} is not SHA-256(${what}), which is ${bodyHash(replayed)}`));
+  return modified;
+}
+
+/**
+ * A translated receipt's content checks (docs/design/lane-provider-routes.md section 10), over a single-forward log the
+ * event-log check accepted with one `request.translated` at `at`:
+ *
+ * - `translation`: the event's `from` is the API the receipt's endpoint names (and `--protocol`, when given);
+ * - `request_modified`: the ops before the event are gray-lane-rewrites-v1's, the ones after it the translation's own;
+ * - `routing_preference`, when an op before it removed the customer's `provider`;
+ * - `translation_route`: every attempt went to a provider's own API (`provider_api_not_tee`), the only route Gray
+ *   translates for;
+ * - `forwarded_body_hash`: SHA-256 of `replayTranslated` over the received bytes is `request.forwarded.body_hash`;
+ * - `translation_dropped`: the event lists every name the replay drops, and beside them only client headers
+ *   (`HEADER_DROPPED`), which the receipt does not carry.
+ */
+function translationChecks(input: {
+  readonly document: ReceiptDocument;
+  readonly at: number;
+  readonly protocol: ReceiptProtocol;
+  readonly forwardedHash: string | null;
+  readonly options: VerifyResponseReceiptOptions;
+  readonly checks: ReceiptCheck[];
+  readonly state: { translation: ReceiptTranslation | null; modified: RequestModifiedEvent[] };
+}): void {
+  const { document, at, protocol, options, checks } = input;
+  const events = document.event_log;
+  const parsed = requestTranslatedSchema.safeParse(events[at]);
+  if (!parsed.success) {
+    checks.push(fail("translation", parsed.error.issues.map((issue) => issue.message).join("; ")));
+    return;
+  }
+  const event = parsed.data;
+  const { from, to } = event;
+  const cap = event.output_cap ?? null;
+  input.state.translation = { from, to, dropped: [...event.dropped], output_cap: cap };
+  const capText = cap === null ? "" : `, output cap ${cap.toString()} written by Gray`;
+
+  const implied = protocolForEndpoint(document.endpoint);
+  if (implied !== from) {
+    checks.push(fail("translation", `the receipt says Gray translated the request from ${from}, but its endpoint ${JSON.stringify(document.endpoint)} is ${implied ?? "no text API"}'s`));
+    return;
+  }
+  if (protocol !== from) {
+    checks.push(fail("translation", `the receipt translated the request from ${from}, not from ${protocol} (--protocol)`));
+    return;
+  }
+  checks.push(pass("translation", `Gray translated the request from ${from} to ${to} (${event.declared_in})${capText}; dropped: ${event.dropped.length === 0 ? "none" : event.dropped.join(", ")}`));
+
+  // Gray's ops on the customer's body come before the translation, its ops on the translated body after it.
+  const before: RequestModifiedEvent[] = [];
+  const after: RequestModifiedEvent[] = [];
+  for (const [index, raw] of events.entries()) {
+    if (eventType(raw) !== EVENT_REQUEST_MODIFIED) continue;
+    const parsedModified = requestModifiedSchema.safeParse(raw);
+    if (!parsedModified.success) {
+      checks.push(fail("request_modified", parsedModified.error.issues.map((issue) => issue.message).join("; ")));
+      return;
+    }
+    (index < at ? before : after).push(parsedModified.data as RequestModifiedEvent);
+  }
+  input.state.modified = [...before, ...after];
+  const misdeclared = [
+    ...before.filter((op) => op.declared_in !== GRAY_LANE_REWRITES_V1.id).map((op) => `${op.op} ${op.path} before request.translated is declared in ${op.declared_in}, not ${GRAY_LANE_REWRITES_V1.id}`),
+    ...after.filter((op) => op.declared_in !== event.declared_in).map((op) => `${op.op} ${op.path} after request.translated is declared in ${op.declared_in}, not ${event.declared_in}`),
+  ];
+  if (misdeclared.length > 0) checks.push(fail("request_modified", misdeclared.join("; ")));
+  else if (before.length + after.length > 0) checks.push(pass("request_modified", `${before.length} declared op(s) on your body (${GRAY_LANE_REWRITES_V1.id}), ${after.length} on the translated body (${event.declared_in})`));
+  if (before.some((op) => op.op === "remove_member" && op.path === "/provider")) checks.push(routingPreferenceCheck(options.receivedBody, events));
+
+  const upstreams = findEvents(events, EVENT_UPSTREAM_VERIFIED);
+  const elsewhere = upstreams.find((upstream) => get(upstream, "reason") !== PROVIDER_API_NOT_TEE);
+  if (upstreams.length === 0) {
+    checks.push(fail("translation_route", "the receipt records no upstream.verified, so no provider's API: Gray translates for a provider's own API only"));
+  } else if (elsewhere !== undefined) {
+    const reason = get(elsewhere, "reason");
+    checks.push(fail("translation_route", `Gray translates for a provider's own API only (${PROVIDER_API_NOT_TEE}), but an attempt's upstream.verified reason is ${typeof reason === "string" ? reason : "(none)"}`));
+  } else {
+    const host = get(upstreams[0]!, "upstream_name");
+    checks.push(pass("translation_route", `the request went to a provider's own API${typeof host === "string" ? ` (${host})` : ""}, the only route Gray translates for`));
+  }
+
+  const forwardedHash = input.forwardedHash;
+  if (forwardedHash === null) {
+    checks.push(fail("request_forwarded_hash", "a non-refused receipt must carry request.forwarded"));
+    return;
+  }
+  const replay = replayTranslated(options.receivedBody, { endpoint: document.endpoint, from, to, ...(cap === null ? {} : { outputCap: cap }) }, before, after);
+  const what = `${before.length} declared op(s), the translation from ${from} to ${to}${cap === null ? "" : ` with output cap ${cap.toString()}`}, ${after.length} declared op(s)`;
+  if (!replay.ok) {
+    checks.push(fail("forwarded_body_hash", `${forwardedHash} is not checked: the received body does not replay (${replay.reason})`));
+    return;
+  }
+  const actual = bodyHash(replay.forwarded);
+  if (actual === forwardedHash) checks.push(pass("forwarded_body_hash", `${forwardedHash} = SHA-256(${what})`));
+  else checks.push(fail("forwarded_body_hash", `${forwardedHash} is not SHA-256(${what}), which is ${actual}`));
+
+  // The names the replay drops are all listed; beside them the event may list only client headers, which it cannot show.
+  const listed = new Set(event.dropped);
+  const unlisted = replay.dropped.filter((name) => !listed.has(name));
+  const unexplained = event.dropped.filter((name) => !replay.dropped.includes(name) && !HEADER_DROPPED.includes(name));
+  if (unlisted.length > 0 || unexplained.length > 0) {
+    const parts = [
+      ...(unlisted.length === 0 ? [] : [`the translation drops ${unlisted.join(", ")}, which the receipt does not list`]),
+      ...(unexplained.length === 0 ? [] : [`the receipt lists ${unexplained.join(", ")}, which the translation of your body keeps and no client header explains`]),
+    ];
+    checks.push(fail("translation_dropped", parts.join("; ")));
+  } else {
+    const headers = event.dropped.filter((name) => !replay.dropped.includes(name));
+    const body = replay.dropped.length === 0 ? "the translated body carries every field of yours" : `the replay drops ${replay.dropped.join(", ")}`;
+    checks.push(pass("translation_dropped", `${body}${headers.length === 0 ? "" : `; ${headers.join(", ")}: a client header Gray did not forward, which the receipt cannot show`}`));
   }
 }
 

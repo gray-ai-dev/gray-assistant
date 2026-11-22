@@ -10,11 +10,13 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run -c vitest.config.ts",
     "test:workerd": "vitest run -c vitest.workerd.config.ts",
+    "test:e2e": "vitest run -c vitest.e2e.config.ts",
     "dev": "wrangler dev -c wrangler.jsonc --local"
   },
   "dependencies": {
     "@gray/account": "0.0.0",
     "@gray/config": "0.0.0",
+    "@gray/continuation": "0.0.0",
     "@gray/endpoint": "0.0.0",
     "@gray/json": "0.0.0",
     "@gray/lane-verify": "0.0.0",

@@ -236,6 +236,16 @@ export const CREDENTIAL_TYPE_WORDS: Readonly<Record<CredentialType, string>> = {
 
 /** Held for these classes means the vendor refuses the account itself: the panel says "banned · replace". */
 export const BANNED_CLASSES: ReadonlySet<string> = new Set(['forbidden', 'restricted', 'billing', 'auth']);
+/**
+ * The rule id of the hold the VM makes by itself, whatever the rules say: the vendor answered that a route's upstream
+ * model does not exist (S38's fixed rule; egress `stackModelGoneRule`). The hold is that model's and a passing test ends it.
+ */
+export const MODEL_GONE_RULE = 'model_not_found';
+/** The enforced entry an account's state is about: the one of the state's model, else the first; null without a report's entries. */
+function stateEntry(h: Pick<AccountHealth, 'model' | 'report'>) {
+  const entries: readonly CoolingEntry[] = h.report?.cooling ?? [];
+  return entries.find(e => !e.observed && (e.model ?? null) === (h.model ?? null)) ?? entries.find(e => !e.observed) ?? null;
+}
 
 /**
  * Whether an account cools for a reason time does not end (one of `BANNED_CLASSES`): the console's alert reads the same
@@ -296,7 +306,7 @@ export function serverStateText(h: Pick<AccountHealth, 'state' | 'reason' | 'unt
 }): ServerStateText {
   const until = h.until_ms !== null ? clock(h.until_ms) : null;
   const on = h.model ? ` on ${modelName(h.model)}` : '';
-  const entry = h.report?.cooling.find(e => !e.observed && (e.model ?? null) === (h.model ?? null)) ?? h.report?.cooling.find(e => !e.observed) ?? null;
+  const entry = stateEntry(h);
   const code = vendorCodeText(entry?.vendor_code ?? null);
   switch (h.state) {
     case 'serving': return { label: 'Serving', reason: 'Taking requests.' };
@@ -308,6 +318,8 @@ export function serverStateText(h: Pick<AccountHealth, 'state' | 'reason' | 'unt
         : h.reason === 'login_waiting' ? { label: 'Waiting for its sign-in', reason: `${loginText(h.report?.login ?? null, clock)} The VM serves it once your software has signed it in.` }
         : { label: 'No credential yet', reason: 'The VM holds no credential for it. gray-assistant seals it once it runs, and again after each VM restart.' };
     case 'held': {
+      // The vendor's own id of the model, as the vendor answered about it.
+      if (entry?.rule_id === MODEL_GONE_RULE && h.model) return { label: 'Held', reason: `The vendor answered that the model ${h.model} does not exist${code ? `: ${code}` : ''}. Change the route’s upstream model to one the vendor serves, or test it once the vendor serves it again.` };
       const why = HELD_WORDS[h.reason] ?? `It is held after ${lowerFirst(CLASS_WORDS[h.reason as AttemptClass] ?? h.reason.replaceAll('_', ' '))}`;
       const fix = BANNED_CLASSES.has(h.reason) ? (h.reason === 'auth' ? ` ${credentialFix(credentialKind(h.report), h.account_id)} A passing test releases it.` : ' Replace the account, or test it once the vendor lets it work again.') : ' Clear it, or a passing test releases it.';
       return { label: BANNED_CLASSES.has(h.reason) ? 'Refused · replace' : 'Held', reason: `${why}${on}${code ? `: ${code}` : ''}.${fix}` };
@@ -357,7 +369,7 @@ export function shortReason(h: Pick<AccountHealth, 'state' | 'reason' | 'model' 
     case 'not_served': return NOT_SERVED_SHORT[h.reason] ?? 'Left out by the VM';
     case 'waiting_credential': return h.reason === 'credential_waiting' ? 'The VM holds an older credential' : h.reason === 'proxy_waiting' ? 'The VM holds an older proxy credential'
       : h.reason === 'login_waiting' ? loginShort(h.report?.login ?? null, clock) : 'The VM has no credential yet';
-    case 'held': return h.reason === 'forbidden' ? `403${on} · replace or test` : h.reason === 'restricted' ? 'Restricted by the vendor · replace or test'
+    case 'held': return stateEntry(h)?.rule_id === MODEL_GONE_RULE && h.model ? `Model not found${on} · change or test` : h.reason === 'forbidden' ? `403${on} · replace or test` : h.reason === 'restricted' ? 'Restricted by the vendor · replace or test'
       : h.reason === 'billing' ? 'Refused over billing · replace or test' : h.reason === 'auth' ? `Credential rejected (401) · ${CREDENTIAL_SHORT_FIX[credentialKind(h.report)]}`
       : `${CLASS_WORDS[h.reason as AttemptClass] ?? h.reason.replaceAll('_', ' ')}${on} · clear or test`;
     case 'at_limit': {
@@ -505,6 +517,7 @@ const VENDOR_NAMES: Readonly<Record<StackVendor, string>> = VENDOR_LABEL;
 const RULE_TITLES: Readonly<Record<string, string>> = {
   window_exhausted: 'Limit used up', model_window_exhausted: 'A model’s limit used up', billing: 'Billing problem', restricted: 'Account restricted', oauth_auth: 'Sign-in credential rejected (401)',
   key_auth: 'API key rejected (401)', challenge: 'Challenge page', forbidden: 'Forbidden', rate_limit: 'Rate limited', overloaded: 'Overloaded',
+  [MODEL_GONE_RULE]: 'Model not found at the vendor',
   '529_60m': 'Overloaded: an hour per model', '429_10m': 'Rate limited: 10 minutes per model', '503_30m': 'Unavailable: 30 minutes per model',
 };
 export const ruleTitle = (id: string) => RULE_TITLES[id] ?? id;

@@ -6,8 +6,9 @@ import { isU64, u64Schema } from "./integers.ts";
 import { stackEventsChainStart } from "./stack-hash.ts";
 
 /**
- * The receipt event vocabulary (ACI spec §7.3–§7.5) plus Gray's three implementation-specific
- * events: `relay_policy.applied`, `relay_policy.refused` and `request.modified`.
+ * The receipt event vocabulary (ACI spec §7.3–§7.5) plus Gray's implementation-specific events:
+ * `relay_policy.applied`, `relay_policy.refused`, `request.modified` and `request.translated` (a request the entry
+ * translated onto another text API, docs/design/lane-provider-routes.md section 10).
  *
  * Events are flat objects: `type` plus type-specific fields, in the array order (§7.3). Services MAY
  * add events with implementation-specific types and verifiers ignore types they do not recognize
@@ -54,10 +55,69 @@ export const EVENT_RELAY_POLICY_REFUSED = "relay_policy.refused";
  */
 export const EVENT_REQUEST_MODIFIED = "request.modified";
 
-/** The closed op vocabulary of `request.modified` (one event per op, in application order). */
-export const REQUEST_MODIFIED_OPS = Object.freeze(["set_member", "insert_member", "remove_member"] as const);
+/**
+ * Gray's translation extension event (docs/design/lane-provider-routes.md section 10): the entry served the request on
+ * another text API than the client's, translating the request with the published translation code and the answer back.
+ * At most one, in a single-forward receipt only, after `request.received` and before `request.forwarded`. The
+ * `request.modified` events before it are Gray's ops on the client's body (`gray-lane-rewrites-v1`, the client's API);
+ * the ones after it are its ops on the translated body (`declared_in` the event's own policy, the upstream API's). The
+ * forwarded body is the client's bytes with the ops before, then the translation, then the ops after.
+ */
+export const EVENT_REQUEST_TRANSLATED = "request.translated";
+
+/** The APIs a `request.translated` names (@gray/protocol's names): the four text APIs the translation carries. */
+export const TRANSLATED_APIS = Object.freeze(["open_ai_chat", "open_ai_responses", "anthropic_messages", "gemini"] as const);
+export type TranslatedApi = (typeof TRANSLATED_APIS)[number];
+
+/**
+ * The published translations a `request.translated` may name (`declared_in`): the translation code and the ops it allows
+ * on a translated body (@gray/lane `GRAY_LANE_TRANSLATION_V1`). A verifier replays only the ones it carries.
+ */
+export const TRANSLATION_POLICIES = Object.freeze(["gray-lane-translation-v1"] as const);
+
+/** The most names one `request.translated` lists as dropped. */
+export const TRANSLATED_DROPPED_MAX = 64;
+
+/** A `request.translated`: the APIs, the client fields the translated body does not carry, a cap Gray wrote, the policy. */
+export interface RequestTranslatedEvent {
+  readonly type: typeof EVENT_REQUEST_TRANSLATED;
+  /** The API the client sent the request on. */
+  readonly from: TranslatedApi;
+  /** The API the provider was sent it on. */
+  readonly to: TranslatedApi;
+  /** The client fields the translated request does not carry, by name, sorted and each once (`x-gray-translation-dropped`). */
+  readonly dropped: readonly string[];
+  /** The output cap Gray wrote into the translated body (@gray/protocol `applyOutputCap`), when it wrote one. */
+  readonly output_cap?: bigint;
+  readonly declared_in: (typeof TRANSLATION_POLICIES)[number];
+}
+
+/** The ops on a JSON body: a member named by an RFC 6901 pointer (`/model`, `/stream_options/include_usage`). */
+export const REQUEST_MODIFIED_MEMBER_OPS = Object.freeze(["set_member", "insert_member", "remove_member"] as const);
+
+export type RequestModifiedMemberOp = (typeof REQUEST_MODIFIED_MEMBER_OPS)[number];
+
+/**
+ * The ops on a `multipart/form-data` body (docs/design/standard-media-at-entry.md section 2.4): a text field named by
+ * the `name` of its part's `Content-Disposition` (`model`, `user`). `set_form_field` replaces the field's value;
+ * `remove_form_field` takes the part out. The byte rules are @gray/lane's (form.ts).
+ */
+export const REQUEST_MODIFIED_FORM_OPS = Object.freeze(["set_form_field", "remove_form_field"] as const);
+
+export type RequestModifiedFormOp = (typeof REQUEST_MODIFIED_FORM_OPS)[number];
+
+/**
+ * The closed op vocabulary of `request.modified` (one event per op, in application order). A verifier that does not
+ * know an op fails the receipt that carries it: gray-lane-verify 1.3.0 and earlier know the three member ops only.
+ */
+export const REQUEST_MODIFIED_OPS = Object.freeze([...REQUEST_MODIFIED_MEMBER_OPS, ...REQUEST_MODIFIED_FORM_OPS] as const);
 
 export type RequestModifiedOp = (typeof REQUEST_MODIFIED_OPS)[number];
+
+/** Whether `op` is one of the two form ops. */
+export function isFormOp(op: unknown): op is RequestModifiedFormOp {
+  return typeof op === "string" && (REQUEST_MODIFIED_FORM_OPS as readonly string[]).includes(op);
+}
 
 /** The four types no extension may use (§7.4: `MUST NOT reuse the required types`). */
 export const REQUIRED_EVENT_TYPES: readonly string[] = Object.freeze([
@@ -136,14 +196,15 @@ export function isRelayPolicyReasonCode(value: unknown): value is RelayPolicyRea
 /**
  * One declared rewrite of the request body: a JSON Pointer path and the value written (or the
  * digest of that value when the event does not carry it). `declared_in` names the published lane
- * rewrite policy that allowed the op, e.g. `gray-lane-rewrites-v1`.
+ * rewrite policy that allowed the op, e.g. `gray-lane-rewrites-v1`. A form op names a form field
+ * instead of a pointer, and `set_form_field` always carries its value, a string.
  */
 export interface RequestModifiedEvent {
   readonly type: "request.modified";
   readonly op: RequestModifiedOp;
-  /** RFC 6901, absolute: `/model`, `/stream_options/include_usage`. */
+  /** A member op: RFC 6901, absolute (`/model`, `/stream_options/include_usage`). A form op: the field's name (`model`). */
   readonly path: string;
-  /** The value a set/insert writes. Exactly one of `value` and `value_sha256` is present. */
+  /** The value a set/insert writes. Exactly one of `value` and `value_sha256` is present; `set_form_field` has `value`. */
   readonly value?: Json;
   /** SHA-256 of the UTF-8 bytes of `toJsonString(value)` for a value the event does not carry. */
   readonly value_sha256?: string;
@@ -180,33 +241,128 @@ export const relayPolicyRefusedSchema = z.object({
 });
 
 const modifiedPathSchema = z.string().min(1).max(256).regex(/^\//, "an absolute JSON Pointer starts with /");
+/**
+ * A form op's path, the field's name as its part's `Content-Disposition` writes it: letters, digits and `_ . - [ ]`,
+ * so no quote, backslash, percent sign or space, which form parsers read in different ways. Never a JSON Pointer.
+ */
+const FORM_FIELD_NAME = /^[A-Za-z0-9_][A-Za-z0-9_.[\]-]{0,255}$/;
+
+/** Whether `value` is a field name a form op may carry as its path. */
+export function isFormFieldName(value: unknown): value is string {
+  return typeof value === "string" && FORM_FIELD_NAME.test(value);
+}
 const declaredInSchema = z.string().regex(/^[a-z][a-z0-9._-]{0,127}$/, "a lower_case policy id");
 const modifiedValueSchema = z.union([z.string(), z.boolean(), z.bigint(), z.record(z.string(), z.unknown())]);
 
+/** The value rule of a member op: `remove_member` carries neither value; `set_member` and `insert_member` exactly one. */
+function checkMemberValue(event: { readonly op: string; readonly value?: unknown; readonly value_sha256?: unknown }, ctx: z.RefinementCtx): void {
+  if (event.op === "remove_member") {
+    if (event.value !== undefined || event.value_sha256 !== undefined) {
+      ctx.addIssue({ code: "custom", path: ["value"], message: "remove_member carries no value" });
+    }
+    return;
+  }
+  if ((event.value === undefined) === (event.value_sha256 === undefined)) {
+    ctx.addIssue({ code: "custom", path: ["value"], message: "exactly one of value and value_sha256 is required" });
+  }
+}
+
 /**
- * `request.modified`: one op, its RFC 6901 path, its value (or value digest), and the policy id.
- * `remove_member` carries neither value; `set_member` and `insert_member` carry exactly one.
+ * `request.modified` with one of the three member ops: the op, its RFC 6901 path, its value (or value digest), and the
+ * policy id. A relay stack's attempts and a `peer.forwarded` take these alone: their bodies are the text APIs' JSON.
  */
-export const requestModifiedSchema = z
+export const requestMemberModifiedSchema = z
   .object({
     type: z.literal(EVENT_REQUEST_MODIFIED),
-    op: z.enum(REQUEST_MODIFIED_OPS),
+    op: z.enum(REQUEST_MODIFIED_MEMBER_OPS),
     path: modifiedPathSchema,
     value: modifiedValueSchema.optional(),
     value_sha256: hex32.optional(),
     declared_in: declaredInSchema,
   })
+  .superRefine(checkMemberValue);
+
+/**
+ * `request.modified`: one op, its path, its value (or value digest), and the policy id.
+ *
+ * - A member op (`set_member`, `insert_member`, `remove_member`): the path is an absolute RFC 6901 pointer.
+ *   `remove_member` carries neither value; the other two carry exactly one of `value` and `value_sha256`.
+ * - A form op (`set_form_field`, `remove_form_field`): the path is the field's name. `set_form_field` carries the
+ *   string it writes as `value`, never a digest, so every such event replays; `remove_form_field` carries no value.
+ *
+ * The op vocabulary is closed: an op outside it fails the event.
+ */
+export const requestModifiedSchema = z
+  .object({
+    type: z.literal(EVENT_REQUEST_MODIFIED),
+    op: z.enum(REQUEST_MODIFIED_OPS),
+    path: z.string().min(1).max(256),
+    value: modifiedValueSchema.optional(),
+    value_sha256: hex32.optional(),
+    declared_in: declaredInSchema,
+  })
   .superRefine((event, ctx) => {
-    if (event.op === "remove_member") {
-      if (event.value !== undefined || event.value_sha256 !== undefined) {
-        ctx.addIssue({ code: "custom", path: ["value"], message: "remove_member carries no value" });
-      }
+    if (!isFormOp(event.op)) {
+      // As before the form ops: a path that is no pointer is the event's one issue.
+      if (!event.path.startsWith("/")) ctx.addIssue({ code: "custom", path: ["path"], message: "an absolute JSON Pointer starts with /" });
+      else checkMemberValue(event, ctx);
       return;
     }
-    if ((event.value === undefined) === (event.value_sha256 === undefined)) {
-      ctx.addIssue({ code: "custom", path: ["value"], message: "exactly one of value and value_sha256 is required" });
+    if (!isFormFieldName(event.path)) {
+      ctx.addIssue({ code: "custom", path: ["path"], message: "a form op's path is the field's name: letters, digits and _ . - [ ]" });
+    }
+    if (event.value_sha256 !== undefined) ctx.addIssue({ code: "custom", path: ["value_sha256"], message: "a form op carries no value digest" });
+    if (event.op === "remove_form_field") {
+      if (event.value !== undefined) ctx.addIssue({ code: "custom", path: ["value"], message: "remove_form_field carries no value" });
+    } else if (typeof event.value !== "string" || !event.value.isWellFormed()) {
+      ctx.addIssue({ code: "custom", path: ["value"], message: "set_form_field carries the text it writes" });
     }
   });
+
+/** A dropped field's name: a lower-case identifier of the translation's own vocabulary, never client text. */
+const droppedNameSchema = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/, "a lower-case field name");
+
+/** `request.translated` ([`RequestTranslatedEvent`]): two different text APIs, the dropped names sorted and each once. */
+export const requestTranslatedSchema = z
+  .object({
+    type: z.literal(EVENT_REQUEST_TRANSLATED),
+    from: z.enum(TRANSLATED_APIS),
+    to: z.enum(TRANSLATED_APIS),
+    dropped: z.array(droppedNameSchema).max(TRANSLATED_DROPPED_MAX),
+    output_cap: u64Schema.min(1n, "an output cap is 1 to 4294967295").max(4_294_967_295n, "an output cap is 1 to 4294967295").optional(),
+    declared_in: z.enum(TRANSLATION_POLICIES),
+  })
+  .strict()
+  .superRefine((event, ctx) => {
+    if (event.from === event.to) ctx.addIssue({ code: "custom", path: ["to"], message: "a translation names two different APIs" });
+    for (let i = 1; i < event.dropped.length; i += 1) {
+      if (!(event.dropped[i - 1]! < event.dropped[i]!)) {
+        ctx.addIssue({ code: "custom", path: ["dropped"], message: "the dropped names are sorted and each once" });
+        break;
+      }
+    }
+  });
+
+/** `request.translated`: the shape `requestTranslatedSchema` holds every receipt to. Throws on one no receipt may carry. */
+export function requestTranslatedEvent(input: {
+  readonly from: TranslatedApi;
+  readonly to: TranslatedApi;
+  readonly dropped: readonly string[];
+  readonly outputCap?: bigint;
+  readonly declaredIn: (typeof TRANSLATION_POLICIES)[number];
+}): JsonObject {
+  const event: JsonObject = {
+    type: EVENT_REQUEST_TRANSLATED,
+    from: input.from,
+    to: input.to,
+    dropped: [...new Set(input.dropped)].sort(),
+    ...(input.outputCap === undefined ? {} : { output_cap: input.outputCap }),
+    declared_in: input.declaredIn,
+  };
+  const checked = requestTranslatedSchema.safeParse(event);
+  if (!checked.success) throw new Error(`not a request.translated event: ${checked.error.issues.map((issue) => issue.message).join("; ")}`);
+  return event;
+}
 
 /**
  * Gray's relay-stack extension events (plan S26), one group per upstream attempt. Never one of the
@@ -666,7 +822,7 @@ export const peerForwardedSchema = z
      * inner `request.received`). Absent when the entry sent the client's bytes as they came. Today the one such op is
      * `remove_member /provider`, the routing preference the client stated in the body.
      */
-    modified: z.array(requestModifiedSchema).min(1).optional(),
+    modified: z.array(requestMemberModifiedSchema).min(1).optional(),
   })
   .strict();
 
@@ -929,7 +1085,8 @@ export function relayPolicyRefusedEvent(input: {
 
 /**
  * The `request.modified` event object: one declared op, its path, and its value (or the SHA-256 of
- * the serialized value when the event does not carry it). Throws on a shape no receipt may carry.
+ * the serialized value when the event does not carry it). A form op's path is the field's name and
+ * `set_form_field`'s value a string. Throws on a shape no receipt may carry.
  */
 export function requestModifiedEvent(input: {
   readonly op: RequestModifiedOp;
@@ -939,6 +1096,17 @@ export function requestModifiedEvent(input: {
   readonly declaredIn: string;
 }): JsonObject {
   if (!REQUEST_MODIFIED_OPS.includes(input.op)) throw new Error(`unknown request.modified op: ${String(input.op)}`);
+  if (isFormOp(input.op)) {
+    if (!isFormFieldName(input.path)) throw new Error("a form op's path is the field's name: letters, digits and _ . - [ ]");
+    if (!declaredInSchema.safeParse(input.declaredIn).success) throw new Error(`not a lane rewrite policy id: ${input.declaredIn}`);
+    if (input.valueSha256 !== undefined) throw new Error("a form op carries no value digest");
+    if (input.op === "remove_form_field") {
+      if (input.value !== undefined) throw new Error("remove_form_field carries no value");
+      return { type: EVENT_REQUEST_MODIFIED, op: input.op, path: input.path, declared_in: input.declaredIn };
+    }
+    if (typeof input.value !== "string" || !input.value.isWellFormed()) throw new Error("set_form_field carries the text it writes");
+    return { type: EVENT_REQUEST_MODIFIED, op: input.op, path: input.path, declared_in: input.declaredIn, value: input.value };
+  }
   if (!modifiedPathSchema.safeParse(input.path).success || !input.path.isWellFormed()) throw new Error("path is an absolute JSON Pointer of at most 256 characters");
   if (!declaredInSchema.safeParse(input.declaredIn).success) throw new Error(`not a lane rewrite policy id: ${input.declaredIn}`);
   if (input.op === "remove_member") {
@@ -1232,6 +1400,13 @@ export type EventLogProblem =
   | "policy_outcome_position"
   | "modified_without_forwarded"
   | "modified_position"
+  // A translated request (`request.translated`, docs/design/lane-provider-routes.md section 10):
+  | "translated_repeated"
+  | "translated_position"
+  | "translated_with_relay_policy"
+  // A form op (`set_form_field`, `remove_form_field`, docs/design/standard-media-at-entry.md section 2.4):
+  | "form_op_mixed"
+  | "form_op_position"
   // Relay-stack receipts (S26):
   | "stack_event_repeated"
   | "returned_not_last"
@@ -1280,7 +1455,9 @@ export interface EventLogIssue {
  *    present) and `response.returned`;
  * 9. every `request.modified` event sits after `request.received`, before `relay_policy.applied`
  *    and `request.forwarded`, and a forwarded receipt that declares modifications has a
- *    `request.forwarded` event (a refusal forwarded nothing, so it cannot declare one);
+ *    `request.forwarded` event (a refusal forwarded nothing, so it cannot declare one); a log's ops
+ *    are all member ops or all form ops, and form ops come with no `relay_policy.*` event and no
+ *    `request.translated`;
  * 10. every known event matches its shape; unknown types are accepted (verifiers ignore them, §7.4).
  *
  * A relay-stack log ([`isStackEventLog`]) keeps rules 1, 2 and 10 and replaces 3–9 with the attempt
@@ -1361,6 +1538,27 @@ export function checkEventLog(events: readonly Json[]): readonly EventLogIssue[]
     if (returned >= 0 && index > returned) {
       issues.push({ code: "modified_position", message: "request.modified follows response.returned" });
     }
+  }
+  // A translation (docs/design/lane-provider-routes.md section 10): once, between request.received and request.forwarded,
+  // and never with a relay policy, which runs for a lane relay's route, never translated.
+  const translatedIndexes = types.flatMap((type, index) => (type === EVENT_REQUEST_TRANSLATED ? [index] : []));
+  if (translatedIndexes.length > 1) issues.push({ code: "translated_repeated", message: "request.translated appears more than once" });
+  for (const index of translatedIndexes) {
+    if (forwarded < 0 || index > forwarded) issues.push({ code: "translated_position", message: "request.translated does not precede request.forwarded" });
+    if (received >= 0 && index < received) issues.push({ code: "translated_position", message: "request.translated precedes request.received" });
+  }
+  if (translatedIndexes.length > 0 && policyIndexes.length > 0) {
+    issues.push({ code: "translated_with_relay_policy", message: "a translated request has no relay_policy.* event: Gray translates for endpoint routes alone" });
+  }
+  // Form ops (docs/design/standard-media-at-entry.md section 2.4). A body is JSON or a form, so a log's ops are of one
+  // kind. A form goes to a provider's own API as the client sent it: no relay policy runs on it and it is not translated.
+  const formIndexes = modifiedIndexes.filter((index) => isFormOp(get(events[index] as Json, "op")));
+  if (formIndexes.length > 0) {
+    if (formIndexes.length !== modifiedIndexes.length) {
+      issues.push({ code: "form_op_mixed", message: "request.modified names member ops and form ops: a body is JSON or a form" });
+    }
+    if (policyIndexes.length > 0) issues.push({ code: "form_op_position", message: "a form op with a relay_policy.* event: a relay's request is JSON" });
+    if (translatedIndexes.length > 0) issues.push({ code: "form_op_position", message: "a form op with request.translated: Gray translates between the text APIs' JSON" });
   }
   for (const index of policyIndexes) {
     const type = types[index];
@@ -1579,6 +1777,7 @@ function checkStackOrder(events: readonly Json[], types: readonly (string | unde
         break;
       }
       case EVENT_REQUEST_MODIFIED:
+        if (isFormOp(get(event, "op"))) push("form_op_position", `request.modified at event ${index} names a form op: a relay stack's request is JSON`);
         if (open === null) outside(index, type);
         else if (open.stage !== "started" && open.stage !== "modified") push("attempt_order", `request.modified at event ${index} follows ${STAGE_EVENTS[open.stage]}`);
         else open.stage = "modified";
@@ -1656,6 +1855,10 @@ function checkStackOrder(events: readonly Json[], types: readonly (string | unde
           push("attempt_incomplete", `attempt ${String(open.n)} has no upstream.response or attempt.refused before response.returned`);
           close();
         }
+        break;
+      // A relay stack's container is sent the client's own bytes (S23): Gray translates for endpoint routes alone.
+      case EVENT_REQUEST_TRANSLATED:
+        push("stack_v1_event", `event ${index} (request.translated) names a translation, which a relay-stack receipt never carries`);
         break;
       default:
         break;
@@ -1800,6 +2003,8 @@ function checkEvent(event: Json, type: string): string | null {
     schemas = [relayPolicyRefusedSchema];
   } else if (type === EVENT_REQUEST_MODIFIED) {
     schemas = [requestModifiedSchema];
+  } else if (type === EVENT_REQUEST_TRANSLATED) {
+    schemas = [requestTranslatedSchema];
   } else {
     return null;
   }

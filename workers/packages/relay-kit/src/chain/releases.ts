@@ -62,7 +62,7 @@ export async function agreedChain(rpcUrls: readonly string[], chainId: number, o
       return onEndpoint(url, "eth_blockNumber", () => client.getBlockNumber({ cacheTime: 0 }));
     }),
   );
-  return { urls: rpcUrls, clients, block: await freshCommonBlock(clients, rpcUrls, heads, options.nowMs ?? Date.now()) };
+  return { urls: rpcUrls, clients, block: await freshCommonBlock(clients, rpcUrls, heads, options.nowMs ?? Date.now(), options.sleep) };
 }
 
 /** Run one read on both endpoints at the agreed block; refuse unless both answer the same (by `key`). */

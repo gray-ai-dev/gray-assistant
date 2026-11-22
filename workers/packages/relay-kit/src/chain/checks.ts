@@ -67,27 +67,45 @@ export const MAX_HEAD_LAG_BLOCKS = 5n;
  * A block dated ahead of the clock is not refused here (a local anvil moved forward in time).
  */
 export const MAX_BLOCK_AGE_SECONDS = 60n;
+/**
+ * The wait before an endpoint is asked a second time for a block it answered `null` for, though its latest block is that
+ * one or a later one. A public endpoint behind a load balancer does that when the request lands on a backend one block
+ * behind the one that answered `eth_blockNumber` (once in PR #920's 1000 rounds against the kit's two Base endpoints);
+ * Base makes a block every 2 s, so a second later that backend has it.
+ */
+export const BLOCK_REREAD_DELAY_MS = 1_000;
 
-/** The freshness bounds' clock (default `Date.now`). */
+/** The freshness bounds' clock (default `Date.now`), and the wait before a block is read again (default a timer). */
 export interface FreshnessOptions {
   readonly nowMs?: number;
+  readonly sleep?: (ms: number) => Promise<void>;
 }
+
+const timerSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /**
  * The block both endpoints are read at: the lower of their latest blocks, which must be within MAX_HEAD_LAG_BLOCKS of
  * the higher; both must answer the same hash and time for it, and that time must be at most MAX_BLOCK_AGE_SECONDS old.
- * Throws `chain_stale` (or `chain_disagreement`, `chain_unreachable`) otherwise.
+ * An endpoint that answers `null` for it is asked once more after BLOCK_REREAD_DELAY_MS, for the same block, and the age
+ * then counts that wait. Throws `chain_stale` (or `chain_disagreement`, `chain_unreachable`) otherwise.
  */
-export async function freshCommonBlock(clients: readonly PublicClient[], urls: readonly string[], heads: readonly bigint[], nowMs: number): Promise<bigint> {
+export async function freshCommonBlock(clients: readonly PublicClient[], urls: readonly string[], heads: readonly bigint[], nowMs: number, sleep: (ms: number) => Promise<void> = timerSleep): Promise<bigint> {
   const low = heads.reduce((a, b) => (b < a ? b : a));
   const high = heads.reduce((a, b) => (b > a ? b : a));
   if (high - low > MAX_HEAD_LAG_BLOCKS) {
     throw new RelayKitError("chain_stale", `the two endpoints' latest blocks are ${high - low} apart (${low} and ${high}; at most ${MAX_HEAD_LAG_BLOCKS}): one lags behind the chain; name another endpoint`);
   }
+  let waited = false;
   const blocks = await Promise.all(
     clients.map((client, index) =>
       onEndpoint(urls[index] as string, "eth_getBlockByNumber", async () => {
-        const block = (await client.request({ method: "eth_getBlockByNumber", params: [`0x${low.toString(16)}`, false] } as never)) as { hash?: unknown; timestamp?: unknown } | null;
+        const read = async () => (await client.request({ method: "eth_getBlockByNumber", params: [`0x${low.toString(16)}`, false] } as never)) as { hash?: unknown; timestamp?: unknown } | null;
+        let block = await read();
+        if (block === null) {
+          waited = true;
+          await sleep(BLOCK_REREAD_DELAY_MS);
+          block = await read();
+        }
         if (block === null || typeof block.hash !== "string" || typeof block.timestamp !== "string" || !/^0x[0-9a-f]{1,16}$/i.test(block.timestamp)) throw new Error("no block");
         return { hash: block.hash.toLowerCase(), timestamp: BigInt(block.timestamp) };
       }),
@@ -97,7 +115,8 @@ export async function freshCommonBlock(clients: readonly PublicClient[], urls: r
   if (first.hash !== second.hash || first.timestamp !== second.timestamp) {
     throw new RelayKitError("chain_disagreement", `${rpcLabel(urls[0] as string)} and ${rpcLabel(urls[1] as string)} answer block ${low} differently`);
   }
-  const age = BigInt(Math.floor(nowMs / 1000)) - first.timestamp;
+  // A block read a second later is a second older: the bound holds at the read, not at the clock reading before it.
+  const age = BigInt(Math.floor((nowMs + (waited ? BLOCK_REREAD_DELAY_MS : 0)) / 1000)) - first.timestamp;
   if (age > MAX_BLOCK_AGE_SECONDS) {
     throw new RelayKitError("chain_stale", `block ${low}, the latest both endpoints have, is ${age} s old (at most ${MAX_BLOCK_AGE_SECONDS} s): the endpoints do not follow the chain, or this machine's clock is wrong`);
   }
@@ -296,7 +315,7 @@ export async function checkRelayContract(rpcUrls: readonly string[], input: Chai
         return onEndpoint(url, "eth_blockNumber", () => client.getBlockNumber({ cacheTime: 0 }));
       }),
     );
-    block = await freshCommonBlock(clients, rpcUrls, heads, options.nowMs ?? Date.now());
+    block = await freshCommonBlock(clients, rpcUrls, heads, options.nowMs ?? Date.now(), options.sleep);
   } catch (error) {
     const kit = kitErrorIn(error);
     if (kit?.code === "chain_stale") return { ok: false, reason: "stale", block: null, endpoints, reading: null, checks: [], detail: kit.detail ?? "the chain is not read as it is now" };
