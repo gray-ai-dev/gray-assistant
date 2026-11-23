@@ -4,7 +4,7 @@
  */
 
 /** Every category, in a stable order. Anything not mapped is `internal`. */
-export const ERROR_CATEGORIES = ["budget_exhausted", "key_limit", "rate_limited", "no_verified_route", "region_unavailable", "invalid_request", "upstream_error", "upstream_timeout", "cancelled", "internal"] as const;
+export const ERROR_CATEGORIES = ["budget_exhausted", "key_limit", "rate_limited", "no_verified_route", "routing_excluded", "region_unavailable", "invalid_request", "upstream_error", "upstream_timeout", "cancelled", "internal"] as const;
 export type ErrorCategory = (typeof ERROR_CATEGORIES)[number];
 
 const BY_CODE: ReadonlyMap<string, ErrorCategory> = new Map<string, ErrorCategory>([
@@ -54,7 +54,6 @@ const BY_CODE: ReadonlyMap<string, ErrorCategory> = new Map<string, ErrorCategor
       "context_length_exceeded",
       "provider_request_rejected",
       "model_refused",
-      "image_not_generated",
       "setup_code_invalid",
       "setup_code_expired",
       "setup_code_used",
@@ -66,6 +65,8 @@ const BY_CODE: ReadonlyMap<string, ErrorCategory> = new Map<string, ErrorCategor
       "routing_invalid",
       "routing_ambiguous",
       "routing_unknown_provider",
+      // A price cap the request sets on a model without a reference price.
+      "routing_reference_price_unavailable",
       // Verifiable routes are served at another address, or not for this API at all.
       "verifiable_routes_at_lane",
       "verifiable_routes_unavailable",
@@ -76,7 +77,7 @@ const BY_CODE: ReadonlyMap<string, ErrorCategory> = new Map<string, ErrorCategor
       "served_at_lane",
       "count_tokens_request_rejected",
       "count_tokens_translation_unsupported",
-      "count_tokens_image_route_unsupported",
+      "count_tokens_unsupported",
       "streaming_unsupported",
       "multipart_form_required",
       "duplicate_form_field",
@@ -128,8 +129,6 @@ const MEDIA_AND_SETUP: ReadonlyMap<string, ErrorCategory> = new Map<string, Erro
   ...(
     [
       "model_refused",
-      "image_not_generated",
-      "count_tokens_image_route_unsupported",
       "provider_token_missing",
       "provider_token_invalid",
       "provider_token_expired",
@@ -152,7 +151,9 @@ const MEDIA_AND_SETUP: ReadonlyMap<string, ErrorCategory> = new Map<string, Erro
 export function errorCategory(code: string): ErrorCategory {
   const listed = MEDIA_AND_SETUP.get(code) ?? BY_CODE.get(code);
   if (listed !== undefined) return listed;
-  if (code.startsWith("routing_") && code.endsWith("_excluded_all")) return "no_verified_route";
+  // The request's own provider preference, a requirement of its routing parameters or its price cap left no provider
+  // (`routing_filter_excluded_all`, `routing_max_price_excluded_all`): only a wider request passes, not a retry.
+  if (code.startsWith("routing_") && code.endsWith("_excluded_all")) return "routing_excluded";
   // Before `invalid_*`: a malformed upstream answer is the upstream's.
   if (code.startsWith("invalid_upstream_") || code.startsWith("upstream_")) return "upstream_error";
   // A translation refusal names a client field it cannot express.

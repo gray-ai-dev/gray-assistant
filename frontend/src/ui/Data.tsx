@@ -168,8 +168,10 @@ export function TableCell({ kind, nowrap, top, wide, wrap, className, title, chi
 /** Show-more content behind a summary line. Base UI Collapsible (through Kumo) owns the button, its expanded state
  *  and the panel's height while it opens and closes; a closed panel stays in the page, so find-in-page opens it.
  *  Uncontrolled by default (`defaultOpen`); pass `open` and `onOpenChange` when the page decides. */
-export function Disclosure({ summary, children, plain, className, open, defaultOpen, onOpenChange }: {
+export function Disclosure({ summary, info, children, plain, className, open, defaultOpen, onOpenChange }: {
   summary: ReactNode;
+  /** Optional `InfoTip` definition on the summary label (sibling button beside the toggle, never nested inside it). */
+  info?: ReactNode;
   children?: ReactNode;
   /** No rule above the summary. */
   plain?: boolean;
@@ -179,7 +181,12 @@ export function Disclosure({ summary, children, plain, className, open, defaultO
   onOpenChange?(open: boolean): void;
 }) {
   return <Collapsible.Root className={cx('ui-disclosure', plain && 'ui-disclosure--plain', className)} open={open} defaultOpen={defaultOpen} onOpenChange={next => onOpenChange?.(next)}>
-    <Collapsible.Trigger className="ui-disclosure__summary">{summary}<CaretDown className="ui-disclosure__chevron" size={14} aria-hidden="true" /></Collapsible.Trigger>
+    {info == null
+      ? <Collapsible.Trigger className="ui-disclosure__summary">{summary}<CaretDown className="ui-disclosure__chevron" size={14} aria-hidden="true" /></Collapsible.Trigger>
+      : <div className="ui-disclosure__head">
+          <InfoTip term={summary} align="start">{info}</InfoTip>
+          <Collapsible.Trigger className="ui-disclosure__summary ui-disclosure__toggle" aria-label={typeof summary === 'string' ? summary : 'Toggle section'}><CaretDown className="ui-disclosure__chevron" size={14} aria-hidden="true" /></Collapsible.Trigger>
+        </div>}
     <Collapsible.Panel className="ui-disclosure__panel" hiddenUntilFound><div className="ui-disclosure__body">{children}</div></Collapsible.Panel>
   </Collapsible.Root>;
 }

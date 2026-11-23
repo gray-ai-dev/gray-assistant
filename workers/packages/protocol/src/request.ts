@@ -96,6 +96,7 @@ export interface CanonicalRequest {
   readonly model_alias: string | null;
   readonly messages: readonly CanonicalMessage[];
   readonly tools: readonly ToolDefinition[];
+  readonly hasHostedTools: boolean;
   readonly tool_choice: ToolChoice | null;
   readonly response_format: ResponseFormat | null;
   readonly reasoning: ReasoningConfig | null;
@@ -384,7 +385,10 @@ function tool(v: Json, p: Protocol): ToolDefinition {
   const f = orElse(get(v, "function"), () => v) as Json;
   object(f, p);
   const description = get(f, "description");
-  const parameters = orElse(orElse(get(f, "parameters"), () => get(f, "input_schema")), () => get(f, "parametersJsonSchema"));
+  const parameters = orElse(
+    orElse(orElse(get(f, "parameters"), () => get(f, "input_schema")), () => get(f, "parametersJsonSchema")),
+    () => get(f, "parameters_json_schema"),
+  );
   return {
     name: string(get(f, "name"), "tool.name", p),
     description: description === undefined ? null : string(description, "tool.description", p),
@@ -463,6 +467,7 @@ export function parseRequest(protocol: Protocol, modelPath: string | null, body:
   outputCandidateCount(p, body);
   const messages: CanonicalMessage[] = [];
   const tools: ToolDefinition[] = [];
+  let hasHostedTools = false;
   let choice = toolChoice(get(o, "tool_choice"), p);
   let format: ResponseFormat | null = null;
   let reasoning: ReasoningConfig | null = null;
@@ -509,7 +514,9 @@ export function parseRequest(protocol: Protocol, modelPath: string | null, body:
       if (ts !== undefined && ts !== null) {
         for (const t of array(ts, "tools", p)) {
           object(t, p);
-          if (asStr(get(t, "type")) === "function") tools.push(tool(t, p));
+          const typ = asStr(get(t, "type"));
+          if (typ === "function") tools.push(tool(t, p));
+          else if (typ !== undefined && typ !== "") hasHostedTools = true;
         }
       }
       const f = get(o, "response_format");
@@ -569,14 +576,22 @@ export function parseRequest(protocol: Protocol, modelPath: string | null, body:
           }
           messages.push({ role, content, name: null });
         }
-      } else if (!(input === undefined && (has(o, "previous_response_id") || has(o, "conversation")))) {
+      } else if (
+        !(
+          input === undefined &&
+          ((get(o, "previous_response_id") !== undefined && get(o, "previous_response_id") !== null) ||
+            (get(o, "conversation") !== undefined && get(o, "conversation") !== null))
+        )
+      ) {
         throw invalidRequest(p, "input must be string or array (or continuation reference)");
       }
       const ts = get(o, "tools");
       if (ts !== undefined && ts !== null) {
         for (const t of array(ts, "tools", p)) {
           object(t, p);
-          if (asStr(get(t, "type")) === "function") tools.push(tool(t, p));
+          const typ = asStr(get(t, "type"));
+          if (typ === "function") tools.push(tool(t, p));
+          else if (typ !== undefined && typ !== "") hasHostedTools = true;
         }
       }
       const f = pointer(body, "/text/format");
@@ -602,7 +617,12 @@ export function parseRequest(protocol: Protocol, modelPath: string | null, body:
       if (ts !== undefined && ts !== null) {
         for (const t of array(ts, "tools", p)) {
           object(t, p);
-          if (get(t, "input_schema") !== undefined) tools.push(tool(t, p));
+          if (get(t, "input_schema") !== undefined) {
+            tools.push(tool(t, p));
+          } else {
+            const typ = asStr(get(t, "type"));
+            if (typ !== undefined && typ !== "" && typ !== "custom") hasHostedTools = true;
+          }
         }
       }
       const f = orElse(pointer(body, "/output_config/format"), () => get(o, "output_format"));
@@ -628,9 +648,12 @@ export function parseRequest(protocol: Protocol, modelPath: string | null, body:
       const ts = get(o, "tools");
       if (ts !== undefined && ts !== null) {
         for (const t of array(ts, "tools", p)) {
-          object(t, p);
-          const fs = get(t, "functionDeclarations");
+          const map = object(t, p);
+          const fs = geminiFieldOrRefuse(t, "functionDeclarations", p);
           if (fs !== undefined) for (const f of array(fs, "functionDeclarations", p)) tools.push(tool(f, p));
+          if (Object.keys(map).some((k) => k !== "functionDeclarations" && k !== "function_declarations" && map[k] !== null)) {
+            hasHostedTools = true;
+          }
         }
       }
       const field = (v: Json, name: string) => geminiFieldOrRefuse(v, name, p);
@@ -676,6 +699,7 @@ export function parseRequest(protocol: Protocol, modelPath: string | null, body:
     model_alias: null,
     messages,
     tools,
+    hasHostedTools,
     tool_choice: choice,
     response_format: format,
     reasoning,

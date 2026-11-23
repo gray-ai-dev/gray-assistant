@@ -93,6 +93,8 @@ export interface Hold {
   readonly answerRoom?: bigint | undefined;
   /** Debt mode: what the request is expected to cost; unset outside debt mode. */
   readonly expected?: Expectation | undefined;
+  /** Per-call billable hosted tool reserve in micro-USD; unset or 0n when no hosted tools are declared. */
+  readonly toolCost?: bigint | undefined;
 }
 
 /**
@@ -139,12 +141,12 @@ export function holdBounds(hold: Hold): HoldBounds | undefined {
   if (windowCost !== undefined && maxOutput !== undefined) {
     const output = mulU64(addU64(max(maxOutput, statedOutput ?? 0n), hold.outputAllowance), hold.outputCandidates);
     const outputCost = priceTokens(output, bound.output);
-    if (outputCost !== undefined) ceiling = min(addI64(windowCost, outputCost), hold.ceiling);
+    if (outputCost !== undefined) ceiling = min(addI64(addI64(windowCost, outputCost), hold.toolCost ?? 0n), hold.ceiling);
   }
   let inputCost: bigint | undefined;
   let inputKind: InputKind;
   if (hold.inputTokens !== undefined) {
-    const own = priceTokens(hold.inputTokens, bound.requestInput);
+    const own = priceTokens(mulU64(hold.inputTokens, passes), bound.requestInput);
     if (own === undefined) return undefined;
     const hidden = priceTokens(mulU64(hold.promptAllowance, passes), bound.input);
     if (hidden === undefined) return undefined;
@@ -175,8 +177,9 @@ export function holdBounds(hold: Hold): HoldBounds | undefined {
 export function expectedInputCost(hold: Hold, expectation: Expectation, boundInput: bigint): bigint {
   const tokens = expectation.inputTokens;
   if (tokens === undefined) return boundInput;
-  const warm = min(expectation.warmTokens, tokens);
-  const sum = warm * expectation.readRate + (tokens - warm) * hold.bound.requestInput;
+  const total = mulU64(tokens, hold.passes);
+  const warm = min(expectation.warmTokens, min(tokens, total));
+  const sum = warm * expectation.readRate + (total - warm) * hold.bound.requestInput;
   const ownCeil = sum > U128_MAX ? undefined : divCeil(sum, 1_000_000n);
   const own = ownCeil !== undefined && ownCeil <= I64_MAX ? ownCeil : undefined;
   const hidden = priceTokens(mulU64(hold.promptAllowance, hold.passes), hold.bound.input);
@@ -198,8 +201,9 @@ export class Priced {
   readonly allowance: bigint;
   readonly candidates: bigint;
   readonly outputRate: bigint;
+  readonly toolCost: bigint;
 
-  constructor(fields: { ceiling: bigint; inputCost: bigint | undefined; expectedInputCost: bigint | undefined; outputQuantile: bigint | undefined; allowance: bigint; candidates: bigint; outputRate: bigint }) {
+  constructor(fields: { ceiling: bigint; inputCost: bigint | undefined; expectedInputCost: bigint | undefined; outputQuantile: bigint | undefined; allowance: bigint; candidates: bigint; outputRate: bigint; toolCost?: bigint | undefined }) {
     this.ceiling = fields.ceiling;
     this.inputCost = fields.inputCost;
     this.expectedInputCost = fields.expectedInputCost;
@@ -207,6 +211,7 @@ export class Priced {
     this.allowance = fields.allowance;
     this.candidates = fields.candidates;
     this.outputRate = fields.outputRate;
+    this.toolCost = fields.toolCost ?? 0n;
   }
 
   /** M at `cap` output tokens per candidate: the most the request may cost and be charged; at least 1. */
@@ -214,7 +219,7 @@ export class Priced {
     let held = this.ceiling;
     if (this.inputCost !== undefined) {
       const output = priceTokens(mulU64(addU64(cap, this.allowance), this.candidates), this.outputRate);
-      held = output === undefined ? this.ceiling : min(addI64(this.inputCost, output), this.ceiling);
+      held = output === undefined ? this.ceiling : min(addI64(addI64(this.inputCost, output), this.toolCost), this.ceiling);
     }
     return max(held, 1n);
   }
@@ -225,7 +230,7 @@ export class Priced {
     const held = this.outputQuantile === undefined ? cap : min(cap, this.outputQuantile);
     const output = priceTokens(mulU64(addU64(held, this.allowance), this.candidates), this.outputRate);
     if (output === undefined) return undefined;
-    return max(min(addI64(this.expectedInputCost, output), this.bound(cap)), 1n);
+    return max(min(addI64(addI64(this.expectedInputCost, output), this.toolCost), this.bound(cap)), 1n);
   }
 }
 
@@ -388,7 +393,9 @@ export function sizeReservation(hold: Hold, room: Room, checkFunds: boolean, key
   const bounds = holdBounds(hold);
   if (bounds === undefined) return exceeds();
   const { ceiling, inputCost, inputKind, statedOutput } = bounds;
-  if (inputCost !== undefined && inputCost > ceiling) return exceeds();
+  const toolCost = hold.toolCost ?? 0n;
+  if (toolCost < 0n || toolCost > ceiling) return exceeds();
+  if (inputCost !== undefined && addI64(inputCost, toolCost) > ceiling) return exceeds();
   // The hold at any output cap: M, and in debt mode H (docs/holds-debt-mode.md 3.1).
   const priced = new Priced({
     ceiling,
@@ -398,12 +405,13 @@ export function sizeReservation(hold: Hold, room: Room, checkFunds: boolean, key
     allowance: outputAllowance,
     candidates: outputCandidates,
     outputRate: bound.output,
+    toolCost,
   });
   // What each candidate may bill beyond the output limit is held whatever the limit, like the input.
   const allowanceCost = priceTokens(outputAllowance * outputCandidates, bound.output);
-  if (allowanceCost === undefined || addI64(inputCost ?? 0n, allowanceCost) > ceiling) return exceeds();
-  const fixedCost = inputCost === undefined ? undefined : addI64(inputCost, allowanceCost);
-  const outputRoom = ceiling - (inputCost ?? 0n) - allowanceCost;
+  if (allowanceCost === undefined || addI64(addI64(inputCost ?? 0n, allowanceCost), toolCost) > ceiling) return exceeds();
+  const fixedCost = inputCost === undefined ? undefined : addI64(addI64(inputCost, allowanceCost), toolCost);
+  const outputRoom = ceiling - (inputCost ?? 0n) - allowanceCost - toolCost;
   if (requestedCap !== undefined && statedOutput !== undefined) {
     // The limit as stated, at most the window: no answer is longer.
     const outputCost = priceTokens(mulU64(statedOutput, outputCandidates), bound.output);

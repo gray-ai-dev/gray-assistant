@@ -34,7 +34,7 @@ export type WindowKey = 'unified' | '5h' | '7d' | '7d_oi' | 'primary' | 'seconda
 /** A cooling entry of the VM's report (S42): ends are whole minutes, `observed` ones refused nothing. */
 export type CoolingEntry = {
   model: string | null; kind: 'cool' | 'hold'; until_minute_ms: number | null; rule_id: string; class: AttemptClass; vendor_code: string;
-  set_minute_ms: number; gen: number; observed: boolean; clears: ('credential' | 'test')[];
+  set_minute_ms: number; gen: number; observed: boolean; clears: ('credential' | 'test')[]; cred_gen?: number;
 };
 /** A vendor rate-limit window as egress last read it from the vendor's headers (S36). */
 export type WindowState = {

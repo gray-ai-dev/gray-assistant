@@ -803,6 +803,11 @@ export const NO_VM_TO_DELETE_WORDS: FailureWords = { title: "There is no VM to d
 export const STEP_FAILURE_WORDS: Readonly<Record<string, FailureWords>> = {
   not_admitted: { title: "Your workspace is not an approved supplier yet.", fix: "Gray reviews supplier applications; Deploy works once yours is approved.", side: "gray" },
   no_quota: { title: "Your deployment has no VM quota.", fix: "Ask Gray for a VM on the VM page; Gray's operators decide it.", side: "gray" },
+  billing_past_due: {
+    title: "Your prepaid VM is past due and its grace period has ended.",
+    fix: "Add credits to the workspace and deploy again.",
+    side: "relay",
+  },
   // A relay has one VM: Deploy makes it, Restart and Delete act on it.
   vm_exists: { title: "Your VM is already running.", fix: "Restart it, or Delete it first to deploy anew.", side: "relay" },
   no_profile: { title: "Gray has no release published for confidential VMs yet.", fix: "Gray's operators publish one; nothing to do on your side.", side: "gray" },
@@ -1012,6 +1017,8 @@ export const RELAY_ALERT_WORDS: Readonly<Record<RelayAlertKind, { readonly title
   relay_violation: { title: "Gray found your software changing a request or an answer", resolved: "Gray closed its report of a change by your software" },
   // Told once, when the operators' delete of the VM ends; never resolved, `resolved` is not sent.
   vm_reclaimed: { title: "Gray reclaimed your VM", resolved: "" },
+  // Prepaid VM renewal failed during the lead window or grace period; resolved once renewal succeeds or the VM is deleted.
+  vm_billing_past_due: { title: "Your prepaid VM renewal payment failed", resolved: "Your prepaid VM renewal payment succeeded" },
   // Told once per decision of Gray's operators on the VM the relay asked for (the message's own title says which:
   // VM_APPROVED_TITLE, VM_REFUSED_TITLE); never resolved, `resolved` is not sent.
   vm_decided: { title: "Gray approved or refused your VM", resolved: "" },

@@ -335,7 +335,7 @@ export type StackModelAnswer = { endpoint_id: string; created: boolean; changed:
 /** Whose catalog models each vendor serves: the Codex backend serves OpenAI's, an OpenAI-compatible vendor its own. */
 export const VENDOR_PUBLISHER: Readonly<Record<StackVendor, string>> = { anthropic: 'anthropic', openai: 'openai', chatgpt_codex: 'openai', ...compatibleRows(v => v.publisher) };
 /** The vendor's name suggested for a Gray model ID (vendor-model-name.ts, which the console's relay-models.json shares). */
-export { stackServes, vendorModelName } from './vendor-model-name.ts';
+export { stackServes, vendorModelName, vendorRetired } from './vendor-model-name.ts';
 /** `PUT …/models`'s body; throws the sentence to show for a field left empty. */
 export function modelInput(form: ModelForm): { vendor: StackVendor; requested_model: string; upstream_model: string } {
   const requested = form.model.trim(), upstream = form.upstream.trim();

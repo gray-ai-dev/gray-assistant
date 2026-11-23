@@ -42,6 +42,7 @@ export { FixedLayer, usePopupPositionMethod } from './popup';
 export { UiProvider, useConfirm, type ConfirmOptions } from './Confirm';
 export { toast } from './Toast';
 export { Drawer } from './Drawer';
+export { Dialog } from './Dialog';
 export { Checklist, ChecklistItem, type ChecklistState } from './Checklist';
 export { ChatMarkdown } from './ChatMarkdown';
 export { Article, type ArticleImage, type ArticleLang, type ArticleProps } from './Article';

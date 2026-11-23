@@ -138,32 +138,30 @@ export function catalogUrl(baseUrl: string, protocol: string): string | null {
   return url.href;
 }
 
-export type AdapterId = 'gemini' | 'volcengine' | 'minimax' | 'kling' | 'fal';
+export type MappingFields = { protocol: string; native_path: string; upstream_model?: string; streaming?: boolean };
 /**
- * Vendor-native media APIs (gray-media-adapters). `protocols` is what each serves (gray-control adapter_serves, from
- * Vendor::supports); `baseUrls` carry the vendor's API version and become the endpoint base URL.
+ * The APIs a mapping may declare streaming on (gray-control `STREAMED_MEDIA_PROTOCOLS`): those OpenAI's API streams,
+ * each in its own way. The text protocols are always checked streamed, and the other APIs have no streamed form.
  */
-export const mediaAdapters: { id: AdapterId; label: string; protocols: ProtocolId[]; baseUrls: string[]; credential: string }[] = [
-  { id: 'gemini', label: 'Google Gemini (Imagen, Veo)', protocols: ['open_ai_image_generations', 'open_ai_image_edits', 'open_ai_videos'], baseUrls: ['https://generativelanguage.googleapis.com/v1beta'], credential: 'A Gemini API key.' },
-  { id: 'volcengine', label: 'Volcengine Ark / BytePlus ModelArk', protocols: ['open_ai_image_generations', 'open_ai_image_edits', 'open_ai_videos'], baseUrls: ['https://ark.cn-beijing.volces.com/api/v3', 'https://ark.ap-southeast.bytepluses.com/api/v3'], credential: 'An Ark API key.' },
-  { id: 'minimax', label: 'MiniMax', protocols: ['open_ai_image_generations', 'open_ai_image_edits', 'open_ai_speech', 'open_ai_videos'], baseUrls: ['https://api.minimax.io/v1', 'https://api.minimax.cn/v1'], credential: 'A MiniMax API key.' },
-  { id: 'kling', label: 'Kling', protocols: ['open_ai_image_generations', 'open_ai_image_edits', 'open_ai_videos'], baseUrls: ['https://api-singapore.klingai.com/v1'], credential: 'Your access key and secret key joined by a colon: access_key:secret_key. Gray signs a short-lived token for each call.' },
-  { id: 'fal', label: 'fal', protocols: ['open_ai_image_generations', 'open_ai_image_edits', 'open_ai_videos'], baseUrls: ['https://queue.fal.run'], credential: 'A fal API key.' },
-];
-export const adaptersFor = (protocol: string) => mediaAdapters.filter(adapter => (adapter.protocols as string[]).includes(protocol));
-export const adapterServes = (adapter: string, protocol: string) => adaptersFor(protocol).some(item => item.id === adapter);
-export const mediaAdapter = (id: string | null | undefined) => mediaAdapters.find(adapter => adapter.id === id) ?? null;
-
-export type MappingFields = { protocol: string; native_path: string; adapter?: string | null; upstream_model?: string };
-/**
- * A mapping after its protocol changes: a native path Gray filled in follows the protocol (`followNativePath`), and
- * an adapter that does not serve the new protocol is dropped.
- */
+export const STREAMED_MEDIA_PROTOCOLS: readonly ProtocolId[] = ['open_ai_image_generations', 'open_ai_image_edits', 'open_ai_speech', 'open_ai_transcriptions'];
+export const streamsMedia = (protocol: string) => (STREAMED_MEDIA_PROTOCOLS as readonly string[]).includes(protocol);
+/** How a streamed request of each such API asks for it, as the standard's clause 13.15 names it. */
+export const STREAMED_REQUEST: Partial<Record<ProtocolId, string>> = {
+  open_ai_image_generations: '"stream": true',
+  open_ai_image_edits: 'stream=true',
+  open_ai_speech: '"stream_format": "sse"',
+  open_ai_transcriptions: 'stream=true',
+};
+/** A mapping that declares streaming, or not; a protocol without a streamed form declares nothing. */
+export function withStreaming<M extends MappingFields>(mapping: M, streaming: boolean): M {
+  const next: M = { ...mapping };
+  if (streaming && streamsMedia(mapping.protocol)) next.streaming = true; else delete next.streaming;
+  return next;
+}
+/** A mapping after its protocol changes: a native path Gray filled in follows the protocol (`followNativePath`), and a protocol without a streamed form drops `streaming`. */
 export function withProtocol<M extends MappingFields>(mapping: M, protocol: string, base = ''): M {
   const upstream = mapping.upstream_model ?? '';
-  const next: M = { ...mapping, protocol, native_path: followNativePath(mapping.native_path, { protocol: mapping.protocol, upstream, base }, { protocol, upstream, base }) };
-  if (next.adapter && !adapterServes(next.adapter, protocol)) delete next.adapter;
-  return next;
+  return withStreaming({ ...mapping, protocol, native_path: followNativePath(mapping.native_path, { protocol: mapping.protocol, upstream, base }, { protocol, upstream, base }) }, mapping.streaming === true);
 }
 /** A mapping after its upstream model changes: a Gemini path Gray filled in keeps naming the upstream model. */
 export function withUpstreamModel<M extends MappingFields>(mapping: M, upstream: string, base = ''): M {
@@ -181,16 +179,6 @@ export function withBaseUrl<M extends MappingFields>(mapping: M, before: string,
 export function repairedMapping<M extends MappingFields>(mapping: M, base = ''): M {
   return mapping.native_path.trim() === RETIRED_GEMINI_TEMPLATE && mapping.protocol === 'gemini' && mapping.upstream_model?.trim()
     ? { ...mapping, native_path: defaultNativePath('gemini', mapping.upstream_model, base) } : mapping;
-}
-/** A mapping with `adapter` set, or without the field when none is chosen: the control API rejects an empty adapter and omits an unset one. */
-export function withAdapter<M extends MappingFields>(mapping: M, adapter: string): M {
-  const next: M = { ...mapping };
-  if (adapter) next.adapter = adapter; else delete next.adapter;
-  return next;
-}
-/** The mapping as saved: no adapter field unless a known adapter that serves its protocol is chosen. */
-export function mappingForSave<M extends MappingFields>(mapping: M): M {
-  return withAdapter(mapping, mapping.adapter && adapterServes(mapping.adapter, mapping.protocol) ? mapping.adapter : '');
 }
 /** Why a mapping's native path would fail the control API's validation, or null. */
 export function nativePathError(path: string): string | null {

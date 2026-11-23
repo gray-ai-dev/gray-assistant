@@ -1,5 +1,39 @@
 export type Modality = 'text' | 'embeddings' | 'image' | 'audio' | 'video';
 export type BillingUnit = 'images' | 'videos' | 'seconds' | 'characters' | 'requests';
+export type ServiceTierName = 'fast' | 'priority';
+export type HostedToolName = 'web_search' | 'google_search' | 'code_execution' | 'file_search';
+export const HOSTED_TOOL_ORDER: readonly HostedToolName[] = ['web_search', 'google_search', 'code_execution', 'file_search'];
+export const HOSTED_TOOL_LABELS: Record<HostedToolName, string> = {
+  web_search: 'Web search',
+  google_search: 'Google Search',
+  code_execution: 'Code execution',
+  file_search: 'File search',
+};
+export const SERVICE_TIER_LABELS: Record<ServiceTierName, string> = {
+  fast: 'Fast',
+  priority: 'Priority',
+};
+export type OfferLongContext = {
+  threshold_input_tokens: number;
+  input_microusd_per_million: number;
+  output_microusd_per_million: number;
+  cache_read_microusd_per_million?: number | null;
+  cache_write_microusd_per_million?: number | null;
+  cache_write_1h_microusd_per_million?: number | null;
+};
+export type OfferServiceTier = {
+  input_microusd_per_million: number;
+  output_microusd_per_million: number;
+  cache_read_microusd_per_million?: number | null;
+  cache_write_microusd_per_million?: number | null;
+  cache_write_1h_microusd_per_million?: number | null;
+  long_context?: OfferLongContext | null;
+};
+export type OfferServiceTiers = {
+  fast?: OfferServiceTier | null;
+  priority?: OfferServiceTier | null;
+};
+export type OfferToolPrices = Partial<Record<HostedToolName, number | null>>;
 /**
  * Image, audio and unit prices in micro-USD per million tokens or units. An unset image or audio rate is the text
  * input or output rate. A route with a unit price bills units alone: the tokens its API reports are recorded but not
@@ -28,15 +62,21 @@ const protocols: Record<string, { label: string; modality: Modality; unit?: Bill
   open_ai_videos: { label: 'Videos', modality: 'video', unit: 'seconds' },
 };
 export const protocolLabel = (protocol: string) => protocols[protocol]?.label || protocol;
+/**
+ * A usage record's model and API as the request log shows them. A prepaid VM's charge (console vm-billing.ts: model
+ * `vm:<instance type>`, protocol `vm_hosting`) reads as the VM's type, as the VM page's Size shows it, and "VM hosting";
+ * it has no model page to link to (`vm`).
+ */
+export function usageNames(model: string | null | undefined, protocol: string | null | undefined): { model: string | null; api: string | null; vm: boolean } {
+  if (protocol === 'vm_hosting') return { model: model?.startsWith('vm:') ? model.slice(3) : model ?? null, api: 'VM hosting', vm: true };
+  return { model: model ?? null, api: protocol ? protocolLabel(protocol) : null, vm: false };
+}
 export const protocolModality = (protocol: string): Modality | null => protocols[protocol]?.modality ?? null;
 export const protocolUnit = (protocol: string): BillingUnit | null => protocols[protocol]?.unit ?? null;
 /** APIs that settle only in units: speech, translations and videos report no tokens a route could bill. */
 const unitOnly = ['open_ai_speech', 'open_ai_translations', 'open_ai_videos'];
-/**
- * Whether an offer must set a default ("*") unit price: an API that settles only in units, or an image API behind a
- * vendor adapter other than Gemini, which reports image counts alone (the gateway's adapter_requires_unit_price).
- */
-export const requiresUnitPrice = (protocol: string, adapter?: string | null) => unitOnly.includes(protocol) || (protocolModality(protocol) === 'image' && !!adapter && adapter !== 'gemini');
+/** Whether an offer must set a default ("*") unit price: an API that settles only in units. */
+export const requiresUnitPrice = (protocol: string) => unitOnly.includes(protocol);
 /** Catalog types for available models, one per protocol modality. */
 export const liveModelTypes = ['All', 'Text', 'Image', 'Audio', 'Video', 'Embeddings'] as const;
 /** Whether any of a model's protocols has the type's modality; 'All' and unknown types match everything. */
@@ -66,6 +106,8 @@ export const unitBasis = (unit: BillingUnit) => perMillion(unit) ? '1M character
 
 /** Highest token price, including image and audio token rates: $1,000,000 per million tokens (the gateway's MAX_PRICE_MICROUSD_PER_MILLION). */
 export const MAX_MICROUSD_PER_MILLION = 1_000_000_000_000;
+/** Highest per-call hosted tool price: $100 per call (the gateway's MAX_TOOL_PRICE_MICROUSD). */
+export const MAX_TOOL_PRICE_MICROUSD = 100_000_000;
 /** Highest unit price: $100 per image, second or request, or $100,000,000 per 1M characters (the gateway's MAX_UNIT_PRICE_MICROUSD_PER_MILLION). */
 export const MAX_UNIT_MICROUSD_PER_MILLION = 100_000_000_000_000;
 /** Exact integer for a nonnegative decimal string scaled by 10^digits (string and BigInt math, so no float drift). */
@@ -91,6 +133,10 @@ function usd(decimal: string) {
 /** USD per million tokens → micro-USD per million tokens. */
 export const parseTokenPrice = (value: string) => parseScaled(value, 6, MAX_MICROUSD_PER_MILLION, '$1,000,000 per million tokens');
 export const tokenPriceText = (micro: number) => scaledText(micro, 6);
+/** USD per hosted tool call → micro-USD per call. */
+export const parseToolPrice = (value: string) => parseScaled(value, 6, MAX_TOOL_PRICE_MICROUSD, '$100 per call');
+export const toolPriceText = (micro: number) => scaledText(micro, 6);
+export const formatToolPrice = (micro: number) => `${usd(toolPriceText(micro))} per call`;
 /** USD per unit (per 1M characters) → micro-USD per million units. */
 export const parseUnitPrice = (value: string, unit: BillingUnit) => parseScaled(value, unitDigits(unit), MAX_UNIT_MICROUSD_PER_MILLION, perMillion(unit) ? '$100,000,000 per 1M characters' : `$100 per ${units[unit][0]}`);
 /** Micro-USD per million units → the exact USD per unit (per 1M characters) a provider edits. */
@@ -159,7 +205,7 @@ export function mediaDraft(media: OfferMedia | undefined, protocol: string): Med
  * Offer media terms for the fields `protocol` bills, or undefined when none is set (the backend treats absence as
  * text-only). An offer that `requiresUnitPrice` needs a default price. Throws an Error naming the first invalid field.
  */
-export function parseOfferMedia(draft: MediaDraft, protocol: string, adapter?: string | null): OfferMedia | undefined {
+export function parseOfferMedia(draft: MediaDraft, protocol: string): OfferMedia | undefined {
   const media: OfferMedia = {}, unit = protocolUnit(protocol);
   for (const { key, label } of rateFieldsFor(protocol)) {
     if (!draft[key].trim()) continue;
@@ -175,7 +221,7 @@ export function parseOfferMedia(draft: MediaDraft, protocol: string, adapter?: s
       if (!row.price) throw new Error(`Enter a price for selector "${row.selector}".`);
       try { prices[row.selector] = parseUnitPrice(row.price, unit); } catch (e) { throw new Error(`Unit price for "${row.selector}": ${(e as Error).message}`); }
     }
-    if (!Object.hasOwn(prices, '*') && requiresUnitPrice(protocol, adapter)) throw new Error(`Set a default (*) price per ${unitBasis(unit)}; this API settles only in units.`);
+    if (!Object.hasOwn(prices, '*') && requiresUnitPrice(protocol)) throw new Error(`Set a default (*) price per ${unitBasis(unit)}; this API settles only in units.`);
     if (rows.length && !Object.hasOwn(prices, '*')) throw new Error('Set a default (*) unit price before adding selectors.');
     if (rows.length) media.unit_prices = prices;
   }
@@ -213,9 +259,9 @@ export function mediaUsageParts(usage: MediaUsage | null | undefined) {
   };
 }
 
-export type BillingUsage = { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number; cache_write_input_tokens?: number; cache_write_1h_input_tokens?: number; image_input_tokens?: number; audio_input_tokens?: number; image_output_tokens?: number; audio_output_tokens?: number; units?: number };
-export type BillingRecord = { input_microusd_per_million: number; output_microusd_per_million: number; cache_read_microusd_per_million: number; cache_write_microusd_per_million: number; cache_write_1h_microusd_per_million: number; billable_usage: BillingUsage; customer_media?: MediaRates | null; unit?: string | null };
-export type BillingRow = { label: string; quantity: number; rate: number | null; units?: true; unit?: BillingUnit | null };
+export type BillingUsage = { input_tokens: number; output_tokens: number; cache_read_input_tokens?: number; cache_write_input_tokens?: number; cache_write_1h_input_tokens?: number; image_input_tokens?: number; audio_input_tokens?: number; image_output_tokens?: number; audio_output_tokens?: number; units?: number; tool_calls?: Partial<Record<HostedToolName, number>> };
+export type BillingRecord = { input_microusd_per_million: number; output_microusd_per_million: number; cache_read_microusd_per_million: number; cache_write_microusd_per_million: number; cache_write_1h_microusd_per_million: number; billable_usage: BillingUsage; customer_media?: MediaRates | null; unit?: string | null; service_tier?: ServiceTierName | null; long_context?: boolean; customer_tool_prices?: Partial<Record<HostedToolName, number>> | null };
+export type BillingRow = { label: string; quantity: number; rate: number | null; units?: true; unit?: BillingUnit | null; tool?: true };
 /**
  * Charge components that add up to the request charge. input_tokens includes the cache subsets, and the
  * uncached input and the output include their image and audio subsets, so each row shows only its own share.
@@ -239,5 +285,11 @@ export function billingRows(b: BillingRecord): BillingRow[] {
   if (imageOut) rows.push({ label: 'Output · image', quantity: imageOut, rate: rate(m.image_output_microusd_per_million ?? b.output_microusd_per_million) });
   if (audioOut) rows.push({ label: 'Output · audio', quantity: audioOut, rate: rate(m.audio_output_microusd_per_million ?? b.output_microusd_per_million) });
   if (positive(u.units)) { const unit = isBillingUnit(b.unit) ? b.unit : null; rows.push({ label: unit ? `Units · ${unitName(unit, 2)}` : 'Units', quantity: u.units, rate: m.unit_microusd_per_million ?? null, units: true, unit }); }
+  if (u.tool_calls) {
+    for (const tool of HOSTED_TOOL_ORDER) {
+      const count = u.tool_calls[tool];
+      if (positive(count)) rows.push({ label: `Tool · ${HOSTED_TOOL_LABELS[tool]}`, quantity: count, rate: b.customer_tool_prices?.[tool] ?? null, tool: true });
+    }
+  }
   return rows;
 }

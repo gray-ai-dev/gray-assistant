@@ -29,6 +29,24 @@ export function upstreamIndex(vendor: string, ids: readonly string[]): Map<strin
 }
 
 /**
+ * Gray model IDs whose vendor has retired the model, with the UTC day it did, from the vendor's own table (Anthropic:
+ * https://platform.claude.com/docs/en/about-claude/model-deprecations, read 2026-11-24). From that day the vendor
+ * answers every request for the model "not found", so the panel's model form and `relay-models.json` stop offering the
+ * ID (a mapping already made is held by egress on the vendor's answer). Kept by hand until Gray reads each vendor's own
+ * model list.
+ */
+export const VENDOR_RETIRED: Readonly<Record<string, string>> = {
+  'anthropic/claude-opus-4.1': '2026-08-05',
+  'anthropic/claude-sonnet-4.5': '2026-11-30',
+};
+
+/** Whether the vendor has retired the model a Gray model ID names, at `nowMs` (`VENDOR_RETIRED`). */
+export function vendorRetired(id: string, nowMs: number = Date.now()): boolean {
+  const day = VENDOR_RETIRED[id];
+  return day !== undefined && nowMs >= Date.parse(`${day}T00:00:00Z`);
+}
+
+/**
  * Whether a stack vendor can serve a catalog model at all: a relay stack speaks Anthropic Messages, OpenAI Chat
  * Completions and OpenAI Responses only (@gray/lane `LANE_PROTOCOLS`), which answer with text, so a model whose output
  * has no text (embeddings, transcription, an image-only model) is no stack vendor's. A model whose output the catalog

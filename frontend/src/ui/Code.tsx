@@ -141,8 +141,13 @@ export type CodeBlockProps = {
    * One command with only its copy button: the button is an icon pinned at the block's top right, named by `copyLabel`
    * (its tooltip), so the block stays one row in a narrow column whatever the command's length. The line scrolls in the
    * space left of the icon, so no part of it, its end scrolled to included, is ever under the icon.
+   *
+   * `"corner"`: the same icon for a block of any kind (several lines, wrapped text, a header): in the header's top right
+   * when there is a header, else in the block's top right corner, the code keeping the icon's column clear at every
+   * width, so a copy control never takes a row of its own under the code. Its tooltip and accessible name are
+   * `copyLabel`; a check replaces the icon once copied, at the same size.
    */
-  copyIcon?: boolean;
+  copyIcon?: boolean | 'corner';
   /** Muted note under the code. */
   footer?: ReactNode;
   /**
@@ -170,21 +175,22 @@ export function CodeBlock({ code, language, title, level = 2, icon, description,
   // spaces, never inside a word that fits a line) unless `wrap` says otherwise, so its last words (`--config …`) are
   // read without scrolling, on a phone too.
   const line = !header && copy && !bare && !code.includes('\n');
-  const iconOnly = line && copyIcon === true && !footer;
+  const corner = copyIcon === 'corner';
+  const iconOnly = line && (copyIcon === true || corner) && !footer;
   // A one-line command under a header (a description, a title) wraps the same way: on a phone its last words were
   // cut off behind a scroll nobody sees (review of 2026-11-14).
   const byWord = wrap === 'words' || (wrap === undefined && !code.includes('\n') && (line || (header && language === 'bash')));
   const Heading = `h${level}` as const;
-  return <section className={cx('ui-code', line && 'ui-code--line', iconOnly && 'ui-code--line-icon', bare && 'ui-code--bare', className)} aria-label={label ?? (typeof title === 'string' ? title : undefined)}
+  return <section className={cx('ui-code', line && 'ui-code--line', iconOnly && 'ui-code--line-icon', corner && !header && !line && 'ui-code--corner-icon', bare && 'ui-code--bare', className)} aria-label={label ?? (typeof title === 'string' ? title : undefined)}
     style={maxHeight ? { '--ui-code-max-height': maxHeight } as CSSProperties : undefined}>
     {header && !bare && <div className="ui-code__header">
       {(title != null || description != null) && <div className="ui-code__title">
         {title != null && <Heading className="ui-code__title-text">{icon}{title}</Heading>}
         {description != null && <p className="ui-code__description">{description}</p>}
       </div>}
-      <div className="ui-code__tools">{tools}{copy && <CopyButton code={code} label={copyLabel} />}</div>
+      <div className="ui-code__tools">{tools}{copy && <CopyButton code={code} label={copyLabel} iconOnly={corner} />}</div>
     </div>}
-    {!header && copy && !bare && !line && <div className="ui-code__corner"><CopyButton code={code} label={copyLabel} /></div>}
+    {!header && copy && !bare && !line && <div className="ui-code__corner"><CopyButton code={code} label={copyLabel} iconOnly={corner} /></div>}
     <pre className={cx('ui-code__pre', wrap === true && 'ui-code__pre--wrap', byWord && 'ui-code__pre--words')} data-language={language} tabIndex={0} translate="no"><CodeContent code={code} language={language} byWord={byWord} /></pre>
     {line && <div className="ui-code__end"><CopyButton code={code} label={copyLabel} iconOnly={iconOnly} /></div>}
     {footer && <p className="ui-code__footer">{footer}</p>}

@@ -159,8 +159,32 @@ export function endedMessage(code: RelayLoginCode | null): string {
   }
 }
 
-/** The sentence for a refusal of the VM's route. */
-function routeRefusal(status: number, code: string | null, accountId: string): string {
+/**
+ * A refusal of the VM's login routes: its `error.code`, and its `error.message`, the lane's own words. One code can have
+ * more than one cause (`login_account_unknown`: the VM holds no such account, or its egress does not have it yet,
+ * gateway `lane/login-session.ts`), and only the words tell them apart.
+ */
+interface Refusal {
+  readonly code: string | null;
+  readonly said: string | null;
+}
+
+/** The most characters of the lane's words a sentence carries. */
+const SAID_MAX = 300;
+
+/** The sentences for a refusal of the VM's route: the lane's own words, when it sent any, then what to do. */
+function routeRefusal(status: number, refusal: Refusal, accountId: string): string {
+  const hint = routeHint(status, refusal.code, accountId);
+  return refusal.said === null ? hint : `The VM answered ${named(refusal.code ?? `http_${status}`, refusal.said)}.\n${hint}`;
+}
+
+/** A refusal's code with the lane's words for it, as the command's sentences name it. */
+function named(code: string, said: string | null): string {
+  return said === null ? code : `${code}: "${said}"`;
+}
+
+/** What to do after a refusal of the VM's route. */
+function routeHint(status: number, code: string | null, accountId: string): string {
   switch (code) {
     case "login_account_unknown":
       return (
@@ -190,16 +214,30 @@ function routeRefusal(status: number, code: string | null, accountId: string): s
   return `The VM refused the sign-in (${status}${code === null ? "" : ` ${code}`}).`;
 }
 
-function errorCodeOf(body: Uint8Array): string | null {
+function refusalOf(body: Uint8Array): Refusal {
   let value: Json;
   try {
     value = parseStrictBytes(body);
   } catch {
-    return null;
+    return { code: null, said: null };
   }
   const error = get(value, "error");
-  const code = isObject(error) ? get(error, "code") : null;
-  return typeof code === "string" && /^[a-z0-9_]{1,64}$/.test(code) ? code : null;
+  if (!isObject(error)) return { code: null, said: null };
+  const code = get(error, "code");
+  const message = get(error, "message");
+  return { code: typeof code === "string" && /^[a-z0-9_]{1,64}$/.test(code) ? code : null, said: typeof message === "string" ? saidOf(message) : null };
+}
+
+/** The lane's words as one line for a terminal: no control or format characters, spaces folded, at most SAID_MAX characters. */
+function saidOf(message: string): string | null {
+  const line = message
+    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .replace(/\.+$/u, "");
+  if (line === "") return null;
+  const chars = [...line];
+  return chars.length > SAID_MAX ? `${chars.slice(0, SAID_MAX).join("")}…` : line;
 }
 
 function minutesLeft(expiresAtMs: number, nowMs: number): number {
@@ -346,8 +384,8 @@ export async function loginVm(options: LoginVmOptions): Promise<number> {
       started = answer;
       break;
     }
-    const code = errorCodeOf(answer.body);
-    if (code !== "login_account_unknown" || io.now() - askedFrom >= accountWaitMs) return fail(code ?? `http_${answer.status}`, routeRefusal(answer.status, code, accountId));
+    const refused = refusalOf(answer.body);
+    if (refused.code !== "login_account_unknown" || io.now() - askedFrom >= accountWaitMs) return fail(refused.code ?? `http_${answer.status}`, routeRefusal(answer.status, refused, accountId));
     if (!waiting) emit({ kind: "progress", step: "waiting_account" });
     if (!waiting) io.stdout(`The VM does not serve ${accountId} yet. An account sealed just now reaches it within a minute: waiting (at most ${Math.round(accountWaitMs / 1000)} s) …\n`);
     waiting = true;
@@ -376,13 +414,16 @@ export async function loginVm(options: LoginVmOptions): Promise<number> {
   let stopLines: (() => void) | null = null;
   const pending: Promise<unknown>[] = [];
 
-  const readView = (response: DaemonHttpResponse | { readonly transport: string }): RelayLoginView | { readonly refused: string } => {
-    if ("transport" in response) return { refused: `transport_${response.transport}` };
-    if (response.status !== 200) return { refused: errorCodeOf(response.body) ?? `http_${response.status}` };
+  const readView = (response: DaemonHttpResponse | { readonly transport: string }): RelayLoginView | { readonly refused: string; readonly said: string | null } => {
+    if ("transport" in response) return { refused: `transport_${response.transport}`, said: null };
+    if (response.status !== 200) {
+      const refusal = refusalOf(response.body);
+      return { refused: refusal.code ?? `http_${response.status}`, said: refusal.said };
+    }
     try {
-      return readLoginView(parseStrictBytes(response.body)) ?? { refused: "answer_invalid" };
+      return readLoginView(parseStrictBytes(response.body)) ?? { refused: "answer_invalid", said: null };
     } catch {
-      return { refused: "answer_invalid" };
+      return { refused: "answer_invalid", said: null };
     }
   };
 
@@ -391,7 +432,7 @@ export async function loginVm(options: LoginVmOptions): Promise<number> {
     const answer = readView(await call(`${sessionPath}/${kind}`, { method: "POST", body, key }));
     if ("refused" in answer) {
       emit({ kind: "notice", code: "input_refused" });
-      io.stdout(`The VM did not take it (${answer.refused}). Try again.\n`);
+      io.stdout(`The VM did not take it (${named(answer.refused, answer.said)}). Try again.\n`);
       return false;
     }
     view = answer;
@@ -529,12 +570,12 @@ export async function loginVm(options: LoginVmOptions): Promise<number> {
       if ("refused" in next) {
         if (next.refused === "login_session_unknown") {
           await cleanup(false);
-          return fail(next.refused, routeRefusal(404, next.refused, accountId));
+          return fail(next.refused, routeRefusal(404, { code: next.refused, said: next.said }, accountId));
         }
         // A transport hiccup: the session lives 30 s without a poll; the next poll tries again, until 30 s of them failed.
         if (io.now() - answeredAt >= LOGIN_UNREACHABLE_MS) {
           await cleanup(false);
-          return fail("vm_unreachable", `The VM has not answered for 30 s (${next.refused}). It may have been replaced by a new release or restarted; run gray-assistant login ${accountId} again.`);
+          return fail("vm_unreachable", `The VM has not answered for 30 s (${named(next.refused, next.said)}). It may have been replaced by a new release or restarted; run gray-assistant login ${accountId} again.`);
         }
         continue;
       }

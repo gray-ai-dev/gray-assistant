@@ -164,6 +164,7 @@ export function geminiCountModel(path: string): string | undefined {
 export function geminiWithoutModelsSegment(path: string, query: string | undefined): string | undefined {
   const rest = path.startsWith("/v1beta/") ? path.slice("/v1beta/".length) : "";
   if (!rest.includes("/") || !rest.includes(":")) return undefined;
+  if (rest.startsWith("models/") || rest.startsWith("v1beta/")) return undefined;
   return query === undefined ? `${MODELS_PREFIX}${rest}` : `${MODELS_PREFIX}${rest}?${query}`;
 }
 
@@ -219,12 +220,11 @@ export interface GeminiModel {
 
 /**
  * Whether the Workers' gateway serves token counting (`POST /v1/messages/count_tokens`, Gemini's
- * `:countTokens`): not yet, it answers both 404 (conformance/README.md, the open equivalence gap
- * "token 计数"). Until it does, nothing it lists names counting (decision 4 of 2026-10-24, declared
- * in conformance/README.md): the follow-up PR that implements counting after release 4 sets this
- * and lists `countTokens` as the server does.
+ * `:countTokens`): served natively on the main gateway and the confidential entry, so Gemini's
+ * model listing includes `countTokens` for natively served models and `/openapi.json` keeps the
+ * token-counting paths.
  */
-export const TOKEN_COUNTING_SERVED = false;
+export const TOKEN_COUNTING_SERVED = true;
 
 /**
  * `gemini_model_value`: `models/{id}`, its id as the display name, and the methods Gray serves for

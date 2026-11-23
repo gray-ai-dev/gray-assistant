@@ -303,6 +303,7 @@ export const RELAY_ALERT_KINDS = [
   "relay_failing",
   "relay_ejected",
   "relay_violation",
+  "vm_billing_past_due",
   "vm_reclaimed",
   "vm_decided",
   ...RELAY_RELEASE_NOTICE_KINDS,
@@ -324,7 +325,7 @@ export const RELAY_ALERT_KINDS = [
 export const KIT_RUN = "docker compose run --rm --no-deps agent";
 export const kitRun = (command: string): string => `${KIT_RUN} ${command}`;
 
-export const RELAY_ALERT_REQUIRED_KINDS = ["relay_ejected", "relay_violation", "vm_reclaimed", "vm_decided"] as const satisfies readonly (typeof RELAY_ALERT_KINDS)[number][];
+export const RELAY_ALERT_REQUIRED_KINDS = ["relay_ejected", "relay_violation", "vm_billing_past_due", "vm_reclaimed", "vm_decided"] as const satisfies readonly (typeof RELAY_ALERT_KINDS)[number][];
 export type RelayAlertKind = (typeof RELAY_ALERT_KINDS)[number];
 /**
  * Gray's operators reclaimed a relay's VM (`vm_reclaimed`; POST /api/v1/ops/lane-stacks/{relay}/vm/reclaim): what the
