@@ -50,6 +50,7 @@ import { dirname, join, resolve } from "node:path";
 import { bytesToLowerHex, ed25519PublicKey, ed25519Sign } from "@gray/attest";
 import { stackInstanceAnswerSchema } from "@gray/control/stack-provision";
 import { get, isObject, parseStrict, parseStrictBytes, toJsonString, type Json, type JsonObject } from "@gray/json";
+import { readCappedText } from "@gray/json/read-capped";
 import { isRelayDesignationClaim, type StackBootFacts } from "@gray/lane-verify";
 import { sealBootBoxDelivery, sealCredentialBundle, type CredentialBundle } from "@gray/relay-connector";
 import { BOOT_BOX_DELIVERY_PATH, imageRegistry, type BootBox } from "@gray/relay-connector/boot-box";
@@ -123,6 +124,8 @@ export interface DeliverOptions {
   readonly action: DeliverAction;
   /** `stack rollout <image>`'s image. */
   readonly image?: string | null;
+  /** Integration standard version (`<major>.<minor>`) declared for this rollout (overrides `stack.image_standard`). */
+  readonly imageStandard?: string | null;
   readonly wait: boolean;
   readonly timeoutMs?: number;
   /** Tests replace the attestation, the pinned fetch, Gray's POST, the chain read, the source and the password file. */
@@ -424,9 +427,12 @@ export function leavesThrough(egress: { readonly type: string; readonly host: st
   return egress === undefined ? "leaves from the VM's own address (the source names no proxy for it)" : `leaves through its proxy ${proxyText(egress)}`;
 }
 
+/** The most of a VM intake answer read; a longer body fails the post as a network error does. */
+const VM_ANSWER_MAX_BYTES = 1024 * 1024;
+
 const defaultPost: StackPost = async (url, body) => {
   const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "user-agent": "gray-assistant" }, body, redirect: "error", signal: AbortSignal.timeout(20_000) });
-  return { status: response.status, text: await response.text() };
+  return { status: response.status, text: await readCappedText(response, VM_ANSWER_MAX_BYTES) };
 };
 
 /** The sentence for each code the VM's intake answers a delivery with. */
@@ -851,6 +857,7 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
   // P7 (13.4): this kit's version (Gray gates a rollout without downtime on it: no gray-relay reports it in phase 2) and
   // the boot box version the receipt named (Gray waits for its copy before a second VM starts), both under the signature.
   const bootVersion = receipt === null ? undefined : wholeNumber(get(receipt, "boot_version"));
+  const imageStandard = options.imageStandard ?? stack.imageStandard ?? undefined;
   const request = stackRestartRequest({
     relayId,
     appId: vm.instance.appId,
@@ -860,6 +867,7 @@ async function deliverOnce(options: DeliverOptions): Promise<DeliverOutcome> {
     random: io.random,
     kit: RELAY_KIT_VERSION,
     ...(bootVersion === undefined ? {} : { bootVersion }),
+    ...(imageStandard === undefined ? {} : { imageStandard }),
   });
   const url = `${stack.reportOrigin}${STACK_RESTART_REQUEST_PATH}`;
   // Built before it is sent: a request this tool cannot build never left, whatever the network does.

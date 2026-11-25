@@ -2,7 +2,7 @@ import { parsePlain } from "@gray/json";
 import semver from "semver";
 import { z } from "zod";
 import { LANE_RELAY_ID_PATTERN } from "./endpoint.ts";
-import { PEER_TUNNEL_PATH, STACK_KMS_CA_PUBKEY_PATTERN } from "./stack.ts";
+import { PEER_TUNNEL_PATH, STACK_IMAGE_STANDARD_PATTERN, STACK_KMS_CA_PUBKEY_PATTERN } from "./stack.ts";
 import {
   BOOT_EVENTS,
   BOOT_FAILURE_CLASSES,
@@ -158,6 +158,16 @@ export const releaseProfileInputSchema = z
     phase: z.union([z.literal(1), z.literal(2)]).optional(),
     /** Phase 2: the OS image hash the VMs measure (Phala's `os_image_hash` for `image_os`), 64 lower hex, no 0x. */
     os_image_hash: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+    /** Optional minimum relay integration standard (`<major>.<minor>`) a relay's container image must meet before a release move proceeds. */
+    min_standard: z.string().regex(STACK_IMAGE_STANDARD_PATTERN).nullable().optional(),
+    /** Optional minimum gray-assistant semver a relay must run before a release move proceeds. */
+    min_kit: z
+      .string()
+      .min(5)
+      .max(80)
+      .refine((v) => !/\s/.test(v) && semver.valid(v) !== null, { message: "a kit version is strict semver" })
+      .nullable()
+      .optional(),
     reason: z.string(),
   })
   .strict();
@@ -830,6 +840,11 @@ export const STEP_FAILURE_WORDS: Readonly<Record<string, FailureWords>> = {
   // docs/design/relay-outbound-only.md decision R10: a VM of this release has no public address, and only a gray-assistant
   // with the tunnel transport reaches it; an older one could not renew the VM's lease and its accounts would stop.
   kit_outdated: kitOutdatedWords(null, null),
+  image_standard_outdated: {
+    title: "Your container image does not meet this Gray release's integration standard.",
+    fix: "Update your container image to meet the required integration standard, verify it with the conformance harness, and roll it out with gray-assistant stack rollout --standard <version> before Gray moves your VM.",
+    side: "relay",
+  },
   // LANE_STACK_PHASE2_MIN_KIT: the kit the relay paired with (or reports) cannot finish a phase-2 delivery.
   phase2_kit_outdated: {
     title: "Your gray-assistant is too old for phase 2.",
@@ -881,15 +896,30 @@ export const STEP_FAILURE_WORDS: Readonly<Record<string, FailureWords>> = {
   },
   release_vetoed: { title: "Your contract vetoed (or removed) the Gray release this move needed.", fix: "Your VM keeps its release and serves. Gray proposes the next release.", side: "relay" },
   release_not_proposed: { title: "The Gray release this move needs is not proposed on your contract yet.", fix: "Your VM keeps its release and serves. Gray proposes it, and tries again.", side: "gray" },
+  // The KMS reads the relay's contract at Base's finalized block, about 20 minutes behind the latest (production,
+  // 2026-11-25): a release in effect at the latest block is not yet in effect there, and a contract a first Deploy has
+  // just made is not there at all (staging, 2026-11-24). A release move and a Deploy both wait for it before anything is
+  // made, and end with this past PROVISION_KMS_WAIT_MS (45 minutes).
+  kms_not_ready: {
+    title: "The key service did not see your contract allow the new VM in time, so no VM was started.",
+    fix: "The key service reads your contract at Base's finalized block, about 20 minutes behind the latest. Nothing was created on the cloud. A VM that was serving keeps serving, and Gray tries a release move again; after a Deploy, Deploy again. Gray's operators have been told.",
+    side: "gray",
+  },
+  kms_refused: {
+    title: "The key service refused the new VM its keys.",
+    fix: "It reads your contract at Base's finalized block, about 20 minutes behind the latest, and did not find the release in effect there, or found the contract paused. A VM that was serving keeps serving. If you paused your contract, unpause it; otherwise Gray's operators have been told. Retry in about 20 minutes.",
+    side: "gray",
+  },
   internal: { title: "Something failed on Gray's side.", fix: "Gray's operators have been told. Retry later.", side: "gray" },
-  // A phase-2 relay's first Deploy boots the release it paired on, even superseded, unless Phala closed its KMS node to
-  // new VMs (2026-11-12; RELAY_CHAIN_KMS_CLOSED_IDS): then a newer release effective on the relay's contract.
-  // `<compose hash>` is the release Gray proposed there, which the panel names.
+  // A phase-2 relay's first Deploy boots the release it paired on, even superseded, unless Phala closed its KMS node
+  // (2026-11-12; RELAY_CHAIN_KMS_CLOSED_IDS) or its OS image (2026-11-24; RELAY_CHAIN_OS_IMAGES_CLOSED) to new VMs: then a
+  // newer release effective on the relay's contract. `<compose hash>` is what Gray proposed there and the guardian
+  // approves, which the panel names: the release's compose hash, or its OS image hash when only that is not in effect.
   release_retired_proposed: {
     title: "The Gray release this deployment paired on can no longer be deployed.",
     fix: "It can't start new VMs any more. Gray proposed a newer release on your contract: approve it with your guardian, then Deploy.",
     agent:
-      "Phala retired the key service node it runs on for new VMs. Gray proposed release <compose hash> on your contract: approve it with your guardian, in gray-assistant's kit directory " +
+      "Phala no longer starts new VMs on the key service node or the OS image it runs on. Gray proposed release <compose hash> on your contract: approve it with your guardian, in gray-assistant's kit directory " +
       `(${kitGuardianRun("releases approve <compose hash>")}), or wait for your release delay to pass. Then Deploy: Gray reads your contract when you do.`,
     side: "relay",
   },
@@ -899,7 +929,7 @@ export const STEP_FAILURE_WORDS: Readonly<Record<string, FailureWords>> = {
     title: "The Gray release this deployment paired on can no longer be deployed.",
     fix: "It can't start new VMs any more. Pair gray-assistant again: the new pairing takes Gray's current release. Nothing is lost: the deployment has no VM yet, and its settings stay.",
     agent:
-      "Phala retired the key service node it runs on for new VMs, and your contract is not on chain yet (no Deploy has made it), so no newer release can be approved there. " +
+      "Phala no longer starts new VMs on the key service node or the OS image it runs on, and your contract is not on chain yet (no Deploy has made it), so no newer release can be approved there. " +
       "Pair gray-assistant again: the new pairing takes Gray's current release, and nothing is lost (the deployment has no VM and nothing on chain; its settings stay). " +
       "Apply with relay_stack.registry_user: the answer's pairing.command pairs the kit directory you have (relay-workspace, with its relay-key.json) again. Then apply again: it queues Deploy.",
     side: "relay",
@@ -907,7 +937,14 @@ export const STEP_FAILURE_WORDS: Readonly<Record<string, FailureWords>> = {
   release_retired_unproposed: {
     title: "The Gray release this deployment paired on can no longer be deployed.",
     fix: "It can't start new VMs any more, and Gray has not proposed a newer release on your contract yet. Gray's operators have been told. There is nothing to do on your side until Gray proposes one.",
-    agent: "Phala retired the key service node it runs on for new VMs, and Gray has not proposed a newer release on your contract yet. Gray's operators have been told: Gray proposes one, you approve it with your guardian (or wait for your release delay to pass), then Deploy.",
+    agent: "Phala no longer starts new VMs on the key service node or the OS image it runs on, and Gray has not proposed a newer release on your contract yet. Gray's operators have been told: Gray proposes one, you approve it with your guardian (or wait for your release delay to pass), then Deploy.",
+    side: "gray",
+  },
+  // The relay's own release profile names an OS image Phala creates no new VM on (dstack-0.6.1 from 2026-11-24;
+  // RELAY_CHAIN_OS_IMAGES_CLOSED): Gray chose that profile for it, so the fix is Gray's.
+  os_image_closed: {
+    title: "The Gray release chosen for this deployment runs on an OS image the cloud no longer starts new VMs on.",
+    fix: "Nothing was started. Gray's operators have been told: Gray gives this deployment a release on a current image. There is nothing to do on your side.",
     side: "gray",
   },
   // The provisioner's own look at the contract before it boots a release other than the pairing's.
@@ -1019,6 +1056,8 @@ export const RELAY_ALERT_WORDS: Readonly<Record<RelayAlertKind, { readonly title
   vm_reclaimed: { title: "Gray reclaimed your VM", resolved: "" },
   // Prepaid VM renewal failed during the lead window or grace period; resolved once renewal succeeds or the VM is deleted.
   vm_billing_past_due: { title: "Your prepaid VM renewal payment failed", resolved: "Your prepaid VM renewal payment succeeded" },
+  // Active approved model offers that do not meet Gray's current offer submission policy; auto-resolves once updated.
+  offer_action_required: { title: "Active model prices need an update", resolved: "Your active model prices meet Gray's current pricing rules" },
   // Told once per decision of Gray's operators on the VM the relay asked for (the message's own title says which:
   // VM_APPROVED_TITLE, VM_REFUSED_TITLE); never resolved, `resolved` is not sent.
   vm_decided: { title: "Gray approved or refused your VM", resolved: "" },
@@ -1169,6 +1208,35 @@ export function kitAtLeast(version: string | null, minimum: string): boolean {
   if (want === null) throw new Error(`${minimum} is not a kit version`);
   const have = version === null ? null : semver.valid(version);
   return have !== null && semver.gte(have, want);
+}
+
+/**
+ * Whether a relay container image's integration standard (`<major>.<minor>`) is at or above `minimum`.
+ * Compares major and minor numerically (`4.10` > `4.9`). Null, undefined or malformed values are below every minimum.
+ */
+export function standardAtLeast(version: string | null | undefined, minimum: string): boolean {
+  const parse = (text: string): [number, number] | null => {
+    const match = /^([0-9]{1,4})\.([0-9]{1,4})$/.exec(text);
+    return match === null ? null : [Number(match[1]), Number(match[2])];
+  };
+  const want = parse(minimum);
+  if (want === null) throw new Error(`${minimum} is not a standard version`);
+  if (version === null || version === undefined) return false;
+  const have = parse(version);
+  if (have === null) return false;
+  return have[0] !== want[0] ? have[0] > want[0] : have[1] >= want[1];
+}
+
+/** Highest valid semver among `versions`, or null when none is valid semver. */
+export function highestKitVersion(...versions: readonly (string | null | undefined)[]): string | null {
+  let best: string | null = null;
+  for (const raw of versions) {
+    if (typeof raw !== "string") continue;
+    const parsed = semver.valid(raw);
+    if (parsed === null) continue;
+    if (best === null || semver.gt(parsed, semver.valid(best)!)) best = raw;
+  }
+  return best;
 }
 
 /** What the provisioner's first step reads for one operation (the ProvisionerStore `plan`). */

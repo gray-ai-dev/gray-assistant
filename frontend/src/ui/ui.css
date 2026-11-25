@@ -225,14 +225,15 @@
 .ui-tabs { --ui-tabs-fade: 40px; display: flex; align-items: stretch; gap: var(--space-1); border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: none;
   mask-image: linear-gradient(to right, transparent 0, #000 min(var(--ui-tabs-fade), var(--scroll-area-overflow-x-start, 0px)), #000 calc(100% - min(var(--ui-tabs-fade), var(--scroll-area-overflow-x-end, 0px))), transparent 100%); }
 .ui-tabs__item { display: inline-flex; align-items: center; gap: var(--space-2); flex: 0 0 auto; min-height: 43px; margin-bottom: -1px; padding: 0 var(--space-4); border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); font: inherit; font-size: var(--text-control); font-weight: var(--weight-medium); line-height: var(--leading-ui); text-decoration: none; white-space: nowrap; cursor: pointer; }
-@media (hover: hover) and (pointer: fine) { .ui-tabs__item:hover { color: var(--text); text-decoration: none; } }
+@media (hover: hover) and (pointer: fine) { .ui-tabs__item:where(:not(:disabled, [data-disabled])):hover { color: var(--text); text-decoration: none; } }
 .ui-tabs__item:is([aria-current="page"], [data-pressed]) { border-bottom-color: var(--accent); color: var(--text); }
 .ui-tabs__item:is(:disabled, [data-disabled]) { cursor: not-allowed; opacity: .55; }
 .ui-tabs__item:focus-visible { outline: 2px solid var(--focus-color); outline-offset: -3px; }
 .ui-tabs__count { padding: 0 6px; border-radius: 4px; background: var(--muted-surface); color: var(--muted); font-size: var(--text-micro); }
 
 /* OptionCards: the options side by side, each a card its title's link covers (the link's ::after, which also draws the
-   keyboard focus around the whole card). At rest a hairline card and an empty ring; under the pointer a darker edge
+   keyboard focus around the whole card). In select mode the title is a Base UI radio instead of a link, drawn and
+   stretched the same way. At rest a hairline card and an empty ring; under the pointer a darker edge
    and ring; the chosen one a 2px ink edge (an inset shadow over the border, so nothing moves) and a filled check. Every
    card is drawn alike otherwise: a quiet icon tile, dotted facts. A card with an icon keeps it in a rail: the facts'
    marks sit under it and every line of text starts on the title's edge. Footers line up at the cards' feet. */
@@ -256,6 +257,8 @@
 .ui-option-card__link:hover { text-decoration: none; }
 .ui-option-card__link:focus-visible { outline: none; }
 .ui-option-card__link:focus-visible::after { outline: 2px solid var(--focus-color); outline-offset: 2px; }
+.ui-option-card__radio { cursor: pointer; }
+.ui-option-card__radio[data-disabled] { cursor: not-allowed; }
 .ui-option-card__promise { margin: 0; color: var(--text); font-size: var(--text-body); line-height: var(--leading-body); }
 .ui-option-card__facts { display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: 0; list-style: none; color: var(--muted); font-size: var(--text-support); line-height: var(--leading-body); }
 .ui-option-card__facts > li { display: flex; gap: var(--ui-option-gap); min-width: 0; }
@@ -464,6 +467,9 @@
 @media (prefers-reduced-motion: reduce) { .ui-progress__bar { transition: none; } .ui-progress[data-indeterminate] .ui-progress__bar { translate: calc(65% / .35 / 2) 0; animation: ui-progress-pulse 2s ease-in-out infinite; } }
 
 /* ---------- Code ---------- */
+/* QrCode: dark modules on white in both themes, so a camera finds the quiet zone in dark mode too. */
+.ui-qr { display: inline-flex; padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-card); background: #ffffff; line-height: 0; }
+.ui-qr svg { display: block; max-width: 100%; height: auto; }
 .ui-code { position: relative; min-width: 0; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-card); background: var(--surface); }
 .ui-code__header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-3); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--border); }
 .ui-code__title { display: flex; flex-direction: column; gap: 2px; min-width: 0; }

@@ -24,6 +24,7 @@
  */
 import { stackInstanceAnswerSchema, type StackInstanceAnswer } from "@gray/control/stack-provision";
 import { get, isObject, parseStrict, toJsonString, type JsonObject } from "@gray/json";
+import { readTextPrefix } from "@gray/json/read-capped";
 import { AGENT_STATUS_PATH, agentStatusChangeKey, signAgentStatus } from "../../daemon/agent-status.ts";
 import type { DaemonLog } from "../../daemon/types.ts";
 
@@ -98,8 +99,9 @@ const defaultPost: AgentStatusPost = async (url, body) => {
     redirect: "error",
     signal: AbortSignal.timeout(20_000),
   });
-  const text = await response.text().catch(() => "");
-  return { status: response.status, body: text.slice(0, 128 * 1024) };
+  // Only the answer's start is ever read (`recorded`); the rest is cancelled unread.
+  const text = await readTextPrefix(response, 128 * 1024).catch(() => "");
+  return { status: response.status, body: text };
 };
 
 const defaultTimer = (run: () => void, ms: number): (() => void) => {

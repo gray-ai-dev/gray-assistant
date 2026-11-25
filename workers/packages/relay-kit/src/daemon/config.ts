@@ -260,6 +260,8 @@ export interface StackConfig {
   readonly currentImage: string;
   /** S11a: when set, the release entry's `stack.pre_launch_sha256` must be exactly this. */
   readonly preLaunchSha256: string | null;
+  /** Integration standard version (`<major>.<minor>`) the configured relay container image meets; null when unset. */
+  readonly imageStandard: string | null;
   readonly registry: {
     /** `x-gray-relay.registry`: the host[:port] every relay image lives under. */
     readonly host: string;
@@ -462,6 +464,7 @@ const stackSchema = z
     relay_images: z.array(pinnedImageSchema).min(1).max(16),
     current_image: pinnedImageSchema.optional(),
     pre_launch_sha256: sha256HexSchema.optional(),
+    image_standard: z.string().regex(/^[0-9]{1,4}\.[0-9]{1,4}$/, "major.minor (for example 4.3)").optional(),
     registry: z
       .object({
         host: registryHostSchema,
@@ -885,6 +888,7 @@ function stackConfigOf(stack: z.infer<typeof stackSchema>, instances: ReadonlyMa
     relayImages: [...stack.relay_images],
     currentImage,
     preLaunchSha256: stack.pre_launch_sha256 ?? null,
+    imageStandard: stack.image_standard ?? null,
     registry: {
       host: stack.registry.host,
       username: stack.registry.username,

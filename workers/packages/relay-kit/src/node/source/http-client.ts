@@ -6,6 +6,7 @@
  * a body can echo a token, and a URL can carry one in a path.
  */
 import { parsePlain } from "@gray/json";
+import { BodyTooLargeError, readCappedBytes } from "@gray/json/read-capped";
 import { utf8Text } from "@gray/relay-connector";
 import { RelayKitError } from "../../errors.ts";
 
@@ -51,42 +52,14 @@ function mergeSignal(signal: AbortSignal | undefined, timeoutMs: number): Merged
   };
 }
 
+/** The body within `maxBytes` (@gray/json/read-capped cancels the stream past it); an oversize body is the source's fault. */
 async function readCapped(response: Response, maxBytes: number, label: string): Promise<Uint8Array> {
-  const body = response.body;
-  if (body === null) {
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength > maxBytes) throw new RelayKitError("source_bad_response", label);
-    return bytes;
-  }
-  const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
   try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value === undefined) continue;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        try {
-          await reader.cancel();
-        } catch {
-          // The cap is the refusal; a cancelled stream's own error changes nothing.
-        }
-        throw new RelayKitError("source_bad_response", label);
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
+    return await readCappedBytes(response, maxBytes);
+  } catch (error) {
+    if (error instanceof BodyTooLargeError) throw new RelayKitError("source_bad_response", label);
+    throw error;
   }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return bytes;
 }
 
 /** GET (or POST) a URL and return its status and UTF-8 body; network failures and oversize bodies throw. */

@@ -10,6 +10,12 @@
  * `guardian()` is the kit's guardian; `delay()` is the relay's choice the config keeps (`chain.release_delay_seconds`;
  * 7 days for a kit paired before the choice, the delay of a contract upgraded from implementation 1); Base's `DstackKms` has the app registered; the given compose
  * hash and OS image hash are `effective`; `paused()` is false.
+ *
+ * The compose hash and OS image hash must be effective at the finalized block too: Phala's DstackKms answers a booting VM
+ * from Base's finalized block, about 20 minutes behind the latest (on 2026-11-25 a VM booted four minutes after its OS
+ * image took effect at the latest block, and the KMS, still at a block from 20 minutes before, refused it its keys). That
+ * block is the lower of the two endpoints' finalized blocks (`eth_getBlockByNumber("finalized")`), and both must answer
+ * the same there.
  */
 import { getAddress, keccak256, parseAbi, type Address, type Hex, type PublicClient } from "viem";
 import { isRelayKitError, RelayKitError } from "../errors.ts";
@@ -152,6 +158,9 @@ export interface ChainReading {
   readonly registered: boolean;
   readonly composeEffective: boolean | null;
   readonly osImageEffective: boolean | null;
+  /** The same two at the finalized block (`ChainCheckResult.finalizedBlock`), the one Phala's KMS reads; null: not read. */
+  readonly composeEffectiveFinalized: boolean | null;
+  readonly osImageEffectiveFinalized: boolean | null;
 }
 
 export type ChainCheckName = "code" | "implementation" | "proposer" | "guardian" | "delay" | "registered" | "compose_effective" | "os_image_effective" | "not_paused";
@@ -166,6 +175,8 @@ export type ChainCheckResult =
   | {
       readonly ok: true;
       readonly block: bigint;
+      /** The finalized block the effective checks were read at as well; null when there was none to check. */
+      readonly finalizedBlock?: bigint | null;
       readonly endpoints: readonly string[];
       readonly reading: ChainReading;
       readonly checks: readonly ChainCheck[];
@@ -208,28 +219,48 @@ export async function endpointChainId(client: PublicClient, url: string): Promis
   return onEndpoint(url, "eth_chainId", () => client.getChainId());
 }
 
-async function readAt(client: PublicClient, url: string, input: ChainCheckInput, block: bigint): Promise<ChainReading> {
+/**
+ * The lower of the endpoints' finalized blocks, the KMS's view of the chain. An endpoint that names none cannot say what
+ * the KMS reads, and is unreachable for these checks.
+ */
+async function lowestFinalized(clients: readonly PublicClient[], urls: readonly string[]): Promise<bigint> {
+  const finals = await Promise.all(
+    clients.map((client, index) =>
+      onEndpoint(urls[index] as string, "the finalized block", async () => {
+        const block = (await client.request({ method: "eth_getBlockByNumber", params: ["finalized", false] } as never)) as { number?: unknown } | null;
+        if (block === null || typeof block.number !== "string" || !/^0x[0-9a-f]{1,16}$/i.test(block.number)) throw new Error("no finalized block");
+        return BigInt(block.number);
+      }),
+    ),
+  );
+  return finals.reduce((a, b) => (b < a ? b : a));
+}
+
+async function readAt(client: PublicClient, url: string, input: ChainCheckInput, block: bigint, finalized: bigint | null): Promise<ChainReading> {
   return onEndpoint(url, "your contract", async () => {
     const code = await client.getCode({ address: input.contract, blockNumber: block });
     const codeHash = code === undefined || code === "0x" ? null : keccak256(code);
     const registered = await client.readContract({ address: input.dstackKms, abi: DSTACK_KMS_ABI, functionName: "registeredApps", args: [input.contract], blockNumber: block });
-    if (codeHash === null) return { codeHash, implementation: null, implementationCodeHash: null, proposer: null, guardian: null, delaySeconds: null, paused: null, registered, composeEffective: null, osImageEffective: null };
+    if (codeHash === null) return { codeHash, implementation: null, implementationCodeHash: null, proposer: null, guardian: null, delaySeconds: null, paused: null, registered, composeEffective: null, osImageEffective: null, composeEffectiveFinalized: null, osImageEffectiveFinalized: null };
     // The implementation from the proxy's slot, read as storage: not from the implementation's own answer.
     const slot = await client.getStorageAt({ address: input.contract, slot: ERC1967_IMPLEMENTATION_SLOT, blockNumber: block });
     const implementation = slot === undefined ? null : implementationFromSlot(slot);
     const implementationCode = implementation === null ? undefined : await client.getCode({ address: implementation, blockNumber: block });
     const implementationCodeHash = implementationCode === undefined || implementationCode === "0x" ? null : keccak256(implementationCode);
-    const read = <T>(functionName: string, args: readonly unknown[] = []) =>
-      client.readContract({ address: input.contract, abi: APP_AUTH_ABI, functionName, args, blockNumber: block } as Parameters<PublicClient["readContract"]>[0]) as Promise<T>;
-    const [proposer, guardian, delaySeconds, paused, composeEffective, osImageEffective] = await Promise.all([
+    const read = <T>(functionName: string, args: readonly unknown[] = [], at: bigint = block) =>
+      client.readContract({ address: input.contract, abi: APP_AUTH_ABI, functionName, args, blockNumber: at } as Parameters<PublicClient["readContract"]>[0]) as Promise<T>;
+    const effectiveAt = (hash: Hex | null, kind: number, at: bigint | null) => (hash === null || at === null ? Promise.resolve(null) : read<boolean>("effective", [kind, hash], at));
+    const [proposer, guardian, delaySeconds, paused, composeEffective, osImageEffective, composeEffectiveFinalized, osImageEffectiveFinalized] = await Promise.all([
       read<Address>("proposer"),
       read<Address>("guardian"),
       read<bigint>("delay"),
       read<boolean>("paused"),
-      input.composeHash === null ? Promise.resolve(null) : read<boolean>("effective", [RELEASE_KIND_NUMBER.compose, input.composeHash]),
-      input.osImageHash === null ? Promise.resolve(null) : read<boolean>("effective", [RELEASE_KIND_NUMBER.os_image, input.osImageHash]),
+      effectiveAt(input.composeHash, RELEASE_KIND_NUMBER.compose, block),
+      effectiveAt(input.osImageHash, RELEASE_KIND_NUMBER.os_image, block),
+      effectiveAt(input.composeHash, RELEASE_KIND_NUMBER.compose, finalized),
+      effectiveAt(input.osImageHash, RELEASE_KIND_NUMBER.os_image, finalized),
     ]);
-    return { codeHash, implementation, implementationCodeHash, proposer: getAddress(proposer), guardian: getAddress(guardian), delaySeconds, paused, registered, composeEffective, osImageEffective };
+    return { codeHash, implementation, implementationCodeHash, proposer: getAddress(proposer), guardian: getAddress(guardian), delaySeconds, paused, registered, composeEffective, osImageEffective, composeEffectiveFinalized, osImageEffectiveFinalized };
   });
 }
 
@@ -240,7 +271,17 @@ function sameReading(a: ChainReading, b: ChainReading): string | null {
   return null;
 }
 
-function judge(reading: ChainReading, input: ChainCheckInput, expectedCodeHash: Hex): ChainCheck[] {
+/**
+ * A release's effective check: effective at the latest block and at the finalized one. Effective at the latest alone is
+ * a release the KMS does not give keys for yet: the VM would be refused them.
+ */
+function effectiveCheck(name: "compose_effective" | "os_image_effective", what: string, latest: boolean | null, finalized: boolean | null, finalizedBlock: bigint | null): ChainCheck {
+  if (latest !== true) return { name, ok: false, detail: `${what} is not effective` };
+  if (finalized === true) return { name, ok: true, detail: `${what} is effective, also at the finalized block ${finalizedBlock} Phala's KMS reads` };
+  return { name, ok: false, detail: `${what} is effective at the latest block but not yet at the finalized block ${finalizedBlock ?? "(unread)"}, which Phala's KMS reads (Base finalizes about 20 minutes behind): the KMS would refuse the VM its keys; run this again later` };
+}
+
+function judge(reading: ChainReading, input: ChainCheckInput, expectedCodeHash: Hex, finalizedBlock: bigint | null): ChainCheck[] {
   const checks: ChainCheck[] = [];
   checks.push(
     reading.codeHash === null
@@ -277,20 +318,8 @@ function judge(reading: ChainReading, input: ChainCheckInput, expectedCodeHash: 
       ? { name: "registered", ok: true, detail: `DstackKms ${input.dstackKms} has the app registered` }
       : { name: "registered", ok: false, detail: `DstackKms ${input.dstackKms} has not registered ${input.contract}` },
   );
-  if (input.composeHash !== null) {
-    checks.push(
-      reading.composeEffective === true
-        ? { name: "compose_effective", ok: true, detail: `compose ${input.composeHash} is effective` }
-        : { name: "compose_effective", ok: false, detail: `compose ${input.composeHash} is not effective` },
-    );
-  }
-  if (input.osImageHash !== null) {
-    checks.push(
-      reading.osImageEffective === true
-        ? { name: "os_image_effective", ok: true, detail: `OS image ${input.osImageHash} is effective` }
-        : { name: "os_image_effective", ok: false, detail: `OS image ${input.osImageHash} is not effective` },
-    );
-  }
+  if (input.composeHash !== null) checks.push(effectiveCheck("compose_effective", `compose ${input.composeHash}`, reading.composeEffective, reading.composeEffectiveFinalized, finalizedBlock));
+  if (input.osImageHash !== null) checks.push(effectiveCheck("os_image_effective", `OS image ${input.osImageHash}`, reading.osImageEffective, reading.osImageEffectiveFinalized, finalizedBlock));
   checks.push(reading.paused === false ? { name: "not_paused", ok: true, detail: "paused() is false" } : { name: "not_paused", ok: false, detail: reading.paused === true ? "the contract is paused" : "paused() is unreadable" });
   return checks;
 }
@@ -306,6 +335,7 @@ export async function checkRelayContract(rpcUrls: readonly string[], input: Chai
   const expectedCodeHash = appAuthProxyCodeHash();
   const unreachable = (detail: string, block: bigint | null = null): ChainCheckResult => ({ ok: false, reason: "unreachable", block, endpoints, reading: null, checks: [], detail });
   let block: bigint;
+  let finalized: bigint | null = null;
   try {
     const heads = await Promise.all(
       clients.map(async (client, index) => {
@@ -316,6 +346,8 @@ export async function checkRelayContract(rpcUrls: readonly string[], input: Chai
       }),
     );
     block = await freshCommonBlock(clients, rpcUrls, heads, options.nowMs ?? Date.now(), options.sleep);
+    // The KMS's view, for the effective checks: none to check, none read.
+    if (input.composeHash !== null || input.osImageHash !== null) finalized = await lowestFinalized(clients, rpcUrls);
   } catch (error) {
     const kit = kitErrorIn(error);
     if (kit?.code === "chain_stale") return { ok: false, reason: "stale", block: null, endpoints, reading: null, checks: [], detail: kit.detail ?? "the chain is not read as it is now" };
@@ -324,7 +356,7 @@ export async function checkRelayContract(rpcUrls: readonly string[], input: Chai
   }
   let readings: ChainReading[];
   try {
-    readings = await Promise.all(clients.map((client, index) => readAt(client, rpcUrls[index] as string, input, block)));
+    readings = await Promise.all(clients.map((client, index) => readAt(client, rpcUrls[index] as string, input, block, finalized)));
   } catch (error) {
     const kit = kitErrorIn(error);
     return unreachable(kit?.detail ?? "an RPC endpoint could not be read", block);
@@ -334,10 +366,10 @@ export async function checkRelayContract(rpcUrls: readonly string[], input: Chai
   if (differs !== null) {
     return { ok: false, reason: "disagree", block, endpoints, reading: null, checks: [], detail: `${endpoints[0]} and ${endpoints[1]} answer ${differs} differently at block ${block}` };
   }
-  const checks = judge(first, input, expectedCodeHash);
+  const checks = judge(first, input, expectedCodeHash, finalized);
   const failed = checks.filter((check) => !check.ok);
   if (failed.length > 0) return { ok: false, reason: "refused", block, endpoints, reading: first, checks, detail: failed.map((check) => check.detail).join("; ") };
-  return { ok: true, block, endpoints, reading: first, checks };
+  return { ok: true, block, finalizedBlock: finalized, endpoints, reading: first, checks };
 }
 
 /** The result as JSON (integers as decimal strings). */
@@ -347,6 +379,7 @@ export function chainCheckJson(result: ChainCheckResult): Record<string, unknown
     ok: result.ok,
     ...(result.ok ? {} : { reason: result.reason, detail: result.detail }),
     block: result.block === null ? null : result.block.toString(),
+    ...(result.ok && result.finalizedBlock !== null && result.finalizedBlock !== undefined ? { finalized_block: result.finalizedBlock.toString() } : {}),
     endpoints: [...result.endpoints],
     reading:
       reading === null
@@ -362,6 +395,8 @@ export function chainCheckJson(result: ChainCheckResult): Record<string, unknown
             registered: reading.registered,
             compose_effective: reading.composeEffective,
             os_image_effective: reading.osImageEffective,
+            compose_effective_finalized: reading.composeEffectiveFinalized,
+            os_image_effective_finalized: reading.osImageEffectiveFinalized,
           },
     checks: result.checks.map((check) => ({ name: check.name, ok: check.ok, detail: check.detail })),
   };

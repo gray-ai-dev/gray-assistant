@@ -103,7 +103,7 @@ export const RETIRED_PROVISION_STEP_WORDS = {
  * - `busy`: an operation is queued or running;
  * - `not_outbound`, `key_per_app`, `os_image`, `kms`: the release is not one an instance of this app can take (a public
  *   name, one bridge key id per app, another OS image, another KMS); a Delete and Deploy boots it;
- * - `kit_outdated`, `relay_incomplete`: as for a Deploy;
+ * - `kit_outdated`, `image_standard_outdated`, `relay_incomplete`: the relay's kit, container image standard or settings do not yet meet the release's requirements;
  * - `retry_wait`: a move to it failed; Gray tries again at `retry_ms`.
  */
 export const RELEASE_MOVE_BLOCKS = [
@@ -116,6 +116,7 @@ export const RELEASE_MOVE_BLOCKS = [
   "os_image",
   "kms",
   "kit_outdated",
+  "image_standard_outdated",
   "relay_incomplete",
   "retry_wait",
 ] as const;
@@ -304,6 +305,7 @@ export const RELAY_ALERT_KINDS = [
   "relay_ejected",
   "relay_violation",
   "vm_billing_past_due",
+  "offer_action_required",
   "vm_reclaimed",
   "vm_decided",
   ...RELAY_RELEASE_NOTICE_KINDS,
@@ -312,6 +314,8 @@ export const RELAY_ALERT_KINDS = [
  * The kinds a relay cannot turn off (docs/design/relay-ejection.md): Gray took the relay out of routing for a
  * non-compliant change to a request or an answer, which only Gray's operators undo (`relay_ejected`), or, while the
  * console runs LANE_STACK_EJECTION=record, recorded such a change and left the relay routing (`relay_violation`); and
+ * active model offers Gray's routing passes over under today's rules, a long-context threshold above the model's
+ * (`offer_action_required`); and
  * Gray's operators deleted the relay's VM (`vm_reclaimed`, told once when the delete ends, with their reason); and
  * Gray's operators approved or refused the VM the relay asked for (`vm_decided`, told once per decision: the wait is
  * hours to a day, long after the agent's setup session ended, and nothing else tells the relay it can go on).
@@ -325,7 +329,7 @@ export const RELAY_ALERT_KINDS = [
 export const KIT_RUN = "docker compose run --rm --no-deps agent";
 export const kitRun = (command: string): string => `${KIT_RUN} ${command}`;
 
-export const RELAY_ALERT_REQUIRED_KINDS = ["relay_ejected", "relay_violation", "vm_billing_past_due", "vm_reclaimed", "vm_decided"] as const satisfies readonly (typeof RELAY_ALERT_KINDS)[number][];
+export const RELAY_ALERT_REQUIRED_KINDS = ["relay_ejected", "relay_violation", "vm_billing_past_due", "offer_action_required", "vm_reclaimed", "vm_decided"] as const satisfies readonly (typeof RELAY_ALERT_KINDS)[number][];
 export type RelayAlertKind = (typeof RELAY_ALERT_KINDS)[number];
 /**
  * Gray's operators reclaimed a relay's VM (`vm_reclaimed`; POST /api/v1/ops/lane-stacks/{relay}/vm/reclaim): what the

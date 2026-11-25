@@ -314,9 +314,10 @@ function usage(): string {
     "       gray-assistant releases list [--from-block <n>] [--config <config>]   (each release proposed on your contract)",
     "       gray-assistant releases check <hash> [--kind compose|os_image] [--config <config>]   (its state on the contract, read from both RPCs, and its compose or OS image texts from Gray's signed list, checked here)",
     "       gray-assistant releases approve|reject <hash> [--kind compose|os_image] [--deadline <unix>] [--nonce <n>]",
-    "                                          [--submit --rpc <url> | --print] [--config <config>]   (the guardian's signed approval or veto;",
+    "                                          [--submit --rpc <url> | --print] [--force] [--config <config>]   (the guardian's signed approval or veto;",
     "                                          Gray's relayer sends it by default, --submit from the guardian key, --print only signs;",
-    "                                          approve only a hash Gray's signed list or this kit's upgrades name, unless --unlisted)",
+    "                                          approve only a hash Gray's signed list or this kit's upgrades name, unless --unlisted;",
+    "                                          --force skips min_kit/min_standard prerequisite checks)",
     "       gray-assistant releases delay <hours> [--force] [--deadline <unix>] [--nonce <n>] [--submit --rpc <url> | --print] [--config <config>]",
     "                                          (your release delay, 0 to 168 h, signed by the guardian and sent as approve is; --force when",
     "                                          lengthening it would stop a release that is effective by time alone)",
@@ -324,7 +325,7 @@ function usage(): string {
     "                                          [--submit --rpc <url> | --print] [--config <config>]   (the recovery key replaces a key)",
     "       gray-assistant pause|unpause [--deadline <unix>] [--nonce <n>] [--submit --rpc <url> | --print] [--config <config>]",
     "                                    (the contract's off switch, signed by the guardian)",
-    "       gray-assistant stack rollout <image> [--config <config>] [--no-wait] [--timeout <seconds>]   (one of stack.relay_images)",
+    "       gray-assistant stack rollout <image> [--standard <major.minor>] [--conformance-report <file>] [--config <config>] [--no-wait] [--timeout <seconds>]   (one of stack.relay_images)",
     "       gray-assistant stack rollback|restart [--config <config>] [--no-wait] [--timeout <seconds>]",
     "                                    (rollout and rollback seal a new designation, then restart the VM;",
     "                                     restart waits for the new boot's own attestation)",
@@ -1909,7 +1910,14 @@ async function stackCommand(args: ParsedArgs, io: CliIo): Promise<number> {
   if (verb !== "rollout" && verb !== "rollback" && verb !== "restart" && verb !== "status") {
     throw new RelayKitError("usage", "stack needs the `rollout <image>`, `rollback`, `restart` or `status` subcommand");
   }
-  assertFlags(args, verb === "status" ? ["config"] : ["config", "no-wait", "timeout"]);
+  assertFlags(
+    args,
+    verb === "status"
+      ? ["config"]
+      : verb === "rollout"
+        ? ["config", "no-wait", "timeout", "standard", "conformance-report"]
+        : ["config", "no-wait", "timeout", "standard"],
+  );
   assertPositionals(args, verb === "rollout" ? 3 : 2);
   // A rollout or rollback is a new designation in a boot box, then the restart (P4b); a restart is accepted on the new
   // boot's own attestation.
@@ -1925,12 +1933,33 @@ async function stackCommand(args: ParsedArgs, io: CliIo): Promise<number> {
  */
 async function deliverCli(args: ParsedArgs, io: CliIo, action: "deliver" | "accounts" | "registry" | "rollout" | "rollback" | "restart", image: string | null): Promise<number> {
   // Every delivery waits now: for the restart, and for a VM that is not the serving one yet (`vault_not_serving`).
-  assertFlags(args, ["config", "no-wait", "timeout"]);
+  const allowed =
+    action === "rollout"
+      ? ["config", "no-wait", "timeout", "standard", "conformance-report"]
+      : action === "deliver" || action === "rollback" || action === "restart"
+        ? ["config", "no-wait", "timeout", "standard"]
+        : ["config", "no-wait", "timeout"];
+  assertFlags(args, allowed);
   assertPositionals(args, action === "deliver" ? 1 : action === "rollout" ? 3 : 2);
   const command = action === "deliver" ? "deliver" : action === "accounts" ? "accounts push" : action === "registry" ? "registry set" : `stack ${action}`;
   const chain = await requireChainContext(args, command, io);
   const timeout = args.flags.get("timeout");
   if (timeout !== undefined && !/^[1-9][0-9]{0,5}$/.test(timeout)) throw new RelayKitError("usage", "--timeout is whole seconds");
+  const standardFlag = args.flags.get("standard");
+  if (standardFlag !== undefined && !/^[0-9]{1,4}\.[0-9]{1,4}$/.test(standardFlag)) {
+    throw new RelayKitError("usage", "--standard is a major.minor integration standard version (for example 4.3)");
+  }
+  const reportFlag = args.flags.get("conformance-report");
+  let imageStandard: string | undefined = standardFlag;
+  if (reportFlag !== undefined) {
+    if (image === null) throw new RelayKitError("usage", "--conformance-report applies to stack rollout <image>");
+    const { readConformanceStandard } = await import("./stack.ts");
+    const reported = readConformanceStandard(reportFlag, image);
+    if (standardFlag !== undefined && standardFlag !== reported) {
+      throw new RelayKitError("usage", `--standard ${standardFlag} disagrees with conformance report standard ${reported}`);
+    }
+    imageStandard = reported;
+  }
   const { loadRelayConfigFile } = await import("./config-file.ts");
   const config = loadRelayConfigFile(configPathOf(args));
   const key = await buildKeyFromText(readPrivateFile(config.daemon.keyPath, "deployment key", MAX_KEY_BYTES));
@@ -1942,6 +1971,7 @@ async function deliverCli(args: ParsedArgs, io: CliIo, action: "deliver" | "acco
     io,
     action,
     image,
+    ...(imageStandard === undefined ? {} : { imageStandard }),
     wait: !args.flags.has("no-wait"),
     ...(timeout === undefined ? {} : { timeoutMs: Number(timeout) * 1000 }),
   });
@@ -2355,17 +2385,21 @@ async function chainReleasesCommand(args: ParsedArgs, io: CliIo, verb: "list" | 
     });
     return content === null || content.ok ? 0 : 1;
   }
-  assertFlags(args, ["config", "kind", "deadline", "nonce", "submit", "rpc", "print", "unlisted"]);
+  assertFlags(args, ["config", "kind", "deadline", "nonce", "submit", "rpc", "print", "unlisted", "force"]);
   assertPositionals(args, 3);
   if (verb === "reject" && args.flags.has("unlisted")) throw new RelayKitError("usage", "--unlisted goes with approve: a veto needs no list");
-  // An approval lets a release in before its delay: only one Gray published, unless the operator says they know.
+  if (verb === "reject" && args.flags.has("force")) throw new RelayKitError("usage", "--force goes with approve: a veto checks no prerequisite");
+  // An approval lets a release in before its delay: only one Gray published (and whose local prerequisites are met), unless overridden.
   if (verb === "approve" && !args.flags.has("unlisted")) {
     // The guardian key first, as every guardian command: a key that is not there is said before any network.
     chain.readContextGuardianKey(context);
     const { approvalRefusal } = await import("./release-content.ts");
-    const refusal = await approvalRefusal(context, args.positionals[2] as string, args.flags.get("kind"), io.now());
+    const refusal = await approvalRefusal(context, args.positionals[2] as string, args.flags.get("kind"), io.now(), undefined, { force: args.flags.has("force") });
     if (refusal !== null) {
-      io.stderr(`gray-assistant releases approve: ${refusal}; nothing was signed. Check it (gray-assistant releases check <hash>), and pass --unlisted only to approve it all the same\n`);
+      const hint = refusal.includes("this release requires ")
+        ? "Complete the prerequisite above first, or pass --force only to approve before upgrading"
+        : "Check it (gray-assistant releases check <hash>), and pass --unlisted only to approve it all the same";
+      io.stderr(`gray-assistant releases approve: ${refusal}; nothing was signed. ${hint}\n`);
       return 1;
     }
   }

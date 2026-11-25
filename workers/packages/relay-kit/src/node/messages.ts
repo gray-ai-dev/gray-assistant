@@ -29,12 +29,15 @@ import {
   type KitMessagesRequest,
 } from "@gray/control/stack-messages";
 import { parsePlain, toJsonString } from "@gray/json";
+import { readCappedText } from "@gray/json/read-capped";
 import type { LoadedRelayConfig } from "./config-file.ts";
 
 /** How long a command's closing note waits for Gray: it must never hold a finished command up. */
 export const MESSAGES_NOTE_TIMEOUT_MS = 5_000;
 /** How long `messages` and `doctor` wait. */
 export const MESSAGES_TIMEOUT_MS = 20_000;
+/** The most of Gray's answer read; a longer body fails the post as a network error does. */
+export const MESSAGES_ANSWER_MAX_BYTES = 4 * 1024 * 1024;
 
 /** One POST to Gray; resolves with the status, the body text and the answer's `Date` header (Gray's clock, for `doctor`). */
 export type MessagesPost = (url: string, body: string, timeoutMs: number) => Promise<{ readonly status: number; readonly text: string; readonly date: string | null }>;
@@ -47,7 +50,7 @@ export const defaultMessagesPost: MessagesPost = async (url, body, timeoutMs) =>
     redirect: "error",
     signal: AbortSignal.timeout(timeoutMs),
   });
-  return { status: response.status, text: await response.text(), date: response.headers.get("date") };
+  return { status: response.status, text: await readCappedText(response, MESSAGES_ANSWER_MAX_BYTES), date: response.headers.get("date") };
 };
 
 export interface MessagesRequestOptions {

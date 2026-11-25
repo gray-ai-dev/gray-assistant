@@ -4,12 +4,14 @@
  * `release-control.ts`) and the config's expectation, run through `../chain/release-compose.ts`.
  */
 import { bytesToLowerHex } from "@gray/attest";
+import { kitAtLeast, standardAtLeast } from "@gray/control/stack-provision";
 import { get, isObject, type Json } from "@gray/json";
 import type { ReleaseList } from "@gray/lane-verify";
 import { readDstackKmsCa } from "../chain/checks.ts";
 import { checkReleaseCompose, checkReleaseOsImage, type ReleaseComposeExpectation, type ReleaseContentCheck, type ReleaseContentResult } from "../chain/release-compose.ts";
 import type { ReleaseKind } from "../chain/app-auth.ts";
 import { builtInKmsCaPubkey, configTrustProblems } from "../chain/trust.ts";
+import { RELAY_KIT_VERSION } from "../endpoints.ts";
 import { RelayKitError } from "../errors.ts";
 import type { LaneBinding } from "../lane-binding.ts";
 import type { ChainContext } from "./chain.ts";
@@ -67,9 +69,47 @@ export function contextTrust(context: ChainContext): { readonly errors: readonly
 }
 
 /**
- * Why `releases approve <hash>` would let in something Gray did not publish, or null when it would not (review of
- * 2026-11-17): the hash must be an upgrade this kit lists (`upgradeVerdict`), or a compose release or OS image of Gray's
- * signed list read as every check reads it (`releaseListForCommand`). `list` replaces the fetch (tests).
+ * Checks optional release prerequisites (`min_kit`, `min_standard`) published on a compose entry in Gray's signed list
+ * against the local kit version and configured `stack.image_standard`.
+ */
+export function releasePrerequisiteChecks(
+  list: ReleaseList,
+  kind: ReleaseKind,
+  hash: string,
+  have: { readonly kit: string; readonly imageStandard: string | null },
+): ReleaseContentCheck[] {
+  if (kind !== "compose") return [];
+  const bare = hash.toLowerCase().replace(/^0x/, "");
+  const entry = list.releases.find((release) => release.compose_hash === bare);
+  if (entry === undefined) return [];
+  const checks: ReleaseContentCheck[] = [];
+  if (entry.min_kit != null) {
+    const ok = kitAtLeast(have.kit, entry.min_kit);
+    checks.push({
+      name: "min_kit",
+      ok,
+      detail: ok
+        ? `gray-assistant ${have.kit} meets required >= ${entry.min_kit}`
+        : `this release requires gray-assistant >= ${entry.min_kit} (installed: ${have.kit}); upgrade gray-assistant first (relay-stack.md section 10)`,
+    });
+  }
+  if (entry.min_standard != null) {
+    const ok = standardAtLeast(have.imageStandard, entry.min_standard);
+    checks.push({
+      name: "min_standard",
+      ok,
+      detail: ok
+        ? `stack.image_standard ${have.imageStandard} meets required >= ${entry.min_standard}`
+        : `this release requires relay image standard >= ${entry.min_standard} (config stack.image_standard is ${have.imageStandard ?? "not set"}); update your container, pass conformance, set stack.image_standard, and run \`gray-assistant stack rollout <image> --standard ${entry.min_standard}\` first`,
+    });
+  }
+  return checks;
+}
+
+/**
+ * Why `releases approve <hash>` would let in something Gray did not publish or whose local prerequisites (`min_kit`,
+ * `min_standard`) are not yet satisfied, or null when it is clear to sign. `options.force` skips prerequisite checks
+ * while still verifying the release is on Gray's signed list. `list` replaces the fetch (tests).
  */
 export async function approvalRefusal(
   context: ChainContext,
@@ -77,6 +117,7 @@ export async function approvalRefusal(
   kind: string | undefined,
   nowMs: number,
   list?: (config: LoadedRelayConfig) => Promise<ReleaseList>,
+  options?: { readonly force?: boolean; readonly kitVersion?: string },
 ): Promise<string | null> {
   const bare = hash.toLowerCase().replace(/^0x/, "");
   // A hash that is no hash is the approval's own usage refusal (releaseHash).
@@ -101,15 +142,27 @@ export async function approvalRefusal(
   }
   const compose = kind !== "os_image" && signed.releases.some((entry) => entry.compose_hash === bare);
   const osImage = kind !== "compose" && signed.osImages.some((image) => image.os_image_hash === bare);
-  if (compose || osImage) return null;
+  if (compose) {
+    if (options?.force !== true) {
+      const failed = releasePrerequisiteChecks(signed, "compose", bare, {
+        kit: options?.kitVersion ?? RELAY_KIT_VERSION,
+        imageStandard: config.daemon.stack?.imageStandard ?? null,
+      }).filter((check) => !check.ok);
+      if (failed.length > 0) return failed.map((check) => check.detail).join("; ");
+    }
+    return null;
+  }
+  if (osImage) return null;
   return `0x${bare} is not ${kind === "os_image" ? "an OS image" : kind === "compose" ? "a release" : "a release, an OS image or an upgrade"} Gray published (its signed list ${config.daemon.lane.releaseList}${kind === "compose" || kind === "os_image" ? "" : ", or this kit's upgrades"})`;
 }
 
-/** `result` with one more failed check, `compose_refused` unless it was refused already. */
-function withFailedCheck(result: ReleaseContentResult, check: ReleaseContentCheck): ReleaseContentResult {
-  const checks = [...result.checks, check];
-  const failed = checks.filter((entry) => !entry.ok).map((entry) => `${entry.name}: ${entry.detail}`);
-  return { ok: false, code: result.ok ? "compose_refused" : result.code, detail: failed.join("; "), checks };
+/** `result` with extra checks appended; fails with `compose_refused` if any appended check fails. */
+function withExtraChecks(result: ReleaseContentResult, extra: readonly ReleaseContentCheck[]): ReleaseContentResult {
+  if (extra.length === 0) return result;
+  const checks = [...result.checks, ...extra];
+  const failed = checks.filter((entry) => !entry.ok);
+  if (failed.length === 0 && result.ok) return { ok: true, checks };
+  return { ok: false, code: result.ok ? "compose_refused" : result.code, detail: failed.map((entry) => `${entry.name}: ${entry.detail}`).join("; "), checks };
 }
 
 /** Check one release of the list: a compose against the relay's expectation, an OS image by its texts. */
@@ -171,7 +224,9 @@ export async function releaseContentForCheck(
   }
   try {
     const result = checkReleaseContent(signed, kind, hash, () => releaseExpectationWith(config, kmsCaPubkey));
-    return vmCheck === null ? result : withFailedCheck(result, vmCheck);
+    const prereqs = releasePrerequisiteChecks(signed, kind, hash, { kit: RELAY_KIT_VERSION, imageStandard: config.daemon.stack?.imageStandard ?? null });
+    const extra = [...(vmCheck === null ? [] : [vmCheck]), ...prereqs];
+    return withExtraChecks(result, extra);
   } catch (error) {
     if (error instanceof RelayKitError) throw error;
     throw new RelayKitError("usage", error instanceof Error ? error.message : String(error));

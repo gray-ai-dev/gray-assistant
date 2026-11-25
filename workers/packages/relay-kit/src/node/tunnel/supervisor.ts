@@ -20,6 +20,7 @@ import { connect as tlsConnect } from "node:tls";
 import { bytesToLowerHex, ed25519Sign } from "@gray/attest";
 import { tunnelLabel, tunnelLoginMessage, tunnelLoginMetas, type TunnelState } from "@gray/control/tunnel";
 import { parsePlain } from "@gray/json";
+import { readCappedText } from "@gray/json/read-capped";
 import type { TunnelConfig } from "../../daemon/config.ts";
 import type { DaemonLogEvent } from "../../daemon/types.ts";
 import { readAtomicDocument, writeAtomicPrivateFile } from "../daemon/atomic-file.ts";
@@ -37,6 +38,8 @@ export const CERTIFICATE_WARN_MS = 14 * 86_400_000;
 const RESTART_MIN_MS = 1000;
 const RESTART_MAX_MS = 60_000;
 const HEALTHY_RUN_MS = 60_000;
+/** The most of frpc's admin `/api/status` answer read (a few proxies' states). */
+const ADMIN_STATUS_MAX_BYTES = 1024 * 1024;
 
 export type CertificateState = "ok" | "expiring" | "pending";
 
@@ -329,7 +332,7 @@ export async function startTunnel(options: {
           signal: AbortSignal.timeout(2000),
         });
         if (response.status === 200) {
-          const value = parsePlain(await response.text()) as Record<string, unknown>;
+          const value = parsePlain(await readCappedText(response, ADMIN_STATUS_MAX_BYTES)) as Record<string, unknown>;
           const proxies = Array.isArray(value?.https) ? (value.https as { name?: unknown; status?: unknown }[]) : [];
           connected = proxies.some((proxy) => proxy.status === "running");
         } else {

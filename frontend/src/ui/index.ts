@@ -34,6 +34,7 @@ export { TimeChart, type ChartSeries, type ChartPoint } from './Chart';
 export { Breakdown, type BreakdownItem } from './Breakdown';
 export { Sparkline } from './Sparkline';
 export { Meter } from './Meter';
+export { QrCode } from './QrCode';
 export { Tape, type TapeCell, type TapeTone } from './Tape';
 export { StatusStrip, StatusAxis, StripDetail, type StatusTone, type StatusStripCell } from './StatusStrip';
 export { Tooltip } from './Tooltip';

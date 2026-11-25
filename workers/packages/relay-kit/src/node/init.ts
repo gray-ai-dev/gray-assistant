@@ -32,6 +32,7 @@ import {
 } from "@gray/control/stack-pairing";
 import { tunnelName } from "@gray/control/tunnel";
 import { get, isObject, parseStrict, toJsonString, type Json } from "@gray/json";
+import { BodyTooLargeError, readCappedText } from "@gray/json/read-capped";
 import { isStackRelayImage, osImageProvenance, relayImageRegistry, releaseFreshnessLocation, type ReleaseList } from "@gray/lane-verify";
 import { ALLOW_MODULE_BASE64 } from "../assets/allow-module.ts";
 import { decodeBase64 } from "../base64.ts";
@@ -245,6 +246,16 @@ export const PAIR_PATH = "/v1/lane-stack/pair";
 export const PAIR_TIMEOUT_MS = 20_000;
 /** The largest answer read: the pairing answer is under 2 KiB. */
 const MAX_PAIR_ANSWER_BYTES = 64 * 1024;
+
+/** A pairing answer read up to MAX_PAIR_ANSWER_BYTES; a longer one is cancelled unread and comes back `oversized` (malformed). */
+async function pairAnswerText(response: Response): Promise<{ body: string; oversized: boolean }> {
+  try {
+    return { body: await readCappedText(response, MAX_PAIR_ANSWER_BYTES), oversized: false };
+  } catch (error) {
+    if (error instanceof BodyTooLargeError) return { body: "", oversized: true };
+    throw error;
+  }
+}
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "[::1]", "localhost"]);
 /** `stack.registry.host`'s own pattern (config.ts). */
 const REGISTRY_HOST = /^[A-Za-z0-9.-]{1,247}(:[0-9]{1,5})?$/;
@@ -510,6 +521,7 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
 
   let status: number;
   let body: string;
+  let oversized: boolean;
   try {
     const response = await fetch(`${gray}${PAIR_PATH}`, {
       method: "POST",
@@ -520,7 +532,7 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
       signal: AbortSignal.timeout(timeoutMs),
     });
     status = response.status;
-    body = await response.text();
+    ({ body, oversized } = await pairAnswerText(response));
   } catch {
     return {
       ok: false,
@@ -534,7 +546,7 @@ export async function pairWorkspace(options: PairWorkspaceOptions): Promise<Pair
     const refusal = refusalCode(body);
     return { ok: false, reason: "refused", status, code: refusal, text: refusal === null ? `Gray refused the pairing (HTTP ${status})` : PAIR_REFUSALS[refusal].text };
   }
-  const answer = body.length > MAX_PAIR_ANSWER_BYTES ? null : readPairAnswer(body);
+  const answer = oversized || body.length > MAX_PAIR_ANSWER_BYTES ? null : readPairAnswer(body);
   if (answer === null) return { ok: false, reason: "malformed", status, code: null, text: `Gray's answer at ${gray}${PAIR_PATH} is not a pairing answer; upgrade gray-assistant, or tell Gray` };
   // Gray paired the key this request sent: an answer naming another is not this pairing's.
   if (answer.public_key !== publicKeyHex || answer.fingerprint !== fingerprint) {
@@ -674,6 +686,7 @@ type PairFailure = Extract<PairWorkspaceResult, { ok: false }>;
 async function chainTerms(gray: string, code: string, timeoutMs: number): Promise<{ readonly ok: true; readonly chain: PairChainTerms | null } | { readonly ok: false; readonly failure: PairFailure }> {
   let status: number;
   let body: string;
+  let oversized: boolean;
   try {
     const response = await fetch(`${gray}${PAIR_CHAIN_PATH}`, {
       method: "POST",
@@ -683,7 +696,7 @@ async function chainTerms(gray: string, code: string, timeoutMs: number): Promis
       signal: AbortSignal.timeout(timeoutMs),
     });
     status = response.status;
-    body = await response.text();
+    ({ body, oversized } = await pairAnswerText(response));
   } catch {
     return {
       ok: false,
@@ -697,7 +710,7 @@ async function chainTerms(gray: string, code: string, timeoutMs: number): Promis
   }
   let parsed;
   try {
-    parsed = body.length > MAX_PAIR_ANSWER_BYTES ? null : pairChainAnswerSchema.safeParse(parsePlainJson(body));
+    parsed = oversized || body.length > MAX_PAIR_ANSWER_BYTES ? null : pairChainAnswerSchema.safeParse(parsePlainJson(body));
   } catch {
     parsed = null;
   }

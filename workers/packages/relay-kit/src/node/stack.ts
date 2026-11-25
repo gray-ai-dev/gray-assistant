@@ -19,8 +19,9 @@
  * secret and the signature covers every member (`@gray/control` `stackRestartRequestMessage`).
  */
 import { ed25519Sign, bytesToLowerHex } from "@gray/attest";
-import { STACK_RESTART_REQUEST_ID_PATTERN, stackRestartRequestMessage, stackRestartRequestReportSchema, type StackRestartReason, type StackRestartRequest } from "@gray/control";
+import { STACK_IMAGE_STANDARD_PATTERN, STACK_RESTART_REQUEST_ID_PATTERN, stackRestartRequestMessage, stackRestartRequestReportSchema, type StackRestartReason, type StackRestartRequest } from "@gray/control";
 import { get, isObject, parseStrict, toJsonString, type Json, type JsonObject } from "@gray/json";
+import { readCappedText } from "@gray/json/read-capped";
 import { existsSync, readFileSync } from "node:fs";
 import { RelayKitError } from "../errors.ts";
 import type { LoadedRelayConfig } from "./config-file.ts";
@@ -70,9 +71,13 @@ export function stackRestartRequest(input: {
   readonly random: (length: number) => Uint8Array;
   readonly kit?: string;
   readonly bootVersion?: number;
+  readonly imageStandard?: string;
 }): StackRestartRequest {
   const requestId = `r${bytesToLowerHex(input.random(16))}`;
   if (!STACK_RESTART_REQUEST_ID_PATTERN.test(requestId)) throw new RelayKitError("usage", "the request id is not r and 32 hex digits");
+  if (input.imageStandard !== undefined && !STACK_IMAGE_STANDARD_PATTERN.test(input.imageStandard)) {
+    throw new RelayKitError("usage", `image_standard must be <major>.<minor> (got ${input.imageStandard})`);
+  }
   return {
     relay_id: input.relayId,
     request_id: requestId,
@@ -82,7 +87,70 @@ export function stackRestartRequest(input: {
     image: input.image,
     ...(input.kit === undefined ? {} : { kit: input.kit }),
     ...(input.bootVersion === undefined ? {} : { boot_version: input.bootVersion }),
+    ...(input.imageStandard === undefined ? {} : { image_standard: input.imageStandard }),
   };
+}
+
+const MAX_CONFORMANCE_REPORT_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Reads a `gray-conformance --json <file>` report, verifies that every rule passed (or was skipped) and that the report
+ * covers `expectedImage` (by exact reference or matching `@sha256:<digest>`), and returns its `standard` version.
+ */
+export function readConformanceStandard(reportPath: string, expectedImage: string): string {
+  let text: string;
+  try {
+    const raw = readFileSync(reportPath);
+    if (raw.byteLength > MAX_CONFORMANCE_REPORT_BYTES) {
+      throw new RelayKitError("usage", `conformance report ${reportPath} exceeds ${MAX_CONFORMANCE_REPORT_BYTES} bytes`);
+    }
+    text = raw.toString("utf8");
+  } catch (error) {
+    if (error instanceof RelayKitError) throw error;
+    throw new RelayKitError("io", `cannot read conformance report ${reportPath}`);
+  }
+  let value: Json;
+  try {
+    value = parseStrict(text);
+  } catch {
+    throw new RelayKitError("usage", `conformance report ${reportPath} is not valid JSON`);
+  }
+  if (!isObject(value)) throw new RelayKitError("usage", `conformance report ${reportPath} is not a JSON object`);
+  const standard = get(value, "standard");
+  if (typeof standard !== "string" || !STACK_IMAGE_STANDARD_PATTERN.test(standard)) {
+    throw new RelayKitError("usage", `conformance report ${reportPath} has no valid standard version (<major>.<minor>)`);
+  }
+  const rules = get(value, "rules");
+  if (!Array.isArray(rules) || rules.length === 0) {
+    throw new RelayKitError("usage", `conformance report ${reportPath} has no rule verdicts`);
+  }
+  const failed: string[] = [];
+  for (const item of rules) {
+    if (!isObject(item)) {
+      throw new RelayKitError("usage", `conformance report ${reportPath} has a malformed rule entry`);
+    }
+    const verdict = get(item, "verdict");
+    if (verdict !== "pass" && verdict !== "skip") {
+      const rule = get(item, "rule");
+      const name = get(item, "name");
+      failed.push(`rule ${String(rule ?? "?")} ${String(name ?? "")} (${String(verdict ?? "unknown")})`.trim());
+    }
+  }
+  if (failed.length > 0) {
+    throw new RelayKitError("usage", `conformance report ${reportPath} did not pass: ${failed.join(", ")}`);
+  }
+  const digestAt = expectedImage.indexOf("@sha256:");
+  const digestSuffix = digestAt >= 0 ? expectedImage.slice(digestAt) : null;
+  const reportImage = get(value, "image");
+  const digests = get(value, "digests");
+  const digestMatches =
+    (typeof reportImage === "string" && (reportImage === expectedImage || (digestSuffix !== null && reportImage.endsWith(digestSuffix)))) ||
+    (Array.isArray(digests) &&
+      digests.some((entry) => typeof entry === "string" && (entry === expectedImage || (digestSuffix !== null && entry.endsWith(digestSuffix)))));
+  if (!digestMatches) {
+    throw new RelayKitError("usage", `conformance report ${reportPath} does not match image ${expectedImage}`);
+  }
+  return standard;
 }
 
 /** The signed report body, checked against the console's own schema before it is sent. */
@@ -93,6 +161,9 @@ export async function signedStackRestartRequest(request: StackRestartRequest, se
   return { request: { ...request, issued_ms: BigInt(request.issued_ms) }, signature };
 }
 
+/** The most of the console's answer read; a longer body fails the post as a network error does. */
+const STACK_ANSWER_MAX_BYTES = 1024 * 1024;
+
 export const defaultPost: StackPost = async (url, body) => {
   const response = await fetch(url, {
     method: "POST",
@@ -101,7 +172,7 @@ export const defaultPost: StackPost = async (url, body) => {
     redirect: "error",
     signal: AbortSignal.timeout(20_000),
   });
-  return { status: response.status, text: await response.text() };
+  return { status: response.status, text: await readCappedText(response, STACK_ANSWER_MAX_BYTES) };
 };
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
